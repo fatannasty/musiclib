@@ -6,16 +6,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import tomli
-
 if sys.version_info >= (3, 11):
-    import tomllib as _t11
-
-    tomli = _t11
+    import tomllib as tomli
+else:
+    import tomli
 
 APP_DIR = Path.home() / ".config" / "musiclib"
 DEFAULT_CONFIG_PATH = APP_DIR / "config.toml"
-DEFAULT_DB_PATH = Path.home() / ".local" / "share" / "musiclib" / "library.db"
+DEFAULT_DB_PATH = Path(
+    os.environ.get("MUSICLIB_DB_PATH", str(Path.home() / ".local" / "share" / "musiclib" / "library.db"))
+)
 
 CONFIG_TEMPLATE = """\
 library = "{library}"

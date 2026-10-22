@@ -1,0 +1,14 @@
+services:
+  musiclib:
+    build: .
+    container_name: musiclib
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - PORT=8000
+    volumes:
+      - ${MUSIC_DIR:-/volume1/music}:/music:rw
+      - ${DATA_DIR:-./appdata}:/data:rw
