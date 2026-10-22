@@ -1,0 +1,370 @@
+from __future__ import annotations
+
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence
+
+from .models import Album, Issue, Track
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS tracks (
+    id INTEGER PRIMARY KEY,
+    path TEXT UNIQUE NOT NULL,
+    mtime REAL NOT NULL DEFAULT 0,
+    size INTEGER NOT NULL DEFAULT 0,
+    format TEXT,
+    bitrate INTEGER,
+    sample_rate INTEGER,
+    bit_depth INTEGER,
+    channels INTEGER,
+    duration REAL,
+    artist TEXT,
+    album_artist TEXT,
+    album TEXT,
+    title TEXT,
+    track_no INTEGER,
+    track_total INTEGER,
+    disc_no INTEGER,
+    disc_total INTEGER,
+    year INTEGER,
+    genre TEXT,
+    mbid_track TEXT,
+    mbid_release TEXT,
+    has_embedded_art INTEGER NOT NULL DEFAULT 0,
+    file_hash TEXT,
+    fingerprint TEXT,
+    quality_score INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ok',
+    scanned_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album_artist, album);
+CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(artist, album, title);
+CREATE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(file_hash);
+CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks(status);
+
+CREATE TABLE IF NOT EXISTS issues (
+    id INTEGER PRIMARY KEY,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    detail TEXT,
+    severity TEXT NOT NULL DEFAULT 'warn',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_issues_track ON issues(track_id);
+
+CREATE TABLE IF NOT EXISTS dupe_groups (
+    id INTEGER PRIMARY KEY,
+    key TEXT UNIQUE,
+    keep_id INTEGER REFERENCES tracks(id),
+    resolved INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dupe_members (
+    group_id INTEGER NOT NULL REFERENCES dupe_groups(id) ON DELETE CASCADE,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, track_id)
+);
+
+CREATE TABLE IF NOT EXISTS albums (
+    id INTEGER PRIMARY KEY,
+    album_artist TEXT NOT NULL,
+    album TEXT NOT NULL,
+    year INTEGER,
+    mbid_release TEXT,
+    mbid_verified INTEGER NOT NULL DEFAULT 0,
+    art_status TEXT NOT NULL DEFAULT 'unknown',
+    expected_tracks INTEGER,
+    have_tracks INTEGER NOT NULL DEFAULT 0,
+    missing_tracks TEXT,
+    UNIQUE(album_artist, album)
+);
+
+CREATE TABLE IF NOT EXISTS deletions (
+    id INTEGER PRIMARY KEY,
+    path TEXT NOT NULL,
+    size INTEGER,
+    file_hash TEXT,
+    reason TEXT,
+    moved_to TEXT,
+    deleted_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS downloads (
+    id INTEGER PRIMARY KEY,
+    nzo_id TEXT,
+    title TEXT,
+    url TEXT,
+    indexer TEXT,
+    status TEXT NOT NULL DEFAULT 'queued',
+    requested_at TEXT NOT NULL,
+    completed_at TEXT
+);
+"""
+
+TRACK_COLUMNS = [
+    "id", "path", "mtime", "size", "format", "bitrate", "sample_rate", "bit_depth",
+    "channels", "duration", "artist", "album_artist", "album", "title", "track_no",
+    "track_total", "disc_no", "disc_total", "year", "genre", "mbid_track",
+    "mbid_release", "has_embedded_art", "file_hash", "fingerprint", "quality_score",
+    "status", "scanned_at",
+]
+
+
+def utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class Database:
+    def __init__(self, path: str | Path):
+        self.path = str(Path(path).expanduser())
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.executescript(SCHEMA)
+        self._conn.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    def execute(self, sql: str, params: Sequence = ()) -> sqlite3.Cursor:
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
+            return cur
+
+    def executemany(self, sql: str, rows: Iterable[Sequence]) -> None:
+        with self._lock:
+            self._conn.executemany(sql, rows)
+            self._conn.commit()
+
+    def query(self, sql: str, params: Sequence = ()) -> List[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
+
+    def query_one(self, sql: str, params: Sequence = ()) -> Optional[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchone()
+
+    def upsert_track(self, track: Track) -> Track:
+        values = [
+            track.path, track.mtime, track.size, track.format, track.bitrate,
+            track.sample_rate, track.bit_depth, track.channels, track.duration,
+            track.artist, track.album_artist, track.album, track.title,
+            track.track_no, track.track_total, track.disc_no, track.disc_total,
+            track.year, track.genre, track.mbid_track, track.mbid_release,
+            int(track.has_embedded_art), track.file_hash, track.fingerprint,
+            track.quality_score, track.status, utcnow(),
+        ]
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO tracks (path, mtime, size, format, bitrate, sample_rate,
+                    bit_depth, channels, duration, artist, album_artist, album, title,
+                    track_no, track_total, disc_no, disc_total, year, genre,
+                    mbid_track, mbid_release, has_embedded_art, file_hash,
+                    fingerprint, quality_score, status, scanned_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(path) DO UPDATE SET
+                    mtime=excluded.mtime, size=excluded.size, format=excluded.format,
+                    bitrate=excluded.bitrate, sample_rate=excluded.sample_rate,
+                    bit_depth=excluded.bit_depth, channels=excluded.channels,
+                    duration=excluded.duration, artist=excluded.artist,
+                    album_artist=excluded.album_artist, album=excluded.album,
+                    title=excluded.title, track_no=excluded.track_no,
+                    track_total=excluded.track_total, disc_no=excluded.disc_no,
+                    disc_total=excluded.disc_total, year=excluded.year,
+                    genre=excluded.genre, mbid_track=excluded.mbid_track,
+                    mbid_release=excluded.mbid_release,
+                    has_embedded_art=excluded.has_embedded_art,
+                    file_hash=excluded.file_hash, fingerprint=excluded.fingerprint,
+                    quality_score=excluded.quality_score, status=excluded.status,
+                    scanned_at=excluded.scanned_at
+                """,
+                values,
+            )
+            row = self._conn.execute(
+                "SELECT id FROM tracks WHERE path=?", (track.path,)
+            ).fetchone()
+            self._conn.commit()
+            if row:
+                track.id = row["id"]
+            elif cur.lastrowid:
+                track.id = cur.lastrowid
+        self.replace_issues(track)
+        return track
+
+    def update_track_columns(self, track_id: int, **columns: Any) -> None:
+        if not columns:
+            return
+        cols = ", ".join(f"{k}=?" for k in columns)
+        params = list(columns.values()) + [track_id]
+        self.execute(f"UPDATE tracks SET {cols} WHERE id=?", params)
+
+    def replace_issues(self, track: Track) -> None:
+        self.execute("DELETE FROM issues WHERE track_id=?", (track.id,))
+        if track.issues:
+            self.executemany(
+                "INSERT INTO issues (track_id, kind, detail, severity, created_at) "
+                "VALUES (?,?,?,?,?)",
+                [(track.id, i.kind, i.detail, i.severity, utcnow()) for i in track.issues],
+            )
+
+    def get_track(self, track_id: int) -> Optional[Track]:
+        row = self.query_one("SELECT * FROM tracks WHERE id=?", (track_id,))
+        return self._row_to_track(row) if row else None
+
+    def find_track_by_path(self, path: str) -> Optional[Track]:
+        row = self.query_one("SELECT * FROM tracks WHERE path=?", (path,))
+        return self._row_to_track(row) if row else None
+
+    def all_tracks(self, status: Optional[str] = None) -> List[Track]:
+        if status:
+            rows = self.query("SELECT * FROM tracks WHERE status=? ORDER BY path", (status,))
+        else:
+            rows = self.query("SELECT * FROM tracks ORDER BY path")
+        return [self._row_to_track(r) for r in rows]
+
+    def tracks_missing_fingerprint(self) -> List[Track]:
+        rows = self.query(
+            "SELECT * FROM tracks WHERE fingerprint IS NULL AND status='ok' ORDER BY path"
+        )
+        return [self._row_to_track(r) for r in rows]
+
+    def _row_to_track(self, row: sqlite3.Row) -> Track:
+        track = Track(
+            id=row["id"], path=row["path"], mtime=row["mtime"], size=row["size"],
+            format=row["format"], bitrate=row["bitrate"], sample_rate=row["sample_rate"],
+            bit_depth=row["bit_depth"], channels=row["channels"], duration=row["duration"],
+            artist=row["artist"], album_artist=row["album_artist"], album=row["album"],
+            title=row["title"], track_no=row["track_no"], track_total=row["track_total"],
+            disc_no=row["disc_no"], disc_total=row["disc_total"], year=row["year"],
+            genre=row["genre"], mbid_track=row["mbid_track"],
+            mbid_release=row["mbid_release"], has_embedded_art=bool(row["has_embedded_art"]),
+            file_hash=row["file_hash"], fingerprint=row["fingerprint"],
+            quality_score=row["quality_score"], status=row["status"],
+        )
+        issue_rows = self.query(
+            "SELECT kind, detail, severity FROM issues WHERE track_id=?", (track.id,)
+        )
+        track.issues = [Issue(r["kind"], r["detail"], r["severity"]) for r in issue_rows]
+        return track
+
+    def issues_all(self) -> List[sqlite3.Row]:
+        return self.query(
+            "SELECT i.*, t.path FROM issues i JOIN tracks t ON t.id = i.track_id "
+            "WHERE t.status != 'deleted' ORDER BY i.severity DESC, t.path"
+        )
+
+    def upsert_album(self, album: Album) -> Album:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO albums (album_artist, album, year, mbid_release,
+                    mbid_verified, art_status, expected_tracks, have_tracks,
+                    missing_tracks)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(album_artist, album) DO UPDATE SET
+                    year=excluded.year, mbid_release=excluded.mbid_release,
+                    mbid_verified=excluded.mbid_verified,
+                    art_status=excluded.art_status,
+                    expected_tracks=excluded.expected_tracks,
+                    have_tracks=excluded.have_tracks,
+                    missing_tracks=excluded.missing_tracks
+                """,
+                (
+                    album.album_artist, album.album, album.year, album.mbid_release,
+                    int(album.mbid_verified), album.art_status, album.expected_tracks,
+                    album.have_tracks, album.missing_tracks,
+                ),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT id FROM albums WHERE album_artist=? AND album=?",
+                (album.album_artist, album.album),
+            ).fetchone()
+            album.id = row["id"]
+        return album
+
+    def albums_all(self, where: str = "1=1", params: Sequence = ()) -> List[Album]:
+        rows = self.query(
+            f"SELECT * FROM albums WHERE {where} ORDER BY album_artist, album", params
+        )
+        return [self._row_to_album(r) for r in rows]
+
+    def _row_to_album(self, row: sqlite3.Row) -> Album:
+        return Album(
+            id=row["id"], album_artist=row["album_artist"], album=row["album"],
+            year=row["year"], mbid_release=row["mbid_release"],
+            mbid_verified=bool(row["mbid_verified"]), art_status=row["art_status"],
+            expected_tracks=row["expected_tracks"], have_tracks=row["have_tracks"],
+            missing_tracks=row["missing_tracks"],
+        )
+
+    def record_deletion(
+        self, path: str, size: int, file_hash: Optional[str], reason: str,
+        moved_to: Optional[str],
+    ) -> None:
+        self.execute(
+            "INSERT INTO deletions (path, size, file_hash, reason, moved_to, deleted_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (path, size, file_hash, reason, moved_to, utcnow()),
+        )
+
+    def record_download(
+        self, nzo_id: str, title: str, url: str, indexer: str, status: str = "queued"
+    ) -> None:
+        self.execute(
+            "INSERT INTO downloads (nzo_id, title, url, indexer, status, requested_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (nzo_id, title, url, indexer, status, utcnow()),
+        )
+
+    def update_download_status(self, nzo_id: str, status: str) -> None:
+        completed = utcnow() if status in ("completed", "failed") else None
+        self.execute(
+            "UPDATE downloads SET status=?, completed_at=COALESCE(?, completed_at) "
+            "WHERE nzo_id=?",
+            (status, completed, nzo_id),
+        )
+
+    def stats(self) -> Dict[str, Any]:
+        row = self.query_one(
+            """
+            SELECT COUNT(*) AS tracks,
+                   COALESCE(SUM(size), 0) AS bytes,
+                   COUNT(DISTINCT album_artist || char(31) || album) AS albums,
+                   COALESCE(SUM(duration), 0) AS seconds,
+                   COALESCE(SUM(CASE WHEN has_embedded_art THEN 1 ELSE 0 END), 0) AS with_art
+            FROM tracks WHERE status IN ('ok', 'suspect')
+            """
+        )
+        issues = self.query_one("SELECT COUNT(*) AS n FROM issues")["n"]
+        dupes = self.query_one(
+            "SELECT COUNT(*) AS n FROM dupe_groups WHERE resolved=0"
+        )["n"]
+        albums_missing_art = self.query_one(
+            "SELECT COUNT(*) AS n FROM albums WHERE art_status IN ('missing', 'none')"
+        )["n"]
+        albums_missing_tracks = self.query_one(
+            "SELECT COUNT(*) AS n FROM albums WHERE missing_tracks IS NOT NULL "
+            "AND missing_tracks != '[]'"
+        )["n"]
+        return {
+            "tracks": row["tracks"],
+            "bytes": row["bytes"],
+            "albums": row["albums"],
+            "duration_seconds": row["seconds"],
+            "with_art": row["with_art"],
+            "issues": issues,
+            "dupe_groups": dupes,
+            "albums_missing_art": albums_missing_art,
+            "albums_missing_tracks": albums_missing_tracks,
+        }

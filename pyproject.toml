@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "musiclib"
+version = "0.1.0"
+description = "Music library manager: scan, validate, dedupe, organize, fetch art, fill gaps via Usenet"
+requires-python = ">=3.9"
+dependencies = [
+    "mutagen>=1.46",
+    "typer>=0.9",
+    "rich>=13.0",
+    "fastapi>=0.104",
+    "uvicorn>=0.24",
+    "httpx>=0.25",
+    "musicbrainzngs>=0.7.1",
+    "tomli>=1.1; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "ruff>=0.4"]
+
+[project.scripts]
+musiclib = "musiclib.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"musiclib.server" = ["static/*.html"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "BLE001",
+    "E501",
+    "B008",
+    "UP006",
+    "UP035",
+    "UP045",
+    "UP007",
+    "UP037",
+]
