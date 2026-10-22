@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    MUSICLIB_DB_PATH=/data/library.db
+    MUSICLIB_DB_PATH=/data/library.db \
+    HOME=/data
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg libchromaprint-tools \
