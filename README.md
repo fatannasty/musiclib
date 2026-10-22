@@ -143,6 +143,19 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 The auto-sync script pulls with `--rebase` before pushing, so edits from
 different machines merge cleanly.
 
+### NAS / home-server deployment (recommended)
+
+For a music collection on a NAS, run musiclib as a Docker container on the NAS
+itself — always on, accessible from any device in the house via the browser
+(including Windows PCs), with ffmpeg and chromaprint included:
+
+```bash
+git clone https://github.com/<you>/musiclib.git && cd musiclib
+MUSIC_DIR=/volume1/music DATA_DIR=/volume1/docker/musiclib docker compose up -d --build
+```
+
+Then open `http://<nas-ip>:8000`. Full guide: [docs/DEPLOY-NAS.md](docs/DEPLOY-NAS.md).
+
 ## CLI reference
 
 | Command | Purpose |
