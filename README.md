@@ -116,6 +116,33 @@ Tabs: Overview (stats, scan, issues), Duplicates (review and re-pick keepers),
 Bad Files (doctor), Organize (rename preview/apply), Cover Art, Missing Music
 (MusicBrainz gaps), Usenet (indexer search + SABnzbd queue).
 
+### LAN access
+
+Run the dashboard on all interfaces so any device on your network can use it:
+
+```bash
+musiclib serve --host 0.0.0.0 --port 8000
+```
+
+Then open `http://<your-mac-ip>:8000` from a phone, tablet, or PC on the same
+network (find your IP with `ipconfig getifaddr en0`). macOS may prompt once to
+allow incoming connections — click Allow.
+
+### Keeping it in sync across machines
+
+The repo auto-syncs: a launchd agent (`~/Library/LaunchAgents/com.musiclib.autosync.plist`)
+commits and pushes changes on this Mac every 60 seconds. To set up another PC:
+
+```bash
+git clone https://github.com/<you>/musiclib.git
+cd musiclib
+python3 -m venv .venv && .venv/bin/pip install -e .
+.venv/bin/musiclib init --library /path/to/music/on/that/pc
+```
+
+The auto-sync script pulls with `--rebase` before pushing, so edits from
+different machines merge cleanly.
+
 ## CLI reference
 
 | Command | Purpose |
