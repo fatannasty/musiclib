@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 
-REPO_DIR="/Users/fatannasty/Documents/Daily/musiclib"
+REPO_DIR="/Users/fatannasty/musiclib"
 LOG_FILE="$HOME/Library/Logs/musiclib-autosync.log"
 BRANCH="main"
 LOCK_FILE="/tmp/musiclib-autosync.lock"
