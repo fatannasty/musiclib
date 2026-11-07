@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -56,6 +57,33 @@ url = "https://example-indexer.com"
 api_key = ""
 categories = "3000"
 """
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return json.dumps(str(value))
+
+
+def _dump_toml(top: Dict[str, Any], indexers: List[Dict[str, Any]]) -> str:
+    lines: List[str] = []
+    for key, value in top.items():
+        if not isinstance(value, dict):
+            lines.append(f"{key} = {_toml_value(value)}")
+    for key, value in top.items():
+        if isinstance(value, dict):
+            lines.append("")
+            lines.append(f"[{key}]")
+            for k, v in value.items():
+                lines.append(f"{k} = {_toml_value(v)}")
+    for indexer in indexers:
+        lines.append("")
+        lines.append("[[indexers]]")
+        for k, v in indexer.items():
+            lines.append(f"{k} = {_toml_value(v)}")
+    return "\n".join(lines) + "\n"
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -160,6 +188,31 @@ class Config:
         )
         target.write_text(template)
         return cls.load(target)
+
+    def save(self, path: Optional[Path] = None) -> Path:
+        target = Path(path) if path else self.config_path
+        if target is None:
+            raise ValueError("no config file path to save to")
+        text = _dump_toml(
+            {
+                "library": self.library,
+                "db_path": self.db_path,
+                "trash_dir": self.trash_dir,
+                "organize": self.organize,
+                "doctor": self.doctor,
+                "duplicates": self.duplicates,
+                "artwork": self.artwork,
+                "brainz": self.brainz,
+                "sabnzbd": self.sabnzbd,
+            },
+            self.indexers,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, target)
+        self.config_path = target
+        return target
 
     def indexer_clients(self) -> List[Dict[str, str]]:
         return [i for i in self.indexers if i.get("url") and i.get("api_key")]

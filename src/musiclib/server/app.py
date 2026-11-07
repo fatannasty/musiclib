@@ -90,6 +90,33 @@ class SabAddBody(BaseModel):
     indexer: str = ""
 
 
+class SettingsBody(BaseModel):
+    organize: Optional[Dict[str, Any]] = None
+    doctor: Optional[Dict[str, Any]] = None
+    duplicates: Optional[Dict[str, Any]] = None
+    artwork: Optional[Dict[str, Any]] = None
+    brainz: Optional[Dict[str, Any]] = None
+    sabnzbd: Optional[Dict[str, Any]] = None
+    indexers: Optional[List[Dict[str, Any]]] = None
+
+
+EDITABLE_SECTIONS = ("organize", "doctor", "duplicates", "artwork", "brainz", "sabnzbd")
+SECRET_KEYS = ("api_key",)
+
+
+def _coerce(value: Any, current: Any) -> Any:
+    if isinstance(current, bool):
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+    if isinstance(current, int):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"expected a number, got {value!r}")
+    return "" if value is None else str(value).strip()
+
+
 def create_app(config: Config) -> FastAPI:
     app = FastAPI(title="musiclib", docs_url=None, redoc_url=None)
     db = Database(config.db_path)
@@ -295,6 +322,68 @@ def create_app(config: Config) -> FastAPI:
             return sab_client().history()
         except SabnzbdError as exc:
             raise HTTPException(502, str(exc)) from exc
+
+    @app.get("/api/settings")
+    def settings_get() -> Dict[str, Any]:
+        result: Dict[str, Any] = {"library": config.library}
+        for section in EDITABLE_SECTIONS:
+            values = dict(getattr(config, section))
+            for key in SECRET_KEYS:
+                if key in values:
+                    values[key + "_set"] = bool(values[key])
+                    values[key] = ""
+            result[section] = values
+        result["indexers"] = [
+            {**{k: v for k, v in i.items() if k != "api_key"},
+             "api_key": "", "api_key_set": bool(i.get("api_key"))}
+            for i in config.indexers
+        ]
+        return result
+
+    @app.put("/api/settings")
+    def settings_put(body: SettingsBody) -> Dict[str, Any]:
+        updates: Dict[str, Dict[str, Any]] = {}
+        for section in EDITABLE_SECTIONS:
+            incoming = getattr(body, section)
+            if incoming is None:
+                continue
+            current = getattr(config, section)
+            merged = dict(current)
+            for key, value in incoming.items():
+                if key.endswith("_set") or key not in current:
+                    continue
+                if key in SECRET_KEYS and value in ("", None):
+                    continue
+                merged[key] = _coerce(value, current[key])
+            updates[section] = merged
+        new_indexers = None
+        if body.indexers is not None:
+            new_indexers = []
+            for pos, item in enumerate(body.indexers):
+                url = str(item.get("url", "")).strip()
+                name = str(item.get("name", "")).strip()
+                if not url and not name:
+                    continue
+                key = str(item.get("api_key") or "").strip()
+                if not key:
+                    old = str(item.get("old_name", name))
+                    prev = next((i for i in config.indexers if i.get("name") == old), None)
+                    if prev is None and pos < len(config.indexers):
+                        prev = config.indexers[pos]
+                    key = (prev or {}).get("api_key", "")
+                new_indexers.append(
+                    {"name": name, "url": url, "api_key": key,
+                     "categories": str(item.get("categories", "3000")).strip() or "3000"}
+                )
+        for section, merged in updates.items():
+            getattr(config, section).update(merged)
+        if new_indexers is not None:
+            config.indexers[:] = new_indexers
+        try:
+            path = config.save()
+        except (OSError, ValueError) as exc:
+            raise HTTPException(500, f"could not write config: {exc}") from exc
+        return {"saved": True, "path": str(path)}
 
     @app.get("/api/jobs/{job_id}")
     def job_status(job_id: str) -> Dict[str, Any]:
