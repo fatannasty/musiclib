@@ -1,78 +1,100 @@
 # Installing musiclib on a Synology NAS (step by step)
 
-Works on DSM with the **Container Manager** package (called **Docker** on DSM 7.0
-and older). The NAS builds and runs the container; every PC on the network just
-uses a browser.
+Works on DSM 7.2+ with **Container Manager** (DSM 7.0/7.1: the **Docker** package).
+The NAS builds and runs the container; every PC on the network just uses a browser.
 
-Requirements: an x86_64 Synology model (most "Plus" models — check with
-`uname -m` in step 4), ~2 GB free RAM during the build, and your music on a
-shared folder.
+**Requirements**
+- An x86_64 Synology model (most "Plus" models; step 4 checks this)
+- ~2 GB free RAM during the build
+- Your music in a shared folder
+- Container Manager installed (DSM **Package Center** → search "Container Manager" → Install)
 
-## 1. Create a GitHub access token (2 minutes, on any PC)
+Each step ends with a **Check** line. If a check fails, stop and see
+[Troubleshooting](#troubleshooting) before continuing.
 
-The repo is private, so the NAS needs a token to download it:
+## 1. Create a GitHub token (on any PC)
 
-1. On github.com, click your avatar → **Settings** → **Developer settings**
-   (bottom of the left menu) → **Personal access tokens → Fine-grained tokens**
-2. **Generate new token**: name it `synology-deploy`, set an expiration
-   (90 days is fine)
+The repo is private, so the NAS needs a token to download it.
+
+1. github.com → avatar → **Settings** → **Developer settings** (bottom of left menu)
+   → **Personal access tokens** → **Fine-grained tokens** → **Generate new token**
+2. Name: `synology-deploy`. Expiration: 90 days.
 3. **Repository access** → *Only select repositories* → `musiclib`
-4. **Permissions → Repository permissions → Contents: Read-only**
-5. Generate and copy the token (starts with `github_pat_...`) — shown only once
+4. **Repository permissions** → **Contents: Read-only**
+5. **Generate token** and copy it (starts with `github_pat_`). It is shown only once.
 
 ## 2. Enable SSH on the Synology
 
-**Control Panel → Terminal & SNMP → Enable SSH service → Apply**
+DSM → **Control Panel** → **Terminal & SNMP** → tick **Enable SSH service** → **Apply**.
 
 ## 3. Connect from your PC
-
-From PowerShell (Windows) or Terminal (Mac):
 
 ```bash
 ssh YOUR_ADMIN_USER@NAS_IP
 ```
 
-Enter your DSM password when asked. All commands below run here.
+Use your DSM admin username and password. Everything below runs in this SSH session.
+To get root once, run `sudo -i` (enter your password); then you can skip `sudo` below.
 
 ## 4. Find your values
 
 ```bash
-id          # note uid= (usually 1026) and gid= (usually 100)
-ls /volume1 # find your music share, e.g. "music"
-uname -m    # must say x86_64
+id
+ls /volume1
+uname -m
 ```
+
+Write down:
+- `uid=` number → your **PUID** (often 1026)
+- `gid=` number → your **PGID** (often 100)
+- your music share name from `ls /volume1` (e.g. `music`)
+
+**Check:** `uname -m` must print `x86_64`. If not, see Troubleshooting.
 
 ## 5. Download the app
 
+Replace `PASTE_TOKEN_HERE` with the token from step 1 (keep the quotes):
+
 ```bash
-sudo mkdir -p /volume1/docker && cd /volume1/docker
-sudo curl -L -H "Authorization: Bearer YOUR_TOKEN" \
+export GH_TOKEN="PASTE_TOKEN_HERE"
+sudo mkdir -p /volume1/docker
+cd /volume1/docker
+sudo curl -fL -H "Authorization: Bearer $GH_TOKEN" \
     https://api.github.com/repos/fatannasty/musiclib/tarball/main \
     -o musiclib.tar.gz
+```
+
+**Check:** `ls -lh musiclib.tar.gz` should show roughly 100 KB or more. If curl printed
+`404` or `401`, the token is wrong or lacks access to the repo.
+
+Then unpack:
+
+```bash
 sudo tar xzf musiclib.tar.gz
+sudo rm -rf musiclib
 sudo mv fatannasty-musiclib-* musiclib
 cd musiclib
+ls
 ```
+
+**Check:** you should see `Dockerfile`, `docker-compose.yml`, `src`, `scripts`.
 
 ## 6. Create the settings file
 
-This keeps your DB/config separate from the app folder (survives updates):
+Edit the three values to match step 4, then run it as-is:
 
 ```bash
-sudo tee .env > /dev/null <<'EOF'
+sudo mkdir -p /volume1/docker/musiclib-data
+sudo tee .env > /dev/null <<'EOT'
 MUSIC_DIR=/volume1/music
 DATA_DIR=/volume1/docker/musiclib-data
 PUID=1026
 PGID=100
-EOF
+EOT
+cat .env
 ```
 
-Adjust: `MUSIC_DIR` = your music share path; `PUID`/`PGID` = the uid/gid from
-step 4. Then create the data folder:
-
-```bash
-sudo mkdir -p /volume1/docker/musiclib-data
-```
+`MUSIC_DIR` must be a real folder (`ls /volume1/music` should list your files).
 
 ## 7. Build and start
 
@@ -80,47 +102,60 @@ sudo mkdir -p /volume1/docker/musiclib-data
 sudo docker compose up -d --build
 ```
 
-- First build takes 5–15 minutes on NAS hardware
-- If `docker compose` says "not found", your DSM is older — use
-  `sudo docker-compose up -d --build` instead
+Older DSM that says `docker: 'compose' is not a command`: use `sudo docker-compose up -d --build`.
+
+The first build takes 5–15 minutes. Wait for it to return to the prompt.
+
+**Check:**
+```bash
+sudo docker ps
+sudo docker logs musiclib
+```
+`docker ps` should list `musiclib` with status `Up`; the logs should end with a line
+like `Uvicorn running on http://0.0.0.0:8000`.
+
+You can also watch it in DSM → **Container Manager** → **Container**.
 
 ## 8. Open the dashboard
 
-From any PC on the network:
-
-```
-http://NAS_IP:8000
-```
+In a browser on any PC on your network: `http://NAS_IP:8000`
 
 Click **Scan** on the Overview tab. Done.
 
 ## Updating later
 
 ```bash
+export GH_TOKEN="PASTE_TOKEN_HERE"
 cd /volume1/docker
-sudo curl -L -H "Authorization: Bearer YOUR_TOKEN" \
+sudo curl -fL -H "Authorization: Bearer $GH_TOKEN" \
     https://api.github.com/repos/fatannasty/musiclib/tarball/main \
     -o musiclib-new.tar.gz
 sudo tar xzf musiclib-new.tar.gz
 sudo cp musiclib/.env fatannasty-musiclib-*/.env
-sudo rm -rf musiclib && sudo mv fatannasty-musiclib-* musiclib
+sudo rm -rf musiclib
+sudo mv fatannasty-musiclib-* musiclib
 cd musiclib
 sudo docker compose up -d --build
 ```
 
-Your library, database, and config are untouched (they live in
-`musiclib-data`, not the app folder).
+Your library, database and config live in `musiclib-data`, so they are untouched.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Permission denied when trashing/renaming files | `PUID`/`PGID` in `.env` don't match the share owner — re-check `id` output |
-| `docker compose` not found | Older DSM: use `docker-compose` |
-| Build fails, `uname -m` shows armv7 | Model too old for this image; run it on your Proxmox Docker host instead |
-| Port 8000 already used | Edit `docker-compose.yml` ports line, e.g. `"8001:8000"` |
-| Nothing scans | Check `ls` of your `MUSIC_DIR` path — share names differ per setup |
+| curl prints 404/401, or the tarball is tiny | Token wrong, expired, or not granted `Contents: Read-only` on `musiclib`. Make a new one. `cat musiclib.tar.gz` shows the error text. |
+| `tar` says "not in gzip format" | Same cause: the download was an error message, not the app. |
+| `permission denied` running docker | Put `sudo` in front, or use `sudo -i`. |
+| `docker compose` not found | Use `docker-compose` (older DSM). |
+| `uname -m` is not `x86_64` (e.g. armv7/aarch64) | Image is only tested on x86_64; run on the Proxmox Docker host instead. |
+| Build fails with out-of-memory or `killed` | Close other containers/apps, then re-run step 7. |
+| Build fails fetching packages | NAS has no internet/DNS; check DSM network settings and retry. |
+| Container keeps restarting | `sudo docker logs musiclib` and read the last lines. |
+| Page not loading | Check `sudo docker ps` shows `Up`, and that no firewall blocks port 8000. |
+| Port 8000 already used | Edit `docker-compose.yml` ports to `"8001:8000"` and open `:8001`. |
+| Permission denied when trashing/renaming | `PUID`/`PGID` in `.env` don't match the share owner; re-check `id`, then `sudo docker compose up -d`. |
+| Nothing scans | `ls` your `MUSIC_DIR`; share names differ per setup. |
 
-Token hygiene: it lives in your shell history — set a short expiry or revoke it
-in GitHub settings after setup (only needed again for updates; generate a fresh
-one each time if you prefer).
+Token hygiene: the token stays in your shell history. Revoke it in GitHub settings after
+setup, or generate a fresh one for each update. Run `history -c` to clear the session.
