@@ -72,7 +72,7 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 const TABS = [
   ["overview", "Overview"], ["dupes", "Duplicates"], ["doctor", "Bad Files"],
   ["organize", "Organize"], ["art", "Cover Art"], ["missing", "Missing Music"],
-  ["usenet", "Usenet"],
+  ["usenet", "Usenet"], ["settings", "Settings"],
 ];
 const state = { tab: "overview" };
 const $ = (sel) => document.querySelector(sel);
@@ -316,6 +316,91 @@ const views = {
           };
         });
       } catch (e) { toast(e.message, true); }
+    };
+  },
+
+  async settings(el) {
+    const s = await api("/api/settings");
+    const field = (sec, key, label, opts = {}) => {
+      const v = s[sec][key];
+      const secret = opts.secret;
+      const id = `set-${sec}-${key}`;
+      if (typeof v === "boolean") {
+        return `<label class="hint"><input type="checkbox" id="${id}" ${v ? "checked" : ""}> ${esc(label)}</label>`;
+      }
+      return `<label class="hint">${esc(label)}<br><input type="${secret ? "password" : "text"}" id="${id}"
+        style="width:100%" value="${secret ? "" : esc(v)}"
+        placeholder="${secret && s[sec][key + "_set"] ? "(saved — leave blank to keep)" : ""}"></label>`;
+    };
+    const idxRow = (i, n) => `<div class="card idx" data-old="${esc(i.name)}" style="margin-bottom:10px">
+      <div class="row">
+        <input type="text" class="i-name" placeholder="name" value="${esc(i.name)}">
+        <input type="text" class="i-url" placeholder="https://indexer.example" style="flex:1" value="${esc(i.url)}">
+      </div>
+      <div class="row">
+        <input type="password" class="i-key" style="flex:1" placeholder="${i.api_key_set ? "(saved — leave blank to keep)" : "API key"}">
+        <input type="text" class="i-cat" placeholder="categories" value="${esc(i.categories || "3000")}" style="width:120px">
+        <button class="action ghost i-del">Remove</button>
+      </div></div>`;
+    el.innerHTML = `
+      <div class="card"><h3>SABnzbd</h3>
+        ${field("sabnzbd", "url", "URL (e.g. http://NAS_IP:8080)")}
+        ${field("sabnzbd", "api_key", "API key", { secret: true })}
+        ${field("sabnzbd", "complete_dir", "Complete folder (path inside the musiclib container)")}
+      </div>
+      <div class="card" style="margin-top:14px"><h3>Indexers (newznab)</h3>
+        <div id="idx-list">${s.indexers.map(idxRow).join("")}</div>
+        <button class="action ghost" id="idx-add">Add indexer</button>
+      </div>
+      <div class="card" style="margin-top:14px"><h3>MusicBrainz</h3>
+        ${field("brainz", "contact", "Contact email (required by MusicBrainz)")}
+      </div>
+      <div class="card" style="margin-top:14px"><h3>Organize</h3>
+        ${field("organize", "template", "Filename template")}
+        ${field("organize", "template_multidisc", "Multi-disc template")}
+        ${field("organize", "cleanup_empty_dirs", "Remove empty folders after moving")}
+      </div>
+      <div class="card" style="margin-top:14px"><h3>Bad files &amp; duplicates</h3>
+        ${field("doctor", "min_bitrate", "Minimum bitrate (kbps)")}
+        ${field("doctor", "min_duration", "Minimum duration (seconds)")}
+        ${field("doctor", "deep_decode", "Deep decode with ffmpeg")}
+        ${field("duplicates", "duration_tolerance", "Duplicate duration tolerance (seconds)")}
+        ${field("duplicates", "strategy", "Duplicate strategy (hash | tags | fingerprint)")}
+      </div>
+      <div class="card" style="margin-top:14px"><h3>Cover art</h3>
+        ${field("artwork", "embed", "Embed art in files")}
+        ${field("artwork", "folder_image", "Folder image filename")}
+        ${field("artwork", "min_side", "Minimum image side (px)")}
+        ${field("artwork", "replace_small", "Replace small art")}
+      </div>
+      <div class="row" style="margin-top:14px"><button class="action" id="set-save">Save settings</button>
+        <span class="hint">Library: ${esc(s.library)} (change via MUSIC_DIR volume mapping)</span></div>`;
+    const bindDel = () => el.querySelectorAll(".i-del").forEach(b => b.onclick = () => b.closest(".idx").remove());
+    bindDel();
+    $("#idx-add").onclick = () => {
+      $("#idx-list").insertAdjacentHTML("beforeend", idxRow({ name: "", url: "", categories: "3000" }));
+      bindDel();
+    };
+    const val = (sec, key) => {
+      const node = $(`#set-${sec}-${key}`);
+      if (!node) return undefined;
+      return node.type === "checkbox" ? node.checked : node.value;
+    };
+    $("#set-save").onclick = async () => {
+      const body = { indexers: [...el.querySelectorAll(".idx")].map(r => ({
+        old_name: r.dataset.old, name: r.querySelector(".i-name").value,
+        url: r.querySelector(".i-url").value, api_key: r.querySelector(".i-key").value,
+        categories: r.querySelector(".i-cat").value })) };
+      for (const sec of ["sabnzbd", "brainz", "organize", "doctor", "duplicates", "artwork"]) {
+        body[sec] = {};
+        for (const key of Object.keys(s[sec])) {
+          if (key.endsWith("_set")) continue;
+          const v = val(sec, key);
+          if (v !== undefined) body[sec][key] = v;
+        }
+      }
+      try { await api("/api/settings", { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+        toast("Settings saved"); render(); } catch (e) { toast(e.message, true); }
     };
   },
 };
