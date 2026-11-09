@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>musiclib</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 :root {
   --bg: #0f1115; --panel: #171a21; --panel2: #1d212b; --border: #2a2f3c;
@@ -13,6 +14,8 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "Segoe UI", sans-serif; }
 header { padding: 18px 24px 12px; border-bottom: 1px solid var(--border); }
+.brand { display: flex; gap: 10px; align-items: center; }
+.brand img { width: 30px; height: 30px; }
 h1 { font-size: 20px; font-weight: 600; }
 h1 span { color: var(--accent); }
 .sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
@@ -61,7 +64,7 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 </head>
 <body>
 <header>
-  <h1>music<span>lib</span></h1>
+  <div class="brand"><img src="/favicon.svg" alt=""><h1>music<span>lib</span></h1></div>
   <div class="sub" id="dbpath">dashboard</div>
   <div class="chips" id="chips"></div>
 </header>
@@ -155,11 +158,37 @@ const views = {
     el.innerHTML = `<div class="row">
       <button class="action" id="btn-find">Find duplicates</button>
       <button class="action danger" id="btn-apply" style="display:none">Remove losers (trash)</button>
-      <span class="hint">Best version per group is kept; losers move to trash. Click a "keep" flag to change the keeper.</span>
-    </div><div id="dupe-list"><div class="empty">Click "Find duplicates" to analyze.</div></div>`;
+      <label class="check"><input type="checkbox" id="opt-fingerprint"> compare audio fingerprints (slower)</label>
+      <span class="hint">Best version per group is kept; losers move to trash. Click a marker to change the keeper.</span>
+    </div><div id="dupe-list"><div class="empty">Click "Find duplicates" to analyze the library.</div></div>
+    <div class="card"><h3>Manual duplicate review</h3>
+      <p>Search your library, add files you know are copies, choose the one to keep, then move the rest to trash.</p>
+      <div class="row" style="margin-top:12px"><input type="search" id="manual-query" placeholder="Search artist, album, title, or path">
+      <button class="action ghost" id="manual-search">Search</button></div>
+      <div id="manual-results" class="hint"></div><div id="manual-picked"></div>
+      <button class="action danger" id="manual-apply" style="display:none">Trash selected copies</button>
+    </div>`;
     let data = [];
+    const selected = new Map();
+    let manualKeepId = null;
+    const renderManual = () => {
+      const picked = [...selected.values()];
+      if (!picked.some(m => m.id === manualKeepId)) manualKeepId = picked[0]?.id || null;
+      $("#manual-picked").innerHTML = picked.length ? `<table><thead><tr><th>keep</th><th>track</th><th>path</th><th></th></tr></thead><tbody>${
+        picked.map(m => `<tr><td><input type="radio" name="manual-keep" value="${m.id}" ${m.id === manualKeepId ? "checked" : ""}></td>
+          <td>${esc([m.artist, m.album, m.title].filter(Boolean).join(" — ") || "Unknown track")}</td>
+          <td class="path">${esc(m.path)}</td><td><button class="action ghost" data-remove="${m.id}">Remove</button></td></tr>`).join("")
+      }</tbody></table>` : "";
+      $("#manual-apply").style.display = picked.length >= 2 ? "" : "none";
+      el.querySelectorAll("[data-remove]").forEach(button => button.onclick = () => {
+        selected.delete(Number(button.dataset.remove)); renderManual();
+      });
+      el.querySelectorAll('input[name="manual-keep"]').forEach(radio => {
+        radio.onchange = () => { manualKeepId = Number(radio.value); };
+      });
+    };
     $("#btn-find").onclick = async () => {
-      data = await api("/api/dupes");
+      data = await post("/api/dupes/find", { fingerprint: $("#opt-fingerprint").checked });
       if (!data.length) { $("#dupe-list").innerHTML = `<div class="empty">No duplicates found.</div>`; return; }
       $("#btn-apply").style.display = "";
       $("#dupe-list").innerHTML = data.map(g => {
@@ -189,6 +218,31 @@ const views = {
       toast(`Trashed ${res.trashed}, reclaimed ${fmtBytes(res.reclaimed_bytes)}`);
       $("#btn-find").click();
       loadStats();
+    };
+    $("#manual-search").onclick = async () => {
+      const results = await post("/api/tracks/search", { query: $("#manual-query").value });
+      $("#manual-results").innerHTML = results.length ? `<table><thead><tr><th>track</th><th>genre</th><th>path</th><th></th></tr></thead><tbody>${
+        results.map(m => `<tr><td>${esc([m.artist, m.album, m.title].filter(Boolean).join(" — ") || "Unknown track")}</td>
+          <td>${esc(m.genre || "—")}</td><td class="path">${esc(m.path)}</td>
+          <td><button class="action ghost" data-add="${m.id}">Add</button></td></tr>`).join("")
+      }</tbody></table>` : `<div class="empty">No tracks matched.</div>`;
+      results.forEach(m => {
+        const button = el.querySelector(`[data-add="${m.id}"]`);
+        if (button) button.onclick = () => { selected.set(m.id, m); renderManual(); };
+      });
+    };
+    $("#manual-query").onkeydown = event => {
+      if (event.key === "Enter") { event.preventDefault(); $("#manual-search").click(); }
+    };
+    $("#manual-apply").onclick = async () => {
+      const picked = [...selected.values()];
+      const keep = Number(el.querySelector('input[name="manual-keep"]:checked')?.value);
+      if (!keep || !confirm(`Move ${picked.length - 1} manually selected duplicate files to trash?`)) return;
+      const res = await post("/api/dupes/manual", {
+        track_ids: picked.map(m => m.id), keep_id: keep, hard_delete: false,
+      });
+      toast(`Trashed ${res.trashed}, reclaimed ${fmtBytes(res.reclaimed_bytes)}`);
+      selected.clear(); manualKeepId = null; $("#manual-results").innerHTML = ""; renderManual(); loadStats();
     };
   },
 
@@ -229,7 +283,7 @@ const views = {
       if (!res.to_move && !res.skipped) { $("#ren-out").innerHTML = `<div class="empty">Everything is already organized.</div>`; return; }
       $("#ren-out").innerHTML = `<table><thead><tr><th>from</th><th>to</th></tr></thead><tbody>` +
         res.moves.map(m => `<tr><td class="path">${esc(m.source)}</td><td class="path" style="color:var(--green)">${esc(m.target)}</td></tr>`).join("") +
-        `</tbody></table><p class="hint">${res.to_move} to move · ${res.already_ok} already organized · ${res.skipped} skipped (missing tags)</p>`;
+        `</tbody></table><p class="hint">${res.to_move} to move · ${res.already_ok} already organized · ${res.skipped} skipped (missing tags). Files placed directly in the library root move to Singles/Genre.</p>`;
     };
     $("#btn-apply").onclick = async () => {
       if (!confirm("Move and rename files into the organized structure?")) return;
@@ -358,6 +412,7 @@ const views = {
       <div class="card" style="margin-top:14px"><h3>Organize</h3>
         ${field("organize", "template", "Filename template")}
         ${field("organize", "template_multidisc", "Multi-disc template")}
+        ${field("organize", "singles_folder", "Root-level singles folder")}
         ${field("organize", "cleanup_empty_dirs", "Remove empty folders after moving")}
       </div>
       <div class="card" style="margin-top:14px"><h3>Bad files &amp; duplicates</h3>

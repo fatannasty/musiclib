@@ -108,6 +108,9 @@ def extract_tags(path: str) -> Dict:
     title = _first_tag(easy, ("title",)) or _first_tag(
         raw, ("title", "TITLE", "TIT2", "\xa9nam", "TrackTitle", "Name")
     )
+    genre = _first_tag(easy, ("genre",)) or _first_tag(
+        raw, ("genre", "GENRE", "TCON", "\xa9gen", "WM/Genre")
+    )
     track_no, track_total = _parse_pair(
         _first_tag(easy, ("tracknumber",))
         or _first_tag(
@@ -151,6 +154,7 @@ def extract_tags(path: str) -> Dict:
         "album_artist": album_artist or artist,
         "album": album,
         "title": title,
+        "genre": genre,
         "track_no": _to_int(track_no) if not isinstance(track_no, int) else track_no,
         "track_total": _to_int(track_total) if not isinstance(track_total, int) else track_total,
         "disc_no": disc_no,
@@ -307,6 +311,7 @@ class Scanner:
         track.album_artist = result["album_artist"]
         track.album = result["album"]
         track.title = result["title"]
+        track.genre = result["genre"]
         track.track_no = result["track_no"]
         track.track_total = result["track_total"]
         track.disc_no = result["disc_no"]

@@ -50,6 +50,9 @@ Safety model: every destructive command is a dry-run until you pass `--apply`, a
 deletions move files to `<library>/.musiclib/trash/YYYY-MM/` (use `--hard-delete` to
 bypass). Every removal is recorded in the database (`deletions` table).
 
+Files placed directly in the library root are organized into
+`Singles/<Genre>/Artist - Title.ext`; files without a genre use `Unknown Genre`.
+
 ## Duplicate detection
 
 Three passes, merged with union-find:

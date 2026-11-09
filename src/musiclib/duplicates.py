@@ -223,6 +223,54 @@ class DuplicateFinder:
                 [(group.group_id, m.track.id) for m in group.members],
             )
 
+    def persisted_groups(self) -> List[DupeGroup]:
+        tracks = {track.id: track for track in self.db.all_tracks() if track.id is not None}
+        rows = self.db.query(
+            "SELECT g.id AS group_id, g.keep_id, m.track_id FROM dupe_groups g "
+            "JOIN dupe_members m ON m.group_id=g.id WHERE g.resolved=0 "
+            "ORDER BY g.id"
+        )
+        groups: Dict[int, DupeGroup] = {}
+        for row in rows:
+            track = tracks.get(row["track_id"])
+            if track is None or track.status not in ("ok", "suspect"):
+                continue
+            group = groups.setdefault(
+                row["group_id"], DupeGroup(key=f"persisted:{row['group_id']}", group_id=row["group_id"])
+            )
+            member = DupeMember(track, track.quality_score)
+            group.members.append(member)
+            if track.id == row["keep_id"]:
+                member.action = "keep"
+                group.keep = member
+        result = []
+        for group in groups.values():
+            if len(group.members) < 2:
+                continue
+            if group.keep is None:
+                group.keep = pick_keep(group.members)
+                group.keep.action = "keep"
+            result.append(group)
+        return result
+
+    def manual_group(self, track_ids: List[int], keep_id: int) -> DupeGroup:
+        selected = set(track_ids)
+        if len(selected) < 2:
+            raise ValueError("select at least two tracks")
+        tracks = {
+            track.id: track
+            for track in self.db.all_tracks()
+            if track.id in selected and track.status in ("ok", "suspect")
+        }
+        if len(tracks) != len(selected):
+            raise ValueError("one or more selected tracks are unavailable")
+        if keep_id not in tracks:
+            raise ValueError("choose one of the selected tracks to keep")
+        members = [DupeMember(track, score_track(track)) for track in tracks.values()]
+        keep = next(member for member in members if member.track.id == keep_id)
+        keep.action = "keep"
+        return DupeGroup(key=f"manual:{keep_id}", members=members, keep=keep)
+
     def apply(
         self,
         groups: List[DupeGroup],

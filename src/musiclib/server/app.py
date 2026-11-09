@@ -79,9 +79,20 @@ class KeepOverride(BaseModel):
     keep_ids: Dict[int, int] = {}
 
 
+class ManualDupeBody(BaseModel):
+    track_ids: List[int]
+    keep_id: int
+    hard_delete: bool = False
+
+
 class SearchBody(BaseModel):
     query: str
     limit: int = 25
+
+
+class TrackSearchBody(BaseModel):
+    query: str = ""
+    limit: int = 100
 
 
 class SabAddBody(BaseModel):
@@ -112,8 +123,8 @@ def _coerce(value: Any, current: Any) -> Any:
     if isinstance(current, int):
         try:
             return int(value)
-        except (TypeError, ValueError):
-            raise HTTPException(400, f"expected a number, got {value!r}")
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, f"expected a number, got {value!r}") from exc
     return "" if value is None else str(value).strip()
 
 
@@ -130,6 +141,10 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/")
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
+
+    @app.get("/favicon.svg")
+    def favicon() -> FileResponse:
+        return FileResponse(STATIC_DIR / "musiclib.svg", media_type="image/svg+xml")
 
     @app.get("/api/stats")
     def stats() -> Dict[str, Any]:
@@ -170,25 +185,40 @@ def create_app(config: Config) -> FastAPI:
         rows = db.issues_all()
         return [dict(row) for row in rows[:500]]
 
+    def serialize_dupe_groups(groups) -> List[Dict[str, Any]]:
+        return [
+            {
+                "group_id": group.group_id,
+                "keep_id": group.keep.track.id if group.keep else None,
+                "members": [
+                    {
+                        "id": member.track.id, "path": member.track.path,
+                        "artist": member.track.artist, "album": member.track.album,
+                        "title": member.track.title, "format": member.track.format,
+                        "bitrate": member.track.bitrate, "bit_depth": member.track.bit_depth,
+                        "quality_score": member.score,
+                    }
+                    for member in group.members
+                ],
+            }
+            for group in groups
+        ]
+
+    @app.post("/api/dupes/find")
+    def dupes_find(body: ApplyBody) -> List[Dict[str, Any]]:
+        groups = DuplicateFinder(config, db).find(
+            strategy=body.strategy, fingerprint_pass=body.fingerprint
+        )
+        return serialize_dupe_groups(groups)
+
     @app.get("/api/dupes")
     def dupes_list() -> List[Dict[str, Any]]:
-        rows = db.query(
-            "SELECT g.id AS group_id, g.keep_id, t.* FROM dupe_groups g "
-            "JOIN dupe_members m ON m.group_id = g.id "
-            "JOIN tracks t ON t.id = m.track_id WHERE g.resolved = 0 "
-            "ORDER BY g.id, t.quality_score DESC"
-        )
-        groups: Dict[int, Dict[str, Any]] = {}
-        for row in rows:
-            gid = row["group_id"]
-            group = groups.setdefault(gid, {"group_id": gid, "keep_id": row["keep_id"], "members": []})
-            group["members"].append(dict(row))
-        return list(groups.values())
+        return serialize_dupe_groups(DuplicateFinder(config, db).persisted_groups())
 
     @app.post("/api/dupes/apply")
     def dupes_apply(body: KeepOverride) -> Dict[str, Any]:
         finder = DuplicateFinder(config, db)
-        groups = finder.find()
+        groups = finder.persisted_groups()
         if not groups:
             return {"trashed": 0, "deleted": 0, "reclaimed_bytes": 0, "groups": 0}
         report = finder.apply(groups, hard_delete=body.hard_delete, keep_ids=body.keep_ids)
@@ -196,6 +226,38 @@ def create_app(config: Config) -> FastAPI:
             "trashed": report.trashed, "deleted": report.deleted,
             "reclaimed_bytes": report.reclaimed_bytes, "groups": len(groups),
         }
+
+    @app.post("/api/dupes/manual")
+    def dupes_manual(body: ManualDupeBody) -> Dict[str, Any]:
+        finder = DuplicateFinder(config, db)
+        try:
+            group = finder.manual_group(body.track_ids, body.keep_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        report = finder.apply([group], hard_delete=body.hard_delete)
+        return {
+            "trashed": report.trashed, "deleted": report.deleted,
+            "reclaimed_bytes": report.reclaimed_bytes,
+        }
+
+    @app.post("/api/tracks/search")
+    def tracks_search(body: TrackSearchBody) -> List[Dict[str, Any]]:
+        query = body.query.strip()
+        limit = max(1, min(body.limit, 200))
+        params: List[Any] = []
+        where = "status IN ('ok', 'suspect')"
+        if query:
+            pattern = f"%{query}%"
+            where += " AND (path LIKE ? COLLATE NOCASE OR artist LIKE ? COLLATE NOCASE " \
+                "OR album LIKE ? COLLATE NOCASE OR title LIKE ? COLLATE NOCASE)"
+            params.extend([pattern] * 4)
+        params.append(limit)
+        rows = db.query(
+            "SELECT id, path, artist, album, title, genre, format, bitrate FROM tracks "
+            f"WHERE {where} ORDER BY artist, album, title, path LIMIT ?",
+            params,
+        )
+        return [dict(row) for row in rows]
 
     @app.post("/api/rename")
     def rename_run(body: ApplyBody) -> Dict[str, Any]:
