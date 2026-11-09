@@ -1,5 +1,6 @@
 import os
 
+import pytest
 from conftest import ALBUM_A, make_flac
 
 from musiclib.duplicates import DuplicateFinder, normalize, score_track
@@ -120,3 +121,37 @@ def test_manual_group_trashes_selected_tracks(lib_env, mini_library):
     assert report.trashed == 1
     assert os.path.exists(mp3.path)
     assert not os.path.exists(flac.path)
+
+
+def test_invalid_keeper_never_deletes_anything(mini_library):
+    env = mini_library
+    Scanner(env.config, env.db).scan()
+    finder = DuplicateFinder(env.config, env.db)
+    groups = finder.find()
+    paths = [member.track.path for member in groups[0].members]
+    with pytest.raises(ValueError, match="keeper"):
+        finder.apply(groups, keep_ids={groups[0].group_id: -1})
+    assert all(os.path.exists(path) for path in paths)
+
+
+def test_fingerprint_comparison_crosses_old_bucket_boundaries(lib_env):
+    fp = ",".join(["123456"] * 16)
+    for index, duration in enumerate((177.9, 178.1)):
+        lib_env.db.upsert_track(Track(
+            path=f"/lib/{index}.flac", duration=duration,
+            title=f"Title {index}", album=f"Album {index}", fingerprint=fp,
+        ))
+    groups = DuplicateFinder(lib_env.config, lib_env.db).find(fingerprint_pass=True)
+    assert len(groups) == 1
+
+
+def test_fingerprint_comparison_does_not_skip_large_duration_buckets(lib_env):
+    fp = ",".join(["123456"] * 16)
+    for index in range(61):
+        lib_env.db.upsert_track(Track(
+            path=f"/lib/{index}.flac", duration=180,
+            title=f"Title {index}", album=f"Album {index}", fingerprint=fp,
+        ))
+    groups = DuplicateFinder(lib_env.config, lib_env.db).find(fingerprint_pass=True)
+    assert len(groups) == 1
+    assert len(groups[0].members) == 61

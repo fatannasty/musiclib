@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import musicbrainzngs
 
@@ -90,11 +90,16 @@ class Brainz:
                 )
         return tracks
 
-    def refresh_albums(self, force: bool = False) -> List[AlbumGap]:
+    def refresh_albums(
+        self, force: bool = False,
+        progress: Optional[Callable[[int, int, str], None]] = None,
+    ) -> List[AlbumGap]:
         albums = self.db.albums_all()
         gaps: List[AlbumGap] = []
-        for album in albums:
+        for index, album in enumerate(albums, start=1):
             if album.mbid_verified and not force and album.missing_tracks is not None:
+                if progress:
+                    progress(index, len(albums), f"{album.album_artist} — {album.album}")
                 continue
             resolved = None
             if not album.mbid_release or not album.mbid_verified or force:
@@ -107,10 +112,14 @@ class Brainz:
                     album.mbid_verified = True
                     album.mbid_release = None
                     self.db.upsert_album(album)
+                    if progress:
+                        progress(index, len(albums), f"{album.album_artist} — {album.album}")
                     continue
             expected = self.tracklist(album.mbid_release)
             if not expected:
                 self.db.upsert_album(album)
+                if progress:
+                    progress(index, len(albums), f"{album.album_artist} — {album.album}")
                 continue
             album.expected_tracks = len(expected)
             missing, extra = self._compare(album, expected)
@@ -122,6 +131,8 @@ class Brainz:
             )
             self.db.upsert_album(album)
             gaps.append(AlbumGap(album=album, expected=expected, missing=missing, extra=extra))
+            if progress:
+                progress(index, len(albums), f"{album.album_artist} — {album.album}")
         return gaps
 
     def _compare(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import string
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .config import Config
 from .db import Database
@@ -123,7 +123,8 @@ class DuplicateFinder:
         self.tolerance = float(config.duplicates.get("duration_tolerance", 5))
 
     def find(
-        self, strategy: Optional[str] = None, fingerprint_pass: Optional[bool] = None
+        self, strategy: Optional[str] = None, fingerprint_pass: Optional[bool] = None,
+        progress_state: Optional[Callable[[str, int, int, str], None]] = None,
     ) -> List[DupeGroup]:
         strategy = (strategy or self.config.duplicates.get("strategy", "tags")).lower()
         tracks = [t for t in self.db.all_tracks() if t.status in ("ok", "suspect")]
@@ -137,11 +138,15 @@ class DuplicateFinder:
             union.add(track.id)
 
         by_hash: Dict[str, List[Track]] = {}
-        for track in tracks:
+        if progress_state:
+            progress_state("Comparing exact file hashes", 0, len(tracks), "")
+        for index, track in enumerate(tracks, start=1):
             if track.file_hash:
                 by_hash.setdefault(track.file_hash, []).append(track)
                 if len(by_hash[track.file_hash]) > 1:
                     union.union(by_hash[track.file_hash][0].id, track.id)
+            if progress_state:
+                progress_state("Comparing exact file hashes", index, len(tracks), track.path)
 
         by_tags: Dict[Tuple[str, str, str], List[Track]] = {}
         for track in tracks:
@@ -177,17 +182,21 @@ class DuplicateFinder:
         if fingerprint_pass:
             from .fingerprint import similarity
 
-            buckets: Dict[int, List[Track]] = {}
-            for track in tracks:
-                if track.fingerprint and track.duration:
-                    buckets.setdefault(round(track.duration / 4), []).append(track)
-            for bucket in buckets.values():
-                if len(bucket) > 60:
-                    continue
-                for i, a in enumerate(bucket):
-                    for b in bucket[i + 1:]:
-                        if similarity(a.fingerprint, b.fingerprint) >= 0.85:
-                            union.union(a.id, b.id)
+            candidates = sorted(
+                (t for t in tracks if t.fingerprint and t.duration is not None),
+                key=lambda t: t.duration,
+            )
+            if progress_state:
+                progress_state("Comparing audio fingerprints", 0, len(candidates), "")
+            for i, a in enumerate(candidates):
+                for j in range(i + 1, len(candidates)):
+                    b = candidates[j]
+                    if b.duration - a.duration > self.tolerance:
+                        break
+                    if similarity(a.fingerprint, b.fingerprint) >= 0.85:
+                        union.union(a.id, b.id)
+                if progress_state:
+                    progress_state("Comparing audio fingerprints", i + 1, len(candidates), a.path)
 
         return self._build_groups(union, tracks)
 
@@ -278,6 +287,11 @@ class DuplicateFinder:
         keep_ids: Optional[Dict[int, int]] = None,
     ) -> DupeReport:
         keep_ids = keep_ids or {}
+        available = {group.group_id: group for group in groups}
+        for group_id, keep_id in keep_ids.items():
+            group = available.get(group_id)
+            if group is None or keep_id not in {m.track.id for m in group.members}:
+                raise ValueError("keeper must belong to an unresolved duplicate group")
         report = DupeReport(groups=groups)
         for group in groups:
             keep_id = keep_ids.get(group.group_id) if group.group_id else None

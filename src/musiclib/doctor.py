@@ -58,6 +58,7 @@ class Doctor:
         apply_actions: bool = False,
         hard_delete: bool = False,
         progress: Optional[Callable[[int, str], None]] = None,
+        progress_state: Optional[Callable[[str, int, int, str], None]] = None,
     ) -> DoctorReport:
         if deep is None:
             deep = bool(self.config.doctor.get("deep_decode", True))
@@ -68,11 +69,16 @@ class Doctor:
         report.checked = len(tracks)
         deep_targets: List[Track] = []
 
-        for track in tracks:
+        if progress_state:
+            progress_state("Checking metadata", 0, len(tracks), "")
+        for index, track in enumerate(tracks, start=1):
             issues: List[Issue] = [
                 i for i in track.issues
-                if i.kind not in ("decode_error", "short_file", "low_bitrate")
+                if i.kind not in ("short_file", "low_bitrate", "missing_file")
+                and not (i.kind == "decode_error" and deep and self.ffmpeg)
             ]
+            if not os.path.isfile(track.path):
+                issues.append(Issue("missing_file", "File is missing on disk", "bad"))
             if track.duration is not None and track.duration < min_duration:
                 issues.append(
                     Issue(
@@ -94,27 +100,18 @@ class Doctor:
                     )
                 )
             structural_bad = [i for i in issues if i.severity == "bad"]
-            if issues:
-                track.issues = issues
-                track.status = "bad" if structural_bad else "suspect"
-                self.db.upsert_track(track)
-                severity = "bad" if structural_bad else "warn"
-                report.results.append(
-                    {
-                        "path": track.path,
-                        "severity": severity,
-                        "issues": [i.kind for i in issues],
-                    }
-                )
-                if structural_bad:
-                    report.bad += 1
-                else:
-                    report.suspect += 1
+            track.issues = issues
+            track.status = "bad" if structural_bad else ("suspect" if issues else "ok")
+            self.db.upsert_track(track)
             if track.status != "bad":
                 deep_targets.append(track)
+            if progress_state:
+                progress_state("Checking metadata", index, len(tracks), track.path)
 
         if deep and self.ffmpeg and deep_targets:
             done = 0
+            if progress_state:
+                progress_state("Decoding audio", 0, len(deep_targets), "")
             with ProcessPoolExecutor(max_workers=self.workers) as pool:
                 futures = {pool.submit(decode_check_ffmpeg, t.path): t for t in deep_targets}
                 for future in as_completed(futures):
@@ -127,16 +124,14 @@ class Doctor:
                         track.issues.append(Issue("decode_error", result["error"], "bad"))
                         track.status = "bad"
                         self.db.upsert_track(track)
-                        report.bad += 1
-                        report.results.append(
-                            {"path": track.path, "severity": "bad", "issues": ["decode_error"]}
-                        )
                     elif track.status == "suspect":
                         self.db.upsert_track(track)
                     else:
                         track.issues = []
                         track.status = "ok"
                         self.db.upsert_track(track)
+                    if progress_state:
+                        progress_state("Decoding audio", done, len(deep_targets), track.path)
         elif deep and not self.ffmpeg:
             report.results.append(
                 {
@@ -146,8 +141,24 @@ class Doctor:
                 }
             )
 
+        for track in tracks:
+            if track.status == "bad":
+                report.bad += 1
+            elif track.status == "suspect":
+                report.suspect += 1
+            if track.issues:
+                report.results.append({
+                    "path": track.path,
+                    "severity": "bad" if track.status == "bad" else "warn",
+                    "issues": [issue.kind for issue in track.issues],
+                    "details": [issue.detail for issue in track.issues],
+                })
+
         if apply_actions:
-            for track in self.db.all_tracks(status="bad"):
+            bad_tracks = self.db.all_tracks(status="bad")
+            if progress_state:
+                progress_state("Moving bad files to trash", 0, len(bad_tracks), "")
+            for index, track in enumerate(bad_tracks, start=1):
                 try:
                     if hard_delete:
                         delete_file(track.path)
@@ -164,4 +175,6 @@ class Doctor:
                     self.db.update_track_columns(track.id, status="deleted")
                 except FileNotFoundError:
                     self.db.update_track_columns(track.id, status="deleted")
+                if progress_state:
+                    progress_state("Moving bad files to trash", index, len(bad_tracks), track.path)
         return report

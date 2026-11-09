@@ -52,6 +52,13 @@ bypass). Every removal is recorded in the database (`deletions` table).
 
 Files placed directly in the library root are organized into
 `Singles/<Genre>/Artist - Title.ext`; files without a genre use `Unknown Genre`.
+Set `organize.root_singles = false` in the config to disable this rule.
+
+The dashboard keeps a persistent Activity panel with exact phase and file counts,
+elapsed time, job history, and paginated results. Only one library-changing job
+runs at a time. Interrupted jobs are marked for review on restart. The Library tab
+supports catalog search and filters; Recovery lists trashed files and restores
+them only when the original path is still free.
 
 ## Duplicate detection
 

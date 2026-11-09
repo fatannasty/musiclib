@@ -27,6 +27,7 @@ trash_dir = "{trash_dir}"
 template = "{{albumartist}}/{{album}} ({{year}})/{{track:02d}} - {{title}}.{{ext}}"
 template_multidisc = "{{albumartist}}/{{album}} ({{year}})/CD{{disc}}/{{track:02d}} - {{title}}.{{ext}}"
 singles_folder = "Singles"
+root_singles = true
 cleanup_empty_dirs = true
 
 [doctor]
@@ -108,6 +109,7 @@ def _default_config(library: str) -> Dict[str, Any]:
                 "{albumartist}/{album} ({year})/CD{disc}/{track:02d} - {title}.{ext}"
             ),
             "singles_folder": "Singles",
+            "root_singles": True,
             "cleanup_empty_dirs": True,
         },
         "doctor": {"min_bitrate": 128, "min_duration": 10, "deep_decode": True},
