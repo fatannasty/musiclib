@@ -53,6 +53,9 @@ td.path { font-family: var(--mono); font-size: 11.5px; color: var(--dim); word-b
 .empty { color: var(--dim); padding: 30px; text-align: center; }
 #toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel2); border: 1px solid var(--border); padding: 12px 18px; border-radius: 10px; display: none; max-width: 420px; z-index: 99; }
 #toast.err { border-color: var(--red); }
+#job-bar { position: fixed; top: 0; left: 0; right: 0; height: 4px; background: transparent; z-index: 100; }
+#job-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); width: 0%; transition: width 0.3s ease; }
+#job-status { position: fixed; top: 8px; left: 24px; font-size: 12px; color: var(--dim); z-index: 100; display: none; }
 .group { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px; overflow: hidden; }
 .group .head { background: var(--panel2); padding: 8px 12px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
 .group table { border: none; border-radius: 0; }
@@ -71,6 +74,8 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 <nav id="nav"></nav>
 <main id="main"></main>
 <div id="toast"></div>
+<div id="job-bar"><div id="job-bar-fill"></div></div>
+<div id="job-status"></div>
 <script>
 const TABS = [
   ["overview", "Overview"], ["dupes", "Duplicates"], ["doctor", "Bad Files"],
@@ -109,10 +114,30 @@ async function post(path, body) {
 }
 async function pollJob(id, label) {
   toast(`${label}: running...`);
+  $("#job-bar-fill").style.width = "10%";
+  $("#job-status").style.display = "block";
+  let lastUpdate = Date.now();
   while (true) {
     const job = await api(`/api/jobs/${id}`);
-    if (job.status === "done") { toast(`${label}: done`); return job.result; }
-    if (job.status === "error") { toast(`${label}: ${job.result.error}`, true); return null; }
+    const pct = Math.min((job.log?.length || 0) * 2, 95);
+    $("#job-bar-fill").style.width = pct + "%";
+    const now = Date.now();
+    if (now - lastUpdate > 500) {
+      $("#job-status").textContent = `${label}: ${job.log?.length || 0} files processed`;
+      lastUpdate = now;
+    }
+    if (job.status === "done") { 
+      toast(`${label}: done`); 
+      $("#job-bar-fill").style.width = "100%"; 
+      setTimeout(() => { $("#job-bar-fill").style.width = "0%"; $("#job-status").style.display = "none"; }, 800); 
+      return job.result; 
+    }
+    if (job.status === "error") { 
+      toast(`${label}: ${job.result.error}`, true); 
+      $("#job-bar-fill").style.width = "0%"; 
+      $("#job-status").style.display = "none"; 
+      return null; 
+    }
     await new Promise(r => setTimeout(r, 1500));
   }
 }
