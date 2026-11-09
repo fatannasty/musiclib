@@ -25,6 +25,10 @@ def test_doctor_flags_low_bitrate_and_short_files(lib_env):
     report = doctor.check(deep=False)
     assert report.bad == 0
     assert report.suspect == 2
+    assert {row["path"] for row in report.results} == {
+        str(env.library / "a" / "low.mp3"),
+        str(env.library / "a" / "short.mp3"),
+    }
     by_title = {t.title: t for t in env.db.all_tracks()}
     assert by_title["Low"].status == "suspect"
     assert any(i.kind == "low_bitrate" for i in by_title["Low"].issues)

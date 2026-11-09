@@ -99,6 +99,17 @@ class Renamer:
         result = os.path.join(self.library, *parts)
         return result
 
+    def singles_target_path(self, track: Track) -> str:
+        genre = sanitize_component(track.genre or "Unknown Genre")
+        folder = sanitize_component(self.config.organize.get("singles_folder", "Singles"))
+        artist = sanitize_component(track.artist or track.album_artist or "Unknown Artist")
+        title = sanitize_component(track.title or Path(track.path).stem)
+        ext = Path(track.path).suffix
+        return os.path.join(self.library, folder, genre, f"{artist} - {title}{ext}")
+
+    def _is_library_root_track(self, source: str) -> bool:
+        return Path(source).parent == Path(self.library)
+
     def plan(self, tracks: Optional[List[Track]] = None) -> RenameReport:
         tracks = tracks or self.db.all_tracks()
         tracks = [t for t in tracks if t.status in ("ok", "suspect")]
@@ -109,12 +120,15 @@ class Renamer:
                 report.skipped.append((track.path, "file missing on disk"))
                 self.db.update_track_columns(track.id, status="deleted")
                 continue
-            if not track.title or not track.album:
+            if self._is_library_root_track(source):
+                target = str(Path(self.singles_target_path(track)).resolve())
+            elif not track.title or not track.album:
                 report.skipped.append(
                     (track.path, "missing album/title tags; run musiclib art or fix tags")
                 )
                 continue
-            target = str(Path(self.target_path(track)).resolve())
+            else:
+                target = str(Path(self.target_path(track)).resolve())
             if self._same_file(source, target):
                 if source != track.path:
                     self._repath(track.id, source)

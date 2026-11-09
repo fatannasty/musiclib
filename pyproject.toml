@@ -28,7 +28,7 @@ musiclib = "musiclib.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"musiclib.server" = ["static/*.html"]
+"musiclib.server" = ["static/*.html", "static/*.svg"]
 
 [tool.ruff]
 line-length = 100

@@ -106,3 +106,17 @@ def test_apply_respects_keep_override(lib_env, mini_library):
         "SELECT path FROM tracks WHERE id=?", (groups[0].keep.track.id,)
     )
     assert not os.path.exists(keep_row["path"])
+
+
+def test_manual_group_trashes_selected_tracks(lib_env, mini_library):
+    env = mini_library
+    Scanner(env.config, env.db).scan()
+    tracks = env.db.all_tracks()
+    flac = next(track for track in tracks if track.path.endswith("First Song.flac"))
+    mp3 = next(track for track in tracks if track.path.endswith("First Song.mp3"))
+    finder = DuplicateFinder(env.config, env.db)
+    group = finder.manual_group([flac.id, mp3.id], keep_id=mp3.id)
+    report = finder.apply([group])
+    assert report.trashed == 1
+    assert os.path.exists(mp3.path)
+    assert not os.path.exists(flac.path)

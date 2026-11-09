@@ -70,7 +70,8 @@ class Doctor:
 
         for track in tracks:
             issues: List[Issue] = [
-                i for i in track.issues if i.severity == "bad" and i.kind != "decode_error"
+                i for i in track.issues
+                if i.kind not in ("decode_error", "short_file", "low_bitrate")
             ]
             if track.duration is not None and track.duration < min_duration:
                 issues.append(
@@ -97,15 +98,16 @@ class Doctor:
                 track.issues = issues
                 track.status = "bad" if structural_bad else "suspect"
                 self.db.upsert_track(track)
+                severity = "bad" if structural_bad else "warn"
+                report.results.append(
+                    {
+                        "path": track.path,
+                        "severity": severity,
+                        "issues": [i.kind for i in issues],
+                    }
+                )
                 if structural_bad:
                     report.bad += 1
-                    report.results.append(
-                        {
-                            "path": track.path,
-                            "severity": "bad",
-                            "issues": [i.kind for i in issues],
-                        }
-                    )
                 else:
                     report.suspect += 1
             if track.status != "bad":

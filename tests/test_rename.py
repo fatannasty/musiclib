@@ -115,6 +115,19 @@ def test_rename_skips_untagged(lib_env):
     assert report.skipped and "tags" in report.skipped[0][1]
 
 
+def test_rename_moves_root_tracks_to_singles_by_genre(lib_env):
+    env = lib_env
+    make_flac(
+        env.library / "loose.flac",
+        tags={"ARTIST": "Solo Artist", "TITLE": "Loose Song", "GENRE": "Jazz"},
+    )
+    Scanner(env.config, env.db).scan()
+    report = Renamer(env.config, env.db).apply(Renamer(env.config, env.db).plan())
+    target = env.library / "Singles" / "Jazz" / "Solo Artist - Loose Song.flac"
+    assert report.moved == 1
+    assert target.exists()
+
+
 def test_rename_onto_path_of_trashed_duplicate(lib_env):
     env = lib_env
     make_flac(
