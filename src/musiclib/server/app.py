@@ -74,6 +74,10 @@ class ApplyBody(BaseModel):
     fingerprint: bool = False
 
 
+class ScanBody(BaseModel):
+    rescan: bool = False
+
+
 class KeepOverride(BaseModel):
     hard_delete: bool = False
     keep_ids: Dict[int, int] = {}
@@ -151,11 +155,12 @@ def create_app(config: Config) -> FastAPI:
         return db.stats()
 
     @app.post("/api/scan")
-    def scan() -> Dict[str, str]:
+    def scan(body: ScanBody) -> Dict[str, str]:
         scanner = Scanner(config, db)
 
         def run(job: Dict[str, Any]) -> Dict[str, Any]:
             report = scanner.scan(
+                rescan=body.rescan,
                 progress=lambda done, current: jobs.log(
                     job["id"], f"{done} {Path(current).name}"
                 )

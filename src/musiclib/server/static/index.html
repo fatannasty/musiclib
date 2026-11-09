@@ -134,6 +134,7 @@ const views = {
     el.innerHTML = `
       <div class="row">
         <button class="action" id="btn-scan">Scan library</button>
+        <label class="check"><input type="checkbox" id="opt-rescan"> re-read all file metadata</label>
         <button class="action ghost" id="btn-refresh">Refresh stats</button>
       </div>
       <div class="card"><h3>Recommended workflow</h3>
@@ -141,7 +142,7 @@ const views = {
         Destructive actions ask for confirmation and default to trash (recoverable).</p></div>
       <div id="overview-lists"></div>`;
     $("#btn-scan").onclick = async () => {
-      const { job_id } = await post("/api/scan");
+      const { job_id } = await post("/api/scan", { rescan: $("#opt-rescan").checked });
       await pollJob(job_id, "Scan");
       await render();
     };
