@@ -66,6 +66,9 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .activity .path { overflow-wrap: anywhere; color: var(--dim); }
 .table-scroll { overflow-x: auto; margin-bottom: 12px; }
 .pager { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
+.metadata-candidate { border: 1px solid var(--border); padding: 14px; margin: 10px 0; border-radius: 10px; background: var(--panel); }
+.metadata-field { display: grid; grid-template-columns: minmax(100px, .7fr) 1fr 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.metadata-field:last-child { border-bottom: 0; }
 @media (max-width: 600px) {
   main { padding: 12px; }
   input[type=text], input[type=search] { min-width: 0; max-width: 100%; }
@@ -393,7 +396,8 @@ const views = {
       <select id="library-format"><option value="">All formats</option></select>
       <select id="library-status"><option value="">Healthy and flagged</option><option value="suspect">Needs review</option><option value="bad">Bad files</option></select>
       <button class="action ghost" id="library-search">Search</button>
-    </div><p class="hint">Browse the catalog. Search and filters run against the index; scanning updates the metadata.</p><div id="library-table"></div>`;
+    </div><p class="hint">Browse the catalog, search MusicBrainz for suggestions, and review tag changes before writing them to files.</p>
+    <div id="metadata-review"></div><div id="library-table"></div>`;
     const [genreRows, formatRows] = await Promise.all([api("/api/genres"), api("/api/formats")]);
     $("#library-genre").insertAdjacentHTML("beforeend", genreRows.map(g => `<option>${esc(g)}</option>`).join(""));
     $("#library-format").insertAdjacentHTML("beforeend", formatRows.map(f => `<option>${esc(f)}</option>`).join(""));
@@ -403,10 +407,75 @@ const views = {
         format: $("#library-format").value, status: $("#library-status").value, limit: 50,
       };
       pagedTable($("#library-table"), offset => post("/api/tracks/page", {...filters, offset}),
-        ["Artist", "Album", "Title", "Genre", "Format", "Status", "Path"],
+        ["Artist", "Album", "Title", "Genre", "Format", "Status", "Path", "Metadata"],
         t => `<tr><td>${esc(t.artist)}</td><td>${esc(t.album)}</td><td>${esc(t.title)}</td>
           <td>${esc(t.genre || "—")}</td><td>${esc(t.format || "—")}</td><td>${esc(t.status)}</td>
-          <td class="path">${esc(t.path)}</td></tr>`);
+          <td class="path">${esc(t.path)}</td><td><button class="action ghost" data-lookup="${t.id}">Lookup</button></td></tr>`,
+        tracks => tracks.forEach(track => {
+          const button = el.querySelector(`[data-lookup="${track.id}"]`);
+          if (button) button.onclick = async () => {
+            button.disabled = true; button.textContent = "Looking up…";
+            try {
+              const review = await post("/api/metadata/lookup", {track_id: track.id});
+              renderMetadataReview(review);
+            } catch (e) { toast(e.message, true); button.textContent = "Lookup"; button.disabled = false; }
+          };
+        }));
+    };
+    const renderMetadataReview = review => {
+      const panel = $("#metadata-review");
+      if (!review.candidates.length) {
+        panel.innerHTML = `<div class="card"><h3>No MusicBrainz matches</h3><p>No suggestions were found. Existing file tags were not changed.</p></div>`;
+        return;
+      }
+      let candidateIndex = 0;
+      const renderCandidate = () => {
+        const candidate = review.candidates[candidateIndex];
+        const labels = {
+          title: "Title", artist: "Artist", album_artist: "Album artist", album: "Album",
+          year: "Year", track_no: "Track number", disc_no: "Disc number", genre: "Genre",
+          mbid_track: "Recording ID", mbid_release: "Release ID",
+        };
+        const fields = Object.keys(labels).filter(key => candidate.fields[key] != null);
+        panel.innerHTML = `<div class="card"><h3>Review metadata suggestions</h3>
+          <p>Source: MusicBrainz · confidence ${candidate.confidence}/100. Suggestions do not change your files until you select fields and apply.</p>
+          <p class="path">${esc(review.track.path)}</p>
+          <div class="row candidate-options">${review.candidates.map((item, index) =>
+            `<label class="check"><input type="radio" name="metadata-candidate" value="${index}" ${index === candidateIndex ? "checked" : ""}>
+              ${esc(item.fields.title)} — ${esc(item.fields.artist)} <span class="tag ${item.confidence >= 90 ? "ok" : "warn"}">${item.confidence}%</span></label>`
+          ).join("")}</div>
+          <div>${fields.map(key => {
+            const current = review.track[key] ?? "—";
+            const suggested = candidate.fields[key];
+            const differs = String(current).toLowerCase() !== String(suggested).toLowerCase();
+            return `<label class="metadata-field"><span><input type="checkbox" data-metadata-field="${key}"> ${labels[key]}</span>
+              <span>Current: ${esc(current)}</span><span>MusicBrainz: ${esc(suggested)}${differs ? " (change)" : ""}</span></label>`;
+          }).join("")}</div>
+          <p class="hint">No fields are selected by default. Choose each change to write, then confirm before applying.</p>
+          <button class="action" id="metadata-apply">Apply selected tags</button>
+          <button class="action ghost" id="metadata-cancel">Close</button></div>`;
+        panel.querySelectorAll('[name="metadata-candidate"]').forEach(radio => radio.onchange = () => {
+          candidateIndex = Number(radio.value); renderCandidate();
+        });
+        $("#metadata-cancel").onclick = () => { panel.innerHTML = ""; };
+        $("#metadata-apply").onclick = async () => {
+          const selectedFields = [...panel.querySelectorAll("[data-metadata-field]:checked")]
+            .map(input => input.dataset.metadataField);
+          if (!selectedFields.length) { toast("Select at least one field to apply.", true); return; }
+          if (!confirm(`Apply ${selectedFields.length} MusicBrainz tag(s) to this file?`)) return;
+          try {
+            $("#metadata-apply").disabled = true;
+            const result = await post("/api/metadata/apply", {
+              review_id: review.review_id, candidate_index: candidateIndex, fields: selectedFields,
+            });
+            toast(`Updated ${selectedFields.join(", ")}`);
+            panel.innerHTML = `<div class="card"><h3>Tags updated</h3><p>${esc(result.path)}</p></div>`;
+            await $("#library-search").click(); await loadStats();
+          } catch (e) { toast(e.message, true); $("#metadata-apply").disabled = false; }
+        };
+      };
+      renderCandidate();
+      panel.scrollIntoView({behavior: "smooth", block: "start"});
     };
     $("#library-query").onkeydown = event => {
       if (event.key === "Enter") { event.preventDefault(); $("#library-search").click(); }

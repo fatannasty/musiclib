@@ -16,6 +16,7 @@ from ..doctor import Doctor
 from ..duplicates import DuplicateFinder
 from ..fingerprint import compute_all, fpcalc_available
 from ..fsops import is_inside
+from ..metadata_review import EDITABLE_FIELDS, MetadataReview
 from ..rename import Renamer
 from ..scanner import Scanner
 from ..usenet import Sabnzbd, SabnzbdError, search_all
@@ -66,6 +67,16 @@ class TrackSearchBody(BaseModel):
 
 class RestoreBody(BaseModel):
     deletion_id: int
+
+
+class MetadataLookupBody(BaseModel):
+    track_id: int
+
+
+class MetadataApplyBody(BaseModel):
+    review_id: int
+    candidate_index: int
+    fields: List[str]
 
 
 class SabAddBody(BaseModel):
@@ -304,6 +315,32 @@ def create_app(config: Config) -> FastAPI:
             "ORDER BY format COLLATE NOCASE"
         )
         return [row["format"] for row in rows]
+
+    @app.get("/api/metadata/fields")
+    def metadata_fields() -> List[str]:
+        return list(EDITABLE_FIELDS)
+
+    @app.post("/api/metadata/lookup")
+    @jobs.operation
+    def metadata_lookup(body: MetadataLookupBody) -> Dict[str, Any]:
+        try:
+            return MetadataReview(config, db).propose(body.track_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+    @app.post("/api/metadata/apply")
+    @jobs.operation
+    def metadata_apply(body: MetadataApplyBody) -> Dict[str, Any]:
+        try:
+            return MetadataReview(config, db).apply(
+                body.review_id, body.candidate_index, body.fields
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(500, str(exc)) from exc
 
     @app.post("/api/tracks/page")
     def tracks_page(body: TrackSearchBody) -> Dict[str, Any]:
