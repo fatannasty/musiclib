@@ -60,6 +60,16 @@ label.check { color: var(--dim); font-size: 13px; display: flex; gap: 6px; align
 select { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 8px; }
 .hint { color: var(--dim); font-size: 12px; }
 .keep-flag { color: var(--green); font-weight: 600; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.activity { margin: 14px 24px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; }
+.activity progress { width: 100%; height: 14px; accent-color: var(--accent); }
+.activity .path { overflow-wrap: anywhere; color: var(--dim); }
+.table-scroll { overflow-x: auto; margin-bottom: 12px; }
+.pager { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
+@media (max-width: 600px) {
+  main { padding: 12px; }
+  input[type=text], input[type=search] { min-width: 0; max-width: 100%; }
+}
 </style>
 </head>
 <body>
@@ -69,15 +79,22 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
   <div class="chips" id="chips"></div>
 </header>
 <nav id="nav"></nav>
+<aside class="activity" aria-label="Library activity">
+  <h2 style="font-size:15px">Activity</h2>
+  <div id="activity-current" role="status" aria-live="polite">Loading activity...</div>
+  <details><summary>Job history and results</summary><div id="activity-history"></div></details>
+  <div id="activity-results"></div>
+</aside>
 <main id="main"></main>
 <div id="toast"></div>
 <script>
 const TABS = [
   ["overview", "Overview"], ["dupes", "Duplicates"], ["doctor", "Bad Files"],
+  ["library", "Library"], ["recovery", "Recovery"],
   ["organize", "Organize"], ["art", "Cover Art"], ["missing", "Missing Music"],
   ["usenet", "Usenet"], ["settings", "Settings"],
 ];
-const state = { tab: "overview" };
+const state = { tab: "overview", jobs: [] };
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmtBytes = (b) => {
@@ -111,10 +128,83 @@ async function pollJob(id, label) {
   toast(`${label}: running...`);
   while (true) {
     const job = await api(`/api/jobs/${id}`);
-    if (job.status === "done") { toast(`${label}: done`); return job.result; }
-    if (job.status === "error") { toast(`${label}: ${job.result.error}`, true); return null; }
+    if (job.status === "done") { await refreshActivity(); toast(`${label}: done`); return job; }
+    if (job.status === "error") { await refreshActivity(); throw new Error(job.error); }
     await new Promise(r => setTimeout(r, 1500));
   }
+}
+
+window.addEventListener("unhandledrejection", event => {
+  toast(event.reason?.message || String(event.reason), true);
+});
+const latestJob = kind => state.jobs.find(j => j.kind === kind && j.status === "done");
+const elapsed = job => {
+  const seconds = Math.max(0, Math.floor((job.finished || Date.now() / 1000) - job.started));
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+};
+async function pagedTable(container, load, headers, row, onPage = () => {}) {
+  let offset = 0;
+  const draw = async () => {
+    try {
+      const page = await load(offset);
+      if (!container.isConnected) return;
+      container.innerHTML = `<div class="table-scroll"><table><thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead>
+        <tbody>${page.items.map(row).join("")}</tbody></table></div>
+        <div class="pager"><button class="action ghost prev" ${offset === 0 ? "disabled" : ""}>Previous</button>
+        <span>${page.total ? offset + 1 : 0}–${Math.min(offset + page.items.length, page.total)} of ${page.total}</span>
+        <button class="action ghost next" ${offset + page.items.length >= page.total ? "disabled" : ""}>Next</button></div>`;
+      container.querySelector(".prev").onclick = () => { offset = Math.max(0, offset - 50); draw(); };
+      container.querySelector(".next").onclick = () => { offset += 50; draw(); };
+      onPage(page.items);
+    } catch (e) { container.textContent = e.message; toast(e.message, true); }
+  };
+  await draw();
+}
+async function showJobResults(job) {
+  const container = $("#activity-results");
+  container.innerHTML = `<h3>${esc(job.kind)} results</h3><div class="row sections"></div><div class="results-page"></div>`;
+  const sections = Object.entries(job.summary || {}).filter(([, value]) => typeof value === "number");
+  const lists = {
+    scan: [], doctor: ["results"], duplicates: ["groups"],
+    rename: ["moves", "skipped_files", "errors"], art: ["albums"], "duplicates-apply": [],
+  }[job.kind] || [];
+  container.querySelector(".sections").innerHTML = sections.map(([key, value]) => `<span class="tag dim">${esc(key)}: ${value}</span>`).join("") +
+    lists.map(key => `<button class="action ghost" data-section="${key}">${esc(key)}</button>`).join("");
+  container.querySelectorAll("[data-section]").forEach(button => button.onclick = () => {
+    pagedTable(container.querySelector(".results-page"),
+      offset => api(`/api/jobs/${job.id}/results/${button.dataset.section}?offset=${offset}`),
+      ["Result"], item => `<tr><td class="path">${esc(JSON.stringify(item, null, 2))}</td></tr>`);
+  });
+  container.querySelector("[data-section]")?.click();
+}
+async function refreshActivity() {
+  try {
+    state.jobs = await api("/api/jobs");
+    const active = state.jobs.find(j => ["queued", "running"].includes(j.status));
+    $("#activity-current").innerHTML = active ? `
+      <p><b>${esc(active.kind)}: ${esc(active.phase)}</b> · ${elapsed(active)}</p>
+      <progress ${active.total !== null ? `value="${active.completed}" max="${Math.max(1, active.total)}"` : ""}></progress>
+      <p>${active.total !== null ? `${active.completed} / ${active.total} processed` : "Working — total not yet known"}</p>
+      <p class="path">${esc(active.current)}</p>` : "<p>No library operation running.</p>";
+    document.querySelectorAll("[data-operation]").forEach(button => { button.disabled = !!active; });
+    const history = $("#activity-history");
+    if (history.dataset.jobs !== JSON.stringify(state.jobs.map(j => [j.id, j.status]))) {
+      history.dataset.jobs = JSON.stringify(state.jobs.map(j => [j.id, j.status]));
+      await pagedTable(history,
+        async offset => ({ items: state.jobs.slice(offset, offset + 50), total: state.jobs.length }),
+        ["Task", "Status", "Elapsed", "Result"],
+        job => `<tr><td>${esc(job.kind)}</td><td>${esc(job.status)}</td><td>${elapsed(job)}</td><td>${job.error ? esc(job.error) :
+          job.status === "done" ? `<button class="action ghost" data-result="${job.id}">View results</button>` : "In progress"}</td></tr>`,
+        () => history.querySelectorAll("[data-result]").forEach(button => {
+          button.onclick = () => showJobResults(state.jobs.find(j => j.id === button.dataset.result));
+        }));
+    }
+  } catch (e) { $("#activity-current").textContent = `Cannot refresh activity: ${e.message}`; }
+}
+async function runTask(kind, body) {
+  const { job_id } = await post(`/api/tasks/${kind}`, body);
+  await refreshActivity();
+  return pollJob(job_id, kind);
 }
 
 async function loadStats() {
@@ -133,7 +223,7 @@ const views = {
   async overview(el) {
     el.innerHTML = `
       <div class="row">
-        <button class="action" id="btn-scan">Scan library</button>
+        <button class="action" id="btn-scan" data-operation>Scan library</button>
         <label class="check"><input type="checkbox" id="opt-rescan"> re-read all file metadata</label>
         <button class="action ghost" id="btn-refresh">Refresh stats</button>
       </div>
@@ -143,24 +233,23 @@ const views = {
       <div id="overview-lists"></div>`;
     $("#btn-scan").onclick = async () => {
       const { job_id } = await post("/api/scan", { rescan: $("#opt-rescan").checked });
+      await refreshActivity();
       await pollJob(job_id, "Scan");
-      await render();
+      if (el.isConnected) await render();
     };
     $("#btn-refresh").onclick = render;
-    const issues = await api("/api/issues");
     const lists = $("#overview-lists");
-    if (!issues.length) { lists.innerHTML = `<div class="empty">No issues. Library looks clean.</div>`; return; }
-    lists.innerHTML = `<table><thead><tr><th>severity</th><th>kind</th><th>file</th></tr></thead><tbody>` +
-      issues.slice(0, 50).map(i => `<tr><td><span class="tag ${i.severity}">${esc(i.severity)}</span></td><td>${esc(i.kind)}</td><td class="path">${esc(i.path)}</td></tr>`).join("") +
-      `</tbody></table>`;
+    await pagedTable(lists, offset => api(`/api/issues/page?offset=${offset}`),
+      ["Severity", "Kind", "Details", "File"],
+      i => `<tr><td>${esc(i.severity)}</td><td>${esc(i.kind)}</td><td>${esc(i.detail)}</td><td class="path">${esc(i.path)}</td></tr>`);
   },
 
   async dupes(el) {
     el.innerHTML = `<div class="row">
-      <button class="action" id="btn-find">Find duplicates</button>
-      <button class="action danger" id="btn-apply" style="display:none">Remove losers (trash)</button>
+      <button class="action" id="btn-find" data-operation>Find duplicates</button>
+      <button class="action danger" id="btn-apply" data-operation style="display:none">Trash copies in selected groups</button>
       <label class="check"><input type="checkbox" id="opt-fingerprint"> compare audio fingerprints (slower)</label>
-      <span class="hint">Best version per group is kept; losers move to trash. Click a marker to change the keeper.</span>
+      <span class="hint">Select groups to approve removal, then choose the keeper. Unselected groups are untouched.</span>
     </div><div id="dupe-list"><div class="empty">Click "Find duplicates" to analyze the library.</div></div>
     <div class="card"><h3>Manual duplicate review</h3>
       <p>Search your library, add files you know are copies, choose the one to keep, then move the rest to trash.</p>
@@ -169,7 +258,34 @@ const views = {
       <div id="manual-results" class="hint"></div><div id="manual-picked"></div>
       <button class="action danger" id="manual-apply" style="display:none">Trash selected copies</button>
     </div>`;
-    let data = [];
+    const reviewed = new Map();
+    const drawDupes = async () => {
+      await pagedTable($("#dupe-list"), offset => api(`/api/dupes/page?offset=${offset}`),
+        ["Duplicate groups — select only those you have reviewed"],
+        group => {
+          const g = reviewed.get(group.group_id) || group;
+          const keep = g.members.find(m => m.id === g.keep_id);
+          return `<tr><td><div class="group" data-gid="${g.group_id}">
+            <div class="head"><label><input type="checkbox" data-approve="${g.group_id}" ${reviewed.has(g.group_id) ? "checked" : ""}> Approve group</label>
+            <span>${esc(keep?.artist)} — ${esc(keep?.title)} · ${g.members.length} copies</span></div>
+            <table><thead><tr><th>Keep</th><th>Quality</th><th>Score</th><th>Path</th></tr></thead><tbody>${g.members.map(m =>
+              `<tr><td><input aria-label="Keep ${esc(m.path)}" type="radio" name="keep-${g.group_id}" data-keep="${g.group_id}:${m.id}" ${m.id === g.keep_id ? "checked" : ""}></td>
+              <td>${esc(m.format)} ${esc(m.bitrate)} kbps</td><td>${esc(m.quality_score)}</td><td class="path">${esc(m.path)}</td></tr>`
+            ).join("")}</tbody></table></div></td></tr>`;
+        },
+        groups => {
+          el.querySelectorAll("[data-approve]").forEach(node => node.onchange = () => {
+            const g = groups.find(g => g.group_id === Number(node.dataset.approve));
+            if (node.checked) reviewed.set(g.group_id, g); else reviewed.delete(g.group_id);
+            $("#btn-apply").style.display = reviewed.size ? "" : "none";
+          });
+          el.querySelectorAll("[data-keep]").forEach(node => node.onchange = () => {
+            const [gid, tid] = node.dataset.keep.split(":").map(Number);
+            const g = reviewed.get(gid) || groups.find(g => g.group_id === gid);
+            g.keep_id = tid;
+          });
+        });
+    };
     const selected = new Map();
     let manualKeepId = null;
     const renderManual = () => {
@@ -189,48 +305,31 @@ const views = {
       });
     };
     $("#btn-find").onclick = async () => {
-      data = await post("/api/dupes/find", { fingerprint: $("#opt-fingerprint").checked });
-      if (!data.length) { $("#dupe-list").innerHTML = `<div class="empty">No duplicates found.</div>`; return; }
-      $("#btn-apply").style.display = "";
-      $("#dupe-list").innerHTML = data.map(g => {
-        const keep = g.members.find(m => m.id === g.keep_id);
-        return `<div class="group" data-gid="${g.group_id}">
-          <div class="head"><span>${esc(keep?.artist || "")} — ${esc(keep?.album || "")} · ${esc(keep?.title || "")}</span>
-          <span class="tag warn">${g.members.length} copies</span></div>
-          <table><tbody>${g.members.map(m => `
-            <tr><td style="width:60px">${m.id === g.keep_id ? `<span class="keep-flag" data-keep="${g.group_id}:${m.id}" style="cursor:pointer">● keep</span>` : `<span data-keep="${g.group_id}:${m.id}" style="cursor:pointer;color:var(--dim)">○</span>`}</td>
-            <td class="mono">${esc(m.format || "?")} ${m.bitrate || ""}${m.bit_depth ? "/" + m.bit_depth + "bit" : ""}</td>
-            <td class="mono" style="width:70px">${esc(m.quality_score ?? 0)}</td>
-            <td class="path">${esc(m.path)}</td></tr>`).join("")}</tbody></table></div>`;
-      }).join("");
-      el.querySelectorAll("[data-keep]").forEach(node => {
-        node.onclick = () => {
-          const [gid, tid] = node.dataset.keep.split(":").map(Number);
-          const g = data.find(x => x.group_id === gid);
-          if (g) { g.keep_id = tid; $("#btn-find").click(); }
-        };
-      });
+      await runTask("duplicates", { fingerprint: $("#opt-fingerprint").checked });
+      if (!el.isConnected) return;
+      reviewed.clear(); $("#btn-apply").style.display = "none"; await drawDupes();
     };
     $("#btn-apply").onclick = async () => {
-      if (!confirm(`Remove duplicate files (move to trash)? This affects ${data.length} groups.`)) return;
-      const keepIds = {};
-      data.forEach(g => { keepIds[g.group_id] = g.keep_id; });
-      const res = await post("/api/dupes/apply", { keep_ids: keepIds, hard_delete: false });
-      toast(`Trashed ${res.trashed}, reclaimed ${fmtBytes(res.reclaimed_bytes)}`);
-      $("#btn-find").click();
-      loadStats();
+      if (!reviewed.size || !confirm(`Trash copies in ${reviewed.size} selected groups? Keepers remain untouched.`)) return;
+      const body = { keep_ids: {}, member_ids: {}, group_ids: [...reviewed.keys()], hard_delete: false };
+      reviewed.forEach(g => { body.keep_ids[g.group_id] = g.keep_id; body.member_ids[g.group_id] = g.members.map(m => m.id); });
+      const { job_id } = await post("/api/dupes/apply-job", body);
+      await refreshActivity(); await pollJob(job_id, "Remove duplicates");
+      if (!el.isConnected) return;
+      reviewed.clear(); $("#btn-apply").style.display = "none"; await drawDupes(); await loadStats();
     };
     $("#manual-search").onclick = async () => {
-      const results = await post("/api/tracks/search", { query: $("#manual-query").value });
-      $("#manual-results").innerHTML = results.length ? `<table><thead><tr><th>track</th><th>genre</th><th>path</th><th></th></tr></thead><tbody>${
-        results.map(m => `<tr><td>${esc([m.artist, m.album, m.title].filter(Boolean).join(" — ") || "Unknown track")}</td>
+      const query = $("#manual-query").value;
+      await pagedTable($("#manual-results"),
+        offset => post("/api/tracks/page", { query, offset, limit: 50 }),
+        ["Track", "Genre", "Path", "Select"],
+        m => `<tr><td>${esc([m.artist, m.album, m.title].filter(Boolean).join(" — ") || "Unknown track")}</td>
           <td>${esc(m.genre || "—")}</td><td class="path">${esc(m.path)}</td>
-          <td><button class="action ghost" data-add="${m.id}">Add</button></td></tr>`).join("")
-      }</tbody></table>` : `<div class="empty">No tracks matched.</div>`;
-      results.forEach(m => {
+          <td><button class="action ghost" data-add="${m.id}">Add</button></td></tr>`,
+        results => results.forEach(m => {
         const button = el.querySelector(`[data-add="${m.id}"]`);
         if (button) button.onclick = () => { selected.set(m.id, m); renderManual(); };
-      });
+      }));
     };
     $("#manual-query").onkeydown = event => {
       if (event.key === "Enter") { event.preventDefault(); $("#manual-search").click(); }
@@ -245,54 +344,133 @@ const views = {
       toast(`Trashed ${res.trashed}, reclaimed ${fmtBytes(res.reclaimed_bytes)}`);
       selected.clear(); manualKeepId = null; $("#manual-results").innerHTML = ""; renderManual(); loadStats();
     };
+    await drawDupes();
   },
 
   async doctor(el) {
     el.innerHTML = `<div class="row">
-      <button class="action" id="btn-check">Check files</button>
-      <button class="action danger" id="btn-remove" style="display:none">Trash bad files</button>
+      <button class="action" id="btn-check" data-operation>Check files</button>
+      <button class="action danger" id="btn-remove" data-operation style="display:none">Trash bad files</button>
       <label class="check"><input type="checkbox" id="opt-deep" checked> deep decode (ffmpeg)</label>
-    </div><div id="doc-out"><div class="empty">Run a check to find broken files.</div></div>`;
-    let lastBad = 0;
+    </div><div class="row">
+      <select id="issue-severity" aria-label="Issue severity"><option value="">All severities</option><option value="bad">Bad — broken files</option><option value="warn">Warnings — review only</option></select>
+      <select id="issue-kind" aria-label="Issue type"><option value="">All issue types</option><option value="decode_error">Audio corruption</option>
+      <option value="unparseable">Unreadable audio</option><option value="missing_file">Missing file</option><option value="missing_tags">Missing metadata</option>
+      <option value="low_bitrate">Low bitrate</option><option value="short_file">Short file</option></select>
+    </div><p class="hint">Warnings are not automatically deleted. Checks and removal appear in Activity.</p>
+    <div id="doc-summary"></div><div id="doc-out"></div>`;
+    const showIssues = async () => {
+      const severity = $("#issue-severity").value, kind = $("#issue-kind").value;
+      await pagedTable($("#doc-out"),
+        offset => api(`/api/issues/page?offset=${offset}&severity=${encodeURIComponent(severity)}&kind=${encodeURIComponent(kind)}`),
+        ["Severity", "Issue", "Details", "File"],
+        i => `<tr><td>${esc(i.severity)}</td><td>${esc(i.kind)}</td><td>${esc(i.detail)}</td><td class="path">${esc(i.path)}</td></tr>`);
+    };
+    $("#issue-severity").onchange = showIssues;
+    $("#issue-kind").onchange = showIssues;
     $("#btn-check").onclick = async () => {
-      toast("Checking library...");
-      const res = await post("/api/doctor", { deep: $("#opt-deep").checked });
-      lastBad = res.bad;
-      $("#btn-remove").style.display = res.bad ? "" : "none";
-      if (!res.results.length) { $("#doc-out").innerHTML = `<div class="empty">No problems found.</div>`; return; }
-      $("#doc-out").innerHTML = `<table><thead><tr><th>severity</th><th>issues</th><th>file</th></tr></thead><tbody>` +
-        res.results.map(r => `<tr><td><span class="tag ${r.severity}">${esc(r.severity)}</span></td><td>${r.issues.map(esc).join(", ")}</td><td class="path">${esc(r.path)}</td></tr>`).join("") +
-        `</tbody></table><p class="hint">${res.checked} checked · ${res.bad} bad · ${res.suspect} suspect</p>`;
+      const job = await runTask("doctor", { deep: $("#opt-deep").checked });
+      if (!el.isConnected) return;
+      $("#doc-summary").textContent = `${job.summary.checked} checked · ${job.summary.bad} bad · ${job.summary.suspect} suspect`;
+      $("#btn-remove").style.display = job.summary.bad ? "" : "none";
+      if (!job.summary.bad) toast("No broken files found. Warnings are still available for review.");
+      await showIssues(); await loadStats();
     };
     $("#btn-remove").onclick = async () => {
-      if (!confirm(`Move ${lastBad} bad files to trash?`)) return;
-      const res = await post("/api/doctor", { apply: true, hard_delete: false, deep: false });
-      toast(`Trashed ${res.trashed} bad files`);
-      $("#btn-check").click();
-      loadStats();
+      if (!confirm("Recheck metadata and move all currently bad files to trash? Warnings will remain.")) return;
+      const job = await runTask("doctor", { apply: true, hard_delete: false, deep: false });
+      toast(`Trashed ${job.summary.trashed} bad files`);
+      if (el.isConnected) { $("#btn-remove").style.display = "none"; await showIssues(); }
+      await loadStats();
     };
+    await showIssues();
+  },
+
+  async library(el) {
+    el.innerHTML = `<div class="row">
+      <input type="search" id="library-query" placeholder="Search artist, album, title, or file path">
+      <select id="library-genre"><option value="">All genres</option></select>
+      <select id="library-format"><option value="">All formats</option></select>
+      <select id="library-status"><option value="">Healthy and flagged</option><option value="suspect">Needs review</option><option value="bad">Bad files</option></select>
+      <button class="action ghost" id="library-search">Search</button>
+    </div><p class="hint">Browse the catalog. Search and filters run against the index; scanning updates the metadata.</p><div id="library-table"></div>`;
+    const [genreRows, formatRows] = await Promise.all([api("/api/genres"), api("/api/formats")]);
+    $("#library-genre").insertAdjacentHTML("beforeend", genreRows.map(g => `<option>${esc(g)}</option>`).join(""));
+    $("#library-format").insertAdjacentHTML("beforeend", formatRows.map(f => `<option>${esc(f)}</option>`).join(""));
+    $("#library-search").onclick = () => {
+      const filters = {
+        query: $("#library-query").value, genre: $("#library-genre").value,
+        format: $("#library-format").value, status: $("#library-status").value, limit: 50,
+      };
+      pagedTable($("#library-table"), offset => post("/api/tracks/page", {...filters, offset}),
+        ["Artist", "Album", "Title", "Genre", "Format", "Status", "Path"],
+        t => `<tr><td>${esc(t.artist)}</td><td>${esc(t.album)}</td><td>${esc(t.title)}</td>
+          <td>${esc(t.genre || "—")}</td><td>${esc(t.format || "—")}</td><td>${esc(t.status)}</td>
+          <td class="path">${esc(t.path)}</td></tr>`);
+    };
+    $("#library-query").onkeydown = event => {
+      if (event.key === "Enter") { event.preventDefault(); $("#library-search").click(); }
+    };
+    await $("#library-search").click();
+  },
+
+  async recovery(el) {
+    el.innerHTML = `<p class="hint">Restore trashed files to their original locations. If a location is occupied, the restore is refused rather than overwriting anything.</p>
+      <label class="check"><input type="checkbox" id="show-restored"> include previously restored entries</label>
+      <div id="trash-table"></div>`;
+    const draw = () => pagedTable($("#trash-table"),
+      offset => api(`/api/trash?offset=${offset}&include_restored=${$("#show-restored").checked}`),
+      ["Deleted", "Reason", "Original path", "Restore"],
+      item => `<tr><td>${esc(item.deleted_at)}</td><td>${esc(item.reason)}</td><td class="path">${esc(item.path)}</td>
+        <td>${item.restored_at ? `Restored ${esc(item.restored_at)}` : `<button class="action ghost" data-restore="${item.id}">Restore</button>`}</td></tr>`,
+      items => items.forEach(item => {
+        const button = el.querySelector(`[data-restore="${item.id}"]`);
+        if (button) button.onclick = async () => {
+          if (!confirm(`Restore this file to its original path?\n${item.path}`)) return;
+          try {
+            const result = await post("/api/trash/restore", {deletion_id:item.id});
+            toast(`Restored ${result.restored}`); await draw(); await loadStats();
+          } catch (e) { toast(e.message, true); }
+        };
+      }));
+    $("#show-restored").onchange = draw;
+    await draw();
   },
 
   async organize(el) {
     el.innerHTML = `<div class="row">
-      <button class="action" id="btn-plan">Preview renames</button>
-      <button class="action" id="btn-apply" style="display:none">Apply (move files)</button>
-    </div><div id="ren-out"><div class="empty">Preview shows every file move before anything happens.</div></div>`;
+      <button class="action" id="btn-plan" data-operation>Preview renames</button>
+      <button class="action" id="btn-apply" data-operation style="display:none">Apply (move files)</button>
+    </div><p class="hint">No files move during preview. Loose root-level tracks go to Singles/Genre.</p>
+    <div id="ren-summary"></div><div class="row" id="ren-sections"></div>
+    <div id="ren-out"><div class="empty">Preview shows every file move before anything happens.</div></div>`;
+    const showPlan = async job => {
+      const res = job.summary;
+      $("#btn-apply").style.display = !res.applied && res.to_move ? "" : "none";
+      $("#ren-summary").textContent = `${res.to_move} planned · ${res.moved} moved · ${res.already_ok} already organized · ${res.skipped} skipped · ${res.errors} errors`;
+      $("#ren-sections").innerHTML = ["moves", "skipped_files", "errors"].map(section =>
+        `<button class="action ghost" data-section="${section}">${esc(section)}</button>`).join("");
+      el.querySelectorAll("[data-section]").forEach(button => button.onclick = () => {
+        const section = button.dataset.section;
+        pagedTable($("#ren-out"), offset => api(`/api/jobs/${job.id}/results/${section}?offset=${offset}`),
+          section === "moves" ? ["From", "To", "Status"] : ["File", "Reason"],
+          item => section === "moves" ? `<tr><td class="path">${esc(item.source)}</td><td class="path">${esc(item.target)}</td><td>${esc(item.status)}</td></tr>` :
+            `<tr><td class="path">${esc(item.path || item[0])}</td><td>${esc(item.reason || item[1])}</td></tr>`);
+      });
+      el.querySelector("[data-section]").click();
+    };
     $("#btn-plan").onclick = async () => {
-      const res = await post("/api/rename", {});
-      $("#btn-apply").style.display = res.to_move ? "" : "none";
-      if (!res.to_move && !res.skipped) { $("#ren-out").innerHTML = `<div class="empty">Everything is already organized.</div>`; return; }
-      $("#ren-out").innerHTML = `<table><thead><tr><th>from</th><th>to</th></tr></thead><tbody>` +
-        res.moves.map(m => `<tr><td class="path">${esc(m.source)}</td><td class="path" style="color:var(--green)">${esc(m.target)}</td></tr>`).join("") +
-        `</tbody></table><p class="hint">${res.to_move} to move · ${res.already_ok} already organized · ${res.skipped} skipped (missing tags). Files placed directly in the library root move to Singles/Genre.</p>`;
+      const job = await runTask("rename", {});
+      if (el.isConnected) await showPlan(job);
     };
     $("#btn-apply").onclick = async () => {
       if (!confirm("Move and rename files into the organized structure?")) return;
-      const res = await post("/api/rename", { apply: true });
-      toast(`Moved ${res.moved} files${res.errors?.length ? `, ${res.errors.length} errors` : ""}`);
-      $("#btn-plan").click();
-      loadStats();
+      const job = await runTask("rename", { apply: true });
+      if (el.isConnected) await showPlan(job);
+      await loadStats();
     };
+    const previous = latestJob("rename");
+    if (previous) await showPlan(previous);
   },
 
   async art(el) {
@@ -301,19 +479,22 @@ const views = {
       <button class="action" id="btn-dl" style="display:none">Download & embed</button>
     </div><div id="art-out"><div class="empty">Art comes from the Cover Art Archive (MusicBrainz).</div></div>`;
     $("#btn-missing").onclick = async () => {
-      const res = await post("/api/art", {});
-      $("#btn-dl").style.display = res.albums?.length ? "" : "none";
-      if (!res.albums?.length) { $("#art-out").innerHTML = `<div class="empty">All albums have art.</div>`; return; }
-      $("#art-out").innerHTML = `<table><thead><tr><th>artist</th><th>album</th><th>status</th></tr></thead><tbody>` +
-        res.albums.map(a => `<tr><td>${esc(a.artist)}</td><td>${esc(a.album)}</td><td><span class="tag warn">${esc(a.status)}</span></td></tr>`).join("") + `</tbody></table>`;
+      const job = await runTask("art", {});
+      if (el.isConnected) await showArt(job);
     };
     $("#btn-dl").onclick = async () => {
-      toast("Downloading artwork...");
-      const res = await post("/api/art", { apply: true });
-      const ok = res.albums.filter(a => a.status === "downloaded").length;
-      toast(`Downloaded art for ${ok}/${res.albums.length} albums`);
-      loadStats();
+      const job = await runTask("art", { apply: true });
+      if (el.isConnected) await showArt(job);
+      await loadStats();
     };
+    const showArt = async job => {
+      $("#btn-dl").style.display = !job.summary.applied && job.summary.albums ? "" : "none";
+      await pagedTable($("#art-out"), offset => api(`/api/jobs/${job.id}/results/albums?offset=${offset}`),
+        ["Artist", "Album", "Status", "Details"],
+        album => `<tr><td>${esc(album.artist)}</td><td>${esc(album.album)}</td><td>${esc(album.status)}</td><td>${esc(album.detail)}</td></tr>`);
+    };
+    const previous = latestJob("art");
+    if (previous) await showArt(previous);
   },
 
   async missing(el) {
@@ -323,7 +504,9 @@ const views = {
     </div><div id="miss-out"><div class="empty">Run a comparison to find gaps in your albums.</div></div>`;
     $("#btn-refresh").onclick = async () => {
       const { job_id } = await post("/api/brainz/refresh");
+      await refreshActivity();
       await pollJob(job_id, "MusicBrainz");
+      if (!el.isConnected) return;
       const gaps = await api("/api/missing");
       if (!gaps.length) { $("#miss-out").innerHTML = `<div class="empty">No missing tracks detected.</div>`; return; }
       $("#miss-out").innerHTML = `<table><thead><tr><th>artist</th><th>album</th><th>missing tracks</th><th></th></tr></thead><tbody>` +
@@ -414,6 +597,7 @@ const views = {
         ${field("organize", "template", "Filename template")}
         ${field("organize", "template_multidisc", "Multi-disc template")}
         ${field("organize", "singles_folder", "Root-level singles folder")}
+        ${field("organize", "root_singles", "Group loose root tracks by genre (disable to use album templates)")}
         ${field("organize", "cleanup_empty_dirs", "Remove empty folders after moving")}
       </div>
       <div class="card" style="margin-top:14px"><h3>Bad files &amp; duplicates</h3>
@@ -473,8 +657,20 @@ async function render() {
   main.innerHTML = TABS.map(([id]) => `<section id="tab-${id}" class="${state.tab === id ? "active" : ""}"></section>`).join("");
   const el = $(`#tab-${state.tab}`);
   try { await views[state.tab](el); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  el.querySelectorAll("button.action:not(.ghost)").forEach(button => { button.dataset.operation = ""; });
+  const active = state.jobs.some(j => ["queued", "running"].includes(j.status));
+  el.querySelectorAll("[data-operation]").forEach(button => { button.disabled = active; });
 }
-render();
+async function watchActivity() {
+  await refreshActivity();
+  setTimeout(watchActivity, 1500);
+}
+async function startDashboard() {
+  await refreshActivity();
+  await render();
+  watchActivity();
+}
+startDashboard();
 </script>
 </body>
 </html>

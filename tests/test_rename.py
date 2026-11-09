@@ -126,6 +126,20 @@ def test_rename_moves_root_tracks_to_singles_by_genre(lib_env):
     target = env.library / "Singles" / "Jazz" / "Solo Artist - Loose Song.flac"
     assert report.moved == 1
     assert target.exists()
+    assert Renamer(env.config, env.db).plan().moves == []
+
+
+def test_root_singles_can_be_disabled(lib_env):
+    env = lib_env
+    env.config.organize["root_singles"] = False
+    make_flac(
+        env.library / "album-track.flac",
+        tags={**ALBUM_A, "TITLE": "First Song", "TRACKNUMBER": "1"},
+    )
+    Scanner(env.config, env.db).scan()
+    report = Renamer(env.config, env.db).plan()
+    assert len(report.moves) == 1
+    assert "Album A (2001)" in report.moves[0].target
 
 
 def test_rename_onto_path_of_trashed_duplicate(lib_env):

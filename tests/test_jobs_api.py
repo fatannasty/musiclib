@@ -1,0 +1,152 @@
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+from fastapi.testclient import TestClient
+
+from musiclib.doctor import Doctor
+from musiclib.models import Issue, Track
+from musiclib.scanner import ScanReport
+from musiclib.server.app import create_app
+from musiclib.server.jobs import JobRegistry
+
+
+def wait_job(client, job_id):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            return job
+        time.sleep(.01)
+    pytest.fail("job did not finish")
+
+
+def test_job_progress_survives_refresh_and_reports_real_counts(lib_env, monkeypatch):
+    entered, finish = threading.Event(), threading.Event()
+
+    def scan(self, **kwargs):
+        kwargs["progress_state"](651, 1000, "/music/current.flac")
+        entered.set()
+        assert finish.wait(5)
+        kwargs["progress_state"](1000, 1000, "/music/last.flac")
+        return ScanReport(scanned=1000, added=1000)
+
+    monkeypatch.setattr("musiclib.server.app.Scanner.scan", scan)
+    with TestClient(create_app(lib_env.config)) as client:
+        try:
+            job_id = client.post("/api/scan", json={}).json()["job_id"]
+            assert entered.wait(5)
+            job = client.get("/api/jobs").json()[0]
+            assert job["completed"] == 651
+            assert job["total"] == 1000
+            assert job["current"] == "/music/current.flac"
+            assert client.get("/").status_code == 200
+            assert client.get(f"/api/jobs/{job_id}").json()["completed"] == 651
+            assert client.post("/api/tasks/doctor", json={}).status_code == 409
+            assert client.post("/api/dupes/manual", json={"track_ids": [1, 2], "keep_id": 1}).status_code == 409
+            assert client.put("/api/settings", json={}).status_code == 409
+        finally:
+            finish.set()
+        assert wait_job(client, job_id)["summary"]["added"] == 1000
+    with TestClient(create_app(lib_env.config)) as client:
+        assert client.get(f"/api/jobs/{job_id}").json()["status"] == "done"
+
+
+def test_interrupted_jobs_are_reported(lib_env):
+    registry = JobRegistry(lib_env.db)
+    registry._save({
+        "id": "interrupted", "kind": "scan", "status": "running",
+        "started": time.time(), "finished": None,
+    })
+    restarted = JobRegistry(lib_env.db)
+    assert restarted.get("interrupted")["status"] == "error"
+    assert "restarted" in restarted.get("interrupted")["error"]
+
+
+def test_failure_is_visible_and_releases_library_lock(lib_env, monkeypatch):
+    def fail(self, **kwargs):
+        raise OSError("share unavailable")
+
+    monkeypatch.setattr("musiclib.server.app.Scanner.scan", fail)
+    with TestClient(create_app(lib_env.config)) as client:
+        job_id = client.post("/api/scan", json={}).json()["job_id"]
+        job = wait_job(client, job_id)
+        assert job["status"] == "error"
+        assert "share unavailable" in job["error"]
+        assert client.post("/api/tasks/rename", json={}).status_code == 200
+
+
+def test_issue_and_job_result_pages_do_not_truncate(lib_env, monkeypatch):
+    for index in range(525):
+        lib_env.db.upsert_track(Track(
+            path=str(lib_env.library / f"{index:04}.flac"),
+            status="bad", issues=[Issue("unparseable", f"Reason {index}", "bad")],
+        ))
+    with TestClient(create_app(lib_env.config)) as client:
+        page = client.get("/api/issues/page?offset=500&limit=50").json()
+        assert page["total"] == 525
+        assert len(page["items"]) == 25
+        assert page["items"][-1]["detail"] == "Reason 524"
+        assert client.get("/api/issues/page?severity=warn").json()["total"] == 0
+        assert client.get("/api/issues/page?offset=-1").status_code == 422
+        job_id = client.post("/api/tasks/doctor", json={"deep": False}).json()["job_id"]
+        assert wait_job(client, job_id)["summary"]["results"] == 525
+        page = client.get(f"/api/jobs/{job_id}/results/results?offset=500").json()
+        assert page["total"] == 525
+        assert len(page["items"]) == 25
+
+
+def test_fingerprints_are_generated_before_comparison(lib_env, monkeypatch):
+    for index in range(2):
+        lib_env.db.upsert_track(Track(
+            path=f"/music/{index}.flac", title=f"Different {index}",
+            album=f"Album {index}", duration=180 + index, status="suspect",
+        ))
+    calls = []
+
+    def compute(config, db, tracks, progress):
+        calls.append(len(tracks))
+        for done, track in enumerate(tracks, 1):
+            db.update_track_columns(track.id, fingerprint=",".join(["123456"] * 16))
+            progress(done, track.path)
+        return len(tracks)
+
+    monkeypatch.setattr("musiclib.server.app.fpcalc_available", lambda: "/usr/bin/fpcalc")
+    monkeypatch.setattr("musiclib.server.app.compute_all", compute)
+    with TestClient(create_app(lib_env.config)) as client:
+        job_id = client.post("/api/tasks/duplicates", json={"fingerprint": True}).json()["job_id"]
+        job = wait_job(client, job_id)
+        assert job["status"] == "done"
+        assert calls == [2]
+        assert job["summary"]["groups"] == 1
+        assert len(client.get(f"/api/jobs/{job_id}/results/groups").json()["items"][0]["members"]) == 2
+
+
+def test_fingerprint_failures_are_explicit(lib_env, monkeypatch):
+    monkeypatch.setattr("musiclib.server.app.fpcalc_available", lambda: None)
+    with TestClient(create_app(lib_env.config)) as client:
+        job_id = client.post("/api/tasks/duplicates", json={"fingerprint": True}).json()["job_id"]
+        job = wait_job(client, job_id)
+        assert job["status"] == "error"
+        assert "fpcalc" in job["error"]
+        assert client.get(f"/api/jobs/{job_id}/results/groups").status_code == 409
+
+
+def test_deep_check_counts_each_file_once_and_shallow_preserves_decode_error(lib_env, monkeypatch):
+    path = lib_env.library / "bad.flac"
+    path.write_bytes(b"audio")
+    lib_env.db.upsert_track(Track(
+        path=str(path), duration=2, format="flac",
+        issues=[Issue("missing_tags", "Missing title", "warn")],
+    ))
+    monkeypatch.setattr("musiclib.doctor.ProcessPoolExecutor", ThreadPoolExecutor)
+    monkeypatch.setattr("musiclib.doctor.find_binary", lambda name: name)
+    monkeypatch.setattr("musiclib.doctor.decode_check_ffmpeg", lambda path: {"ok": False, "error": "broken"})
+    report = Doctor(lib_env.config, lib_env.db).check(deep=True)
+    assert report.bad == 1
+    assert report.suspect == 0
+    assert len(report.results) == 1
+    shallow = Doctor(lib_env.config, lib_env.db).check(deep=False)
+    assert shallow.bad == 1
+    assert "decode_error" in shallow.results[0]["issues"]

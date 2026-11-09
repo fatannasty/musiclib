@@ -235,6 +235,7 @@ class Scanner:
         root: Optional[Union[str, Path]] = None,
         rescan: bool = False,
         progress: Optional[Callable[[int, str], None]] = None,
+        progress_state: Optional[Callable[[int, int, str], None]] = None,
     ) -> ScanReport:
         root = str(Path(root or self.config.library).expanduser())
         report = ScanReport()
@@ -260,15 +261,19 @@ class Scanner:
             pending.append(path)
 
         done = 0
+        if progress_state:
+            progress_state(0, len(pending), "")
         if pending:
             with ProcessPoolExecutor(max_workers=self.workers) as pool:
                 futures = {pool.submit(scan_worker, p): p for p in pending}
                 for future in as_completed(futures):
                     result = future.result()
                     done += 1
+                    self._store_result(result, report, row_exists=result["path"] in known_paths)
                     if progress:
                         progress(done, result["path"])
-                    self._store_result(result, report, row_exists=result["path"] in known_paths)
+                    if progress_state:
+                        progress_state(done, len(pending), result["path"])
 
         for path in known_paths - set(paths):
             if path.startswith(root) and existing[path]["status"] != "deleted":
@@ -320,13 +325,14 @@ class Scanner:
         track.mbid_track = result["mbid_track"]
         track.mbid_release = result["mbid_release"]
         track.has_embedded_art = result["has_embedded_art"]
+        if track.file_hash != result["file_hash"]:
+            track.fingerprint = None
         track.file_hash = result["file_hash"]
         issues: List[Issue] = []
         if not result["title"] or not result["album"]:
             issues.append(Issue("missing_tags", "missing album or title tag", "warn"))
         track.issues = issues
-        if track.status == "deleted":
-            track.status = "ok"
+        track.status = "suspect" if issues else "ok"
         self.db.upsert_track(track)
 
     def rebuild_albums(self, root: Optional[str] = None) -> None:

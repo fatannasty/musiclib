@@ -105,10 +105,23 @@ class Renamer:
         artist = sanitize_component(track.artist or track.album_artist or "Unknown Artist")
         title = sanitize_component(track.title or Path(track.path).stem)
         ext = Path(track.path).suffix
-        return os.path.join(self.library, folder, genre, f"{artist} - {title}{ext}")
+        filename = f"{artist} - {title}{ext}"
+        if not track.title and title.startswith(artist + " - "):
+            filename = title + ext
+        return os.path.join(self.library, folder, genre, filename)
 
     def _is_library_root_track(self, source: str) -> bool:
-        return Path(source).parent == Path(self.library)
+        if not self.config.organize.get("root_singles", True):
+            return False
+        path = Path(source)
+        if path.parent == Path(self.library):
+            return True
+        folder = sanitize_component(self.config.organize.get("singles_folder", "Singles"))
+        try:
+            relative = path.relative_to(self.library)
+        except ValueError:
+            return False
+        return len(relative.parts) == 3 and relative.parts[0] == folder
 
     def plan(self, tracks: Optional[List[Track]] = None) -> RenameReport:
         tracks = tracks or self.db.all_tracks()

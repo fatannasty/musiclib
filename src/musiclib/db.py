@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS deletions (
     file_hash TEXT,
     reason TEXT,
     moved_to TEXT,
-    deleted_at TEXT NOT NULL
+    deleted_at TEXT NOT NULL,
+    restored_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS downloads (
@@ -128,6 +129,11 @@ class Database:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        deletion_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(deletions)")
+        }
+        if "restored_at" not in deletion_columns:
+            self._conn.execute("ALTER TABLE deletions ADD COLUMN restored_at TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -234,7 +240,7 @@ class Database:
 
     def tracks_missing_fingerprint(self) -> List[Track]:
         rows = self.query(
-            "SELECT * FROM tracks WHERE fingerprint IS NULL AND status='ok' ORDER BY path"
+            "SELECT * FROM tracks WHERE fingerprint IS NULL AND status IN ('ok','suspect') ORDER BY path"
         )
         return [self._row_to_track(r) for r in rows]
 
@@ -316,6 +322,23 @@ class Database:
             "INSERT INTO deletions (path, size, file_hash, reason, moved_to, deleted_at) "
             "VALUES (?,?,?,?,?,?)",
             (path, size, file_hash, reason, moved_to, utcnow()),
+        )
+
+    def deletions_page(
+        self, offset: int = 0, limit: int = 50, include_restored: bool = False
+    ) -> tuple:
+        where = "1=1" if include_restored else "restored_at IS NULL AND moved_to IS NOT NULL"
+        total = self.query_one(f"SELECT COUNT(*) AS n FROM deletions WHERE {where}")["n"]
+        rows = self.query(
+            f"SELECT * FROM deletions WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        return [dict(row) for row in rows], total
+
+    def mark_restored(self, deletion_id: int) -> None:
+        self.execute(
+            "UPDATE deletions SET restored_at=? WHERE id=? AND restored_at IS NULL",
+            (utcnow(), deletion_id),
         )
 
     def record_download(

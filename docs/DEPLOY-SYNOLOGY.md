@@ -53,31 +53,23 @@ Write down:
 
 ## 5. Download the app
 
-Replace `PASTE_TOKEN_HERE` with the token from step 1 (keep the quotes):
-
 ```bash
-export GH_TOKEN="PASTE_TOKEN_HERE"
 sudo mkdir -p /volume1/docker
 cd /volume1/docker
-sudo curl -fL -H "Authorization: Bearer $GH_TOKEN" \
+read -s -p "GitHub token: " GH_TOKEN; echo
+sudo curl -4 -fL -H "Authorization: Bearer $GH_TOKEN" \
     https://api.github.com/repos/fatannasty/musiclib/tarball/main \
     -o musiclib.tar.gz
+unset GH_TOKEN
+sudo mkdir musiclib-next
+sudo tar xzf musiclib.tar.gz -C musiclib-next --strip-components=1
+ls -l musiclib-next/Dockerfile musiclib-next/docker-compose.yml
 ```
 
-**Check:** `ls -lh musiclib.tar.gz` should show roughly 100 KB or more. If curl printed
-`404` or `401`, the token is wrong or lacks access to the repo.
-
-Then unpack:
-
-```bash
-sudo tar xzf musiclib.tar.gz
-sudo rm -rf musiclib
-sudo mv fatannasty-musiclib-* musiclib
-cd musiclib
-ls
-```
-
-**Check:** you should see `Dockerfile`, `docker-compose.yml`, `src`, `scripts`.
+Enter the real token at the hidden prompt. `curl -f` stops on HTTP errors instead
+of saving an error page as a tarball. The two files listed at the end must exist.
+If `musiclib-next` already exists, choose a new empty folder name and use it in
+the commands below; do not extract over an existing release.
 
 ## 6. Create the settings file
 
@@ -85,6 +77,7 @@ Edit the three values to match step 4, then run it as-is:
 
 ```bash
 sudo mkdir -p /volume1/docker/musiclib-data
+cd /volume1/docker/musiclib-next
 sudo tee .env > /dev/null <<'EOT'
 MUSIC_DIR=/volume1/music
 DATA_DIR=/volume1/docker/musiclib-data
@@ -120,25 +113,42 @@ You can also watch it in DSM → **Container Manager** → **Container**.
 
 In a browser on any PC on your network: `http://NAS_IP:8000`
 
-Click **Scan** on the Overview tab. Done.
+Open the dashboard at `http://NAS_IP:8000`. Click **Scan** on the Overview tab.
+Done.
 
-## Updating later
+## Updating later (staged and reversible)
+
+Download and extract the release into a separate folder first. This leaves the
+current installation available for rollback.
 
 ```bash
-export GH_TOKEN="PASTE_TOKEN_HERE"
 cd /volume1/docker
-sudo curl -fL -H "Authorization: Bearer $GH_TOKEN" \
+read -s -p "GitHub token: " GH_TOKEN; echo
+sudo curl -4 -fL -H "Authorization: Bearer $GH_TOKEN" \
     https://api.github.com/repos/fatannasty/musiclib/tarball/main \
     -o musiclib-new.tar.gz
-sudo tar xzf musiclib-new.tar.gz
-sudo cp musiclib/.env fatannasty-musiclib-*/.env
-sudo rm -rf musiclib
-sudo mv fatannasty-musiclib-* musiclib
-cd musiclib
-sudo docker compose up -d --build
+unset GH_TOKEN
+sudo mkdir musiclib-next
+sudo tar xzf musiclib-new.tar.gz -C musiclib-next --strip-components=1
+sudo cp musiclib/.env musiclib-next/.env
+ls -l musiclib-next/Dockerfile musiclib-next/docker-compose.yml
 ```
 
-Your library, database and config live in `musiclib-data`, so they are untouched.
+Verify both files exist. Stop the current app, then start the staged replacement
+using the same Compose project name and the existing `.env` values:
+
+```bash
+sudo docker compose -p musiclib -f /volume1/docker/musiclib/docker-compose.yml down
+sudo docker compose -p musiclib -f /volume1/docker/musiclib-next/docker-compose.yml \
+    up -d --build
+sudo docker ps
+sudo docker logs musiclib
+```
+
+Open the dashboard at the configured NAS port. Keep the old source folder until
+the dashboard and library data are confirmed. If startup fails, stop the staged
+service and start Compose from the old folder again. Do not remove the data
+directory; it contains the database and settings.
 
 ## Troubleshooting
 

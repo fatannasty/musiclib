@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import threading
-import time
-import uuid
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -16,53 +14,14 @@ from ..config import Config
 from ..db import Database
 from ..doctor import Doctor
 from ..duplicates import DuplicateFinder
+from ..fingerprint import compute_all, fpcalc_available
+from ..fsops import is_inside
 from ..rename import Renamer
 from ..scanner import Scanner
 from ..usenet import Sabnzbd, SabnzbdError, search_all
+from .jobs import JobRegistry
 
 STATIC_DIR = Path(__file__).parent / "static"
-
-
-class JobRegistry:
-    def __init__(self) -> None:
-        self._jobs: Dict[str, Dict[str, Any]] = {}
-        self._lock = threading.Lock()
-
-    def start(self, kind: str, fn) -> str:
-        job_id = uuid.uuid4().hex[:12]
-
-        def runner() -> None:
-            job = self._jobs[job_id]
-            job["status"] = "running"
-            try:
-                result = fn(job)
-                job["result"] = result
-                job["status"] = "done"
-            except Exception as exc:
-                job["status"] = "error"
-                job["result"] = {"error": str(exc)}
-            job["finished"] = time.time()
-
-        with self._lock:
-            self._jobs[job_id] = {
-                "id": job_id, "kind": kind, "status": "queued",
-                "started": time.time(), "finished": None, "result": None, "log": [],
-            }
-        threading.Thread(target=runner, daemon=True).start()
-        return job_id
-
-    def log(self, job_id: str, line: str) -> None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is not None:
-                job["log"].append(line)
-                if len(job["log"]) > 500:
-                    del job["log"][:-500]
-
-    def get(self, job_id: str) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            return dict(job) if job else None
 
 
 class ApplyBody(BaseModel):
@@ -81,6 +40,8 @@ class ScanBody(BaseModel):
 class KeepOverride(BaseModel):
     hard_delete: bool = False
     keep_ids: Dict[int, int] = {}
+    group_ids: Optional[List[int]] = None
+    member_ids: Dict[int, List[int]] = {}
 
 
 class ManualDupeBody(BaseModel):
@@ -97,6 +58,14 @@ class SearchBody(BaseModel):
 class TrackSearchBody(BaseModel):
     query: str = ""
     limit: int = 100
+    offset: int = 0
+    genre: str = ""
+    format: str = ""
+    status: str = ""
+
+
+class RestoreBody(BaseModel):
+    deletion_id: int
 
 
 class SabAddBody(BaseModel):
@@ -135,7 +104,7 @@ def _coerce(value: Any, current: Any) -> Any:
 def create_app(config: Config) -> FastAPI:
     app = FastAPI(title="musiclib", docs_url=None, redoc_url=None)
     db = Database(config.db_path)
-    jobs = JobRegistry()
+    jobs = JobRegistry(db)
 
     def sab_client() -> Sabnzbd:
         if not config.sabnzbd.get("api_key"):
@@ -156,39 +125,62 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/scan")
     def scan(body: ScanBody) -> Dict[str, str]:
-        scanner = Scanner(config, db)
-
         def run(job: Dict[str, Any]) -> Dict[str, Any]:
-            report = scanner.scan(
-                rescan=body.rescan,
-                progress=lambda done, current: jobs.log(
-                    job["id"], f"{done} {Path(current).name}"
-                )
-            )
-            return {
-                "scanned": report.scanned, "added": report.added,
-                "updated": report.updated, "errors": report.errors,
-                "removed": report.removed,
-            }
-
+            return run_scan(body)
         return {"job_id": jobs.start("scan", run)}
 
+    def run_scan(body: ScanBody) -> Dict[str, Any]:
+        jobs.update("Discovering files")
+        report = Scanner(config, db).scan(
+            rescan=body.rescan,
+            progress_state=lambda done, total, current: jobs.update(
+                "Reading audio metadata", done, total, current
+            ),
+        )
+        return {
+            "scanned": report.scanned, "added": report.added,
+            "updated": report.updated, "errors": report.errors,
+            "removed": report.removed, "unchanged": report.skipped_unchanged,
+        }
+
     @app.post("/api/doctor")
+    @jobs.operation
     def doctor_run(body: ApplyBody) -> Dict[str, Any]:
         doc = Doctor(config, db)
         report = doc.check(
-            deep=body.deep, apply_actions=body.apply, hard_delete=body.hard_delete
+            deep=body.deep, apply_actions=body.apply, hard_delete=body.hard_delete,
+            progress_state=jobs.update,
         )
         return {
             "checked": report.checked, "bad": report.bad, "suspect": report.suspect,
             "trashed": report.trashed, "deleted": report.deleted,
-            "results": report.results[:500],
+            "results": report.results,
         }
 
     @app.get("/api/issues")
     def issues() -> List[Dict[str, Any]]:
         rows = db.issues_all()
-        return [dict(row) for row in rows[:500]]
+        return [dict(row) for row in rows]
+
+    @app.get("/api/issues/page")
+    def issues_page(
+        offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+        severity: str = "", kind: str = "",
+    ) -> Dict[str, Any]:
+        where = "t.status != 'deleted'"
+        params: List[Any] = []
+        for column, value in (("i.severity", severity), ("i.kind", kind)):
+            if value:
+                where += f" AND {column}=?"
+                params.append(value)
+        join = f"FROM issues i JOIN tracks t ON t.id=i.track_id WHERE {where}"
+        count = db.query_one("SELECT COUNT(*) AS n " + join, params)["n"]
+        rows = db.query(
+            "SELECT i.*, t.path " + join +
+            " ORDER BY CASE i.severity WHEN 'bad' THEN 0 ELSE 1 END, t.path, i.id LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        return {"items": [dict(row) for row in rows], "total": count, "offset": offset}
 
     def serialize_dupe_groups(groups) -> List[Dict[str, Any]]:
         return [
@@ -210,9 +202,29 @@ def create_app(config: Config) -> FastAPI:
         ]
 
     @app.post("/api/dupes/find")
+    @jobs.operation
     def dupes_find(body: ApplyBody) -> List[Dict[str, Any]]:
+        fingerprint = body.fingerprint or body.strategy == "fingerprint"
+        if fingerprint:
+            if not fpcalc_available():
+                raise HTTPException(400, "fpcalc is not installed; audio fingerprints cannot be generated.")
+            missing = db.tracks_missing_fingerprint()
+            jobs.update("Generating audio fingerprints", 0, len(missing))
+            computed = compute_all(
+                config, db, missing,
+                progress=lambda done, path: jobs.update(
+                    "Generating audio fingerprints", done, len(missing), path
+                ),
+            )
+            if computed != len(missing):
+                raise HTTPException(
+                    400, f"Could not fingerprint {len(missing) - computed} files. "
+                    "Check these files with Bad Files before retrying; no duplicates were removed.",
+                )
+        jobs.update("Comparing duplicates")
         groups = DuplicateFinder(config, db).find(
-            strategy=body.strategy, fingerprint_pass=body.fingerprint
+            strategy=body.strategy, fingerprint_pass=fingerprint,
+            progress_state=jobs.update,
         )
         return serialize_dupe_groups(groups)
 
@@ -220,19 +232,47 @@ def create_app(config: Config) -> FastAPI:
     def dupes_list() -> List[Dict[str, Any]]:
         return serialize_dupe_groups(DuplicateFinder(config, db).persisted_groups())
 
+    @app.get("/api/dupes/page")
+    def dupes_page(
+        offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+    ) -> Dict[str, Any]:
+        groups = DuplicateFinder(config, db).persisted_groups()
+        return {
+            "items": serialize_dupe_groups(groups[offset:offset + limit]),
+            "total": len(groups), "offset": offset,
+        }
+
     @app.post("/api/dupes/apply")
+    @jobs.operation
     def dupes_apply(body: KeepOverride) -> Dict[str, Any]:
         finder = DuplicateFinder(config, db)
         groups = finder.persisted_groups()
+        if body.group_ids is not None:
+            selected = set(body.group_ids)
+            groups = [group for group in groups if group.group_id in selected]
+            if {group.group_id for group in groups} != selected:
+                raise HTTPException(409, "Duplicate groups changed. Run Find duplicates again.")
+        for group in groups:
+            expected = body.member_ids.get(group.group_id)
+            if expected is not None and set(expected) != {m.track.id for m in group.members}:
+                raise HTTPException(409, "Duplicate group membership changed. Review it again.")
         if not groups:
             return {"trashed": 0, "deleted": 0, "reclaimed_bytes": 0, "groups": 0}
-        report = finder.apply(groups, hard_delete=body.hard_delete, keep_ids=body.keep_ids)
+        try:
+            report = finder.apply(groups, hard_delete=body.hard_delete, keep_ids=body.keep_ids)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         return {
             "trashed": report.trashed, "deleted": report.deleted,
             "reclaimed_bytes": report.reclaimed_bytes, "groups": len(groups),
         }
 
+    @app.post("/api/dupes/apply-job")
+    def dupes_apply_job(body: KeepOverride) -> Dict[str, str]:
+        return {"job_id": jobs.start("duplicates-apply", lambda job: dupes_apply(body))}
+
     @app.post("/api/dupes/manual")
+    @jobs.operation
     def dupes_manual(body: ManualDupeBody) -> Dict[str, Any]:
         finder = DuplicateFinder(config, db)
         try:
@@ -247,36 +287,115 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/tracks/search")
     def tracks_search(body: TrackSearchBody) -> List[Dict[str, Any]]:
+        return tracks_page(body)["items"]
+
+    @app.get("/api/genres")
+    def genres() -> List[str]:
+        rows = db.query(
+            "SELECT DISTINCT genre FROM tracks WHERE genre IS NOT NULL AND genre!='' "
+            "ORDER BY genre COLLATE NOCASE"
+        )
+        return [row["genre"] for row in rows]
+
+    @app.get("/api/formats")
+    def formats() -> List[str]:
+        rows = db.query(
+            "SELECT DISTINCT format FROM tracks WHERE format IS NOT NULL AND format!='' "
+            "ORDER BY format COLLATE NOCASE"
+        )
+        return [row["format"] for row in rows]
+
+    @app.post("/api/tracks/page")
+    def tracks_page(body: TrackSearchBody) -> Dict[str, Any]:
         query = body.query.strip()
         limit = max(1, min(body.limit, 200))
         params: List[Any] = []
-        where = "status IN ('ok', 'suspect')"
+        where = "status IN ('ok', 'suspect', 'bad')" if body.status == "bad" else "status IN ('ok', 'suspect')"
         if query:
             pattern = f"%{query}%"
             where += " AND (path LIKE ? COLLATE NOCASE OR artist LIKE ? COLLATE NOCASE " \
                 "OR album LIKE ? COLLATE NOCASE OR title LIKE ? COLLATE NOCASE)"
             params.extend([pattern] * 4)
-        params.append(limit)
+        for column, value in (("genre", body.genre), ("format", body.format)):
+            if value:
+                where += f" AND {column}=?"
+                params.append(value)
+        if body.status in ("ok", "suspect", "bad"):
+            where += " AND status=?"
+            params.append(body.status)
+        total = db.query_one(f"SELECT COUNT(*) AS n FROM tracks WHERE {where}", params)["n"]
+        params.extend([limit, max(0, body.offset)])
         rows = db.query(
             "SELECT id, path, artist, album, title, genre, format, bitrate FROM tracks "
-            f"WHERE {where} ORDER BY artist, album, title, path LIMIT ?",
+            f"WHERE {where} ORDER BY artist, album, title, path LIMIT ? OFFSET ?",
             params,
         )
-        return [dict(row) for row in rows]
+        return {"items": [dict(row) for row in rows], "total": total, "offset": max(0, body.offset)}
+
+    @app.get("/api/trash")
+    def trash_page(
+        offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+        include_restored: bool = False,
+    ) -> Dict[str, Any]:
+        items, total = db.deletions_page(offset, limit, include_restored)
+        return {"items": items, "total": total, "offset": offset}
+
+    @app.post("/api/trash/restore")
+    @jobs.operation
+    def trash_restore(body: RestoreBody) -> Dict[str, Any]:
+        row = db.query_one(
+            "SELECT * FROM deletions WHERE id=? AND restored_at IS NULL AND moved_to IS NOT NULL",
+            (body.deletion_id,),
+        )
+        if row is None:
+            raise HTTPException(404, "recoverable trash entry not found")
+        source, target = str(Path(row["moved_to"]).resolve()), str(Path(row["path"]).resolve())
+        if not is_inside(source, config.trash_dir) or not is_inside(target, config.library):
+            raise HTTPException(400, "trash entry is outside the configured library")
+        if not os.path.isfile(source):
+            raise HTTPException(404, "trashed file is missing from disk")
+        if os.path.lexists(target):
+            raise HTTPException(409, "original path is occupied; move the existing file before restoring")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        linked = False
+        try:
+            os.link(source, target, follow_symlinks=False)
+            linked = True
+            os.unlink(source)
+        except OSError as exc:
+            if linked and os.path.exists(source):
+                os.unlink(target)
+            if not linked and isinstance(exc, FileExistsError):
+                raise HTTPException(409, "original path became occupied during restore") from exc
+            raise HTTPException(500, f"could not restore file: {exc}") from exc
+        try:
+            db.mark_restored(body.deletion_id)
+            track = db.find_track_by_path(target)
+            if track is not None:
+                db.update_track_columns(track.id, status="suspect", path=target)
+        except Exception as exc:
+            raise HTTPException(
+                500, f"file restored to {target}, but database history update failed: {exc}"
+            ) from exc
+        return {"restored": target}
 
     @app.post("/api/rename")
+    @jobs.operation
     def rename_run(body: ApplyBody) -> Dict[str, Any]:
+        jobs.update("Planning folder and filename changes")
         renamer = Renamer(config, db)
         report = renamer.plan()
         if body.apply:
+            jobs.update("Moving and renaming files")
             report = renamer.apply(report)
         return {
             "applied": body.apply, "to_move": len(report.moves),
             "moved": report.moved, "already_ok": report.already_ok,
-            "skipped": len(report.skipped), "errors": report.errors[:100],
+            "skipped": len(report.skipped), "errors": report.errors,
+            "skipped_files": [{"path": path, "reason": reason} for path, reason in report.skipped],
             "moves": [
                 {"source": m.source, "target": m.target, "status": m.status}
-                for m in report.moves[:200]
+                for m in report.moves
             ],
         }
 
@@ -306,6 +425,7 @@ def create_app(config: Config) -> FastAPI:
         return result
 
     @app.post("/api/art")
+    @jobs.operation
     def art_run(body: ApplyBody) -> Dict[str, Any]:
         artwork = Artwork(config, db)
         brainz = Brainz(config, db)
@@ -319,7 +439,8 @@ def create_app(config: Config) -> FastAPI:
                 ],
             }
         results = []
-        for album in albums:
+        jobs.update("Downloading artwork", 0, len(albums))
+        for index, album in enumerate(albums, start=1):
             result = artwork.process_album(
                 album, brainz.resolve_release, body.replace_small
             )
@@ -330,6 +451,7 @@ def create_app(config: Config) -> FastAPI:
                     "embedded": result.embedded,
                 }
             )
+            jobs.update("Downloading artwork", index, len(albums), album.album)
         return {"applied": True, "albums": results}
 
     @app.post("/api/brainz/refresh")
@@ -337,7 +459,12 @@ def create_app(config: Config) -> FastAPI:
         brainz = Brainz(config, db)
 
         def run(job: Dict[str, Any]) -> Dict[str, Any]:
-            gaps = brainz.refresh_albums()
+            jobs.update("Comparing albums with MusicBrainz")
+            gaps = brainz.refresh_albums(
+                progress=lambda done, count, current: jobs.update(
+                    "Comparing albums with MusicBrainz", done, count, current
+                )
+            )
             return {"albums_with_gaps": len([g for g in gaps if g.missing])}
 
         return {"job_id": jobs.start("brainz", run)}
@@ -408,6 +535,7 @@ def create_app(config: Config) -> FastAPI:
         return result
 
     @app.put("/api/settings")
+    @jobs.operation
     def settings_put(body: SettingsBody) -> Dict[str, Any]:
         updates: Dict[str, Dict[str, Any]] = {}
         for section in EDITABLE_SECTIONS:
@@ -452,6 +580,33 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(500, f"could not write config: {exc}") from exc
         return {"saved": True, "path": str(path)}
 
+    @app.post("/api/tasks/{kind}")
+    def task_start(kind: str, body: ApplyBody) -> Dict[str, str]:
+        actions = {
+            "doctor": lambda: doctor_run(body),
+            "duplicates": lambda: {"groups": dupes_find(body)},
+            "rename": lambda: rename_run(body),
+            "art": lambda: art_run(body),
+        }
+        if kind not in actions:
+            raise HTTPException(404, "unknown task")
+        return {"job_id": jobs.start(kind, lambda job: actions[kind]())}
+
+    @app.get("/api/jobs")
+    def job_list() -> List[Dict[str, Any]]:
+        return jobs.list()
+
+    @app.get("/api/jobs/{job_id}/results/{section}")
+    def job_results(
+        job_id: str, section: str, offset: int = Query(0, ge=0),
+        limit: int = Query(50, ge=1, le=200),
+    ) -> Dict[str, Any]:
+        result = jobs.result(job_id)
+        items = result.get(section)
+        if not isinstance(items, list):
+            raise HTTPException(404, "result section not found")
+        return {"items": items[offset:offset + limit], "total": len(items), "offset": offset}
+
     @app.get("/api/jobs/{job_id}")
     def job_status(job_id: str) -> Dict[str, Any]:
         job = jobs.get(job_id)
@@ -461,6 +616,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.on_event("shutdown")
     def shutdown() -> None:
+        jobs.close()
         db.close()
 
     return app

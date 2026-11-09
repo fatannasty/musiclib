@@ -50,7 +50,11 @@ def test_refresh_albums_with_mocked_musicbrainz(lib_env, monkeypatch):
     monkeypatch.setattr("musiclib.brainz.musicbrainzngs.get_release_by_id",
                         fake_get_release_by_id)
     brainz = Brainz(env.config, env.db)
-    gaps = brainz.refresh_albums()
+    progress = []
+    gaps = brainz.refresh_albums(
+        progress=lambda done, total, current: progress.append((done, total, current))
+    )
+    assert progress == [(1, 1, "Artist One — Album A")]
     assert len(gaps) == 1
     gap = gaps[0]
     assert gap.album.mbid_release == "rel-1"
