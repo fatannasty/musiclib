@@ -397,7 +397,7 @@ const views = {
       <select id="library-status"><option value="">Healthy and flagged</option><option value="suspect">Needs review</option><option value="bad">Bad files</option></select>
       <button class="action ghost" id="library-search">Search</button>
     </div><p class="hint">Browse the catalog, search MusicBrainz for suggestions, and review tag changes before writing them to files.</p>
-    <div id="metadata-review"></div><div id="library-table"></div>`;
+    <div id="metadata-search"></div><div id="metadata-review"></div><div id="library-table"></div>`;
     const [genreRows, formatRows] = await Promise.all([api("/api/genres"), api("/api/formats")]);
     $("#library-genre").insertAdjacentHTML("beforeend", genreRows.map(g => `<option>${esc(g)}</option>`).join(""));
     $("#library-format").insertAdjacentHTML("beforeend", formatRows.map(f => `<option>${esc(f)}</option>`).join(""));
@@ -413,14 +413,46 @@ const views = {
           <td class="path">${esc(t.path)}</td><td><button class="action ghost" data-lookup="${t.id}">Lookup</button></td></tr>`,
         tracks => tracks.forEach(track => {
           const button = el.querySelector(`[data-lookup="${track.id}"]`);
-          if (button) button.onclick = async () => {
-            button.disabled = true; button.textContent = "Looking up…";
-            try {
-              const review = await post("/api/metadata/lookup", {track_id: track.id});
-              renderMetadataReview(review);
-            } catch (e) { toast(e.message, true); button.textContent = "Lookup"; button.disabled = false; }
-          };
+          if (button) button.onclick = () => renderMetadataSearch(track);
         }));
+    };
+    const renderMetadataSearch = track => {
+      const searchPanel = el.querySelector("#metadata-search");
+      el.querySelector("#metadata-review").innerHTML = "";
+      searchPanel.innerHTML = `<form class="card"><h3>Search MusicBrainz</h3>
+        <p class="path">${esc(track.path)}</p>
+        <p class="hint">Enter or correct a title or artist, even if the file has no tags. Searching does not change your files.</p>
+        <div class="row">
+          <label>Title <input type="text" name="title" value="${esc(track.title || "")}"></label>
+          <label>Artist <input type="text" name="artist" value="${esc(track.artist || "")}"></label>
+          <button type="submit" class="action">Search MusicBrainz</button>
+        </div><p role="status" class="hint" data-search-status></p></form>`;
+      const form = searchPanel.querySelector("form");
+      const submit = form.querySelector('button[type="submit"]');
+      const status = form.querySelector("[data-search-status]");
+      form.onsubmit = async event => {
+        event.preventDefault();
+        const title = form.elements.namedItem("title").value.trim();
+        const artist = form.elements.namedItem("artist").value.trim();
+        if (!title && !artist) {
+          status.textContent = "Enter at least a title or artist.";
+          return;
+        }
+        submit.disabled = true;
+        status.textContent = "Looking up MusicBrainz…";
+        el.querySelector("#metadata-review").innerHTML = "";
+        try {
+          const review = await post("/api/metadata/lookup", {track_id: track.id, title, artist});
+          if (!form.isConnected) return;
+          status.textContent = "";
+          renderMetadataReview(review);
+        } catch (e) {
+          if (form.isConnected) status.textContent = e.message;
+        } finally {
+          submit.disabled = false;
+        }
+      };
+      searchPanel.scrollIntoView({behavior: "smooth", block: "start"});
     };
     const renderMetadataReview = review => {
       const panel = $("#metadata-review");

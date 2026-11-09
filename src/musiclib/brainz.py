@@ -14,6 +14,13 @@ from .models import Album
 OFFICIAL_STATUSES = {"Official", None, ""}
 
 
+def configure_musicbrainz(config: Config) -> None:
+    musicbrainzngs.set_useragent(
+        "musiclib", "0.1", config.brainz.get("contact", "musiclib@example.com")
+    )
+    musicbrainzngs.set_rate_limit(True)
+
+
 @dataclass
 class ExpectedTrack:
     disc: int
@@ -34,10 +41,7 @@ class Brainz:
     def __init__(self, config: Config, db: Database):
         self.config = config
         self.db = db
-        musicbrainzngs.set_useragent(
-            "musiclib", "0.1", config.brainz.get("contact", "musiclib@example.com")
-        )
-        musicbrainzngs.set_rate_limit(True)
+        configure_musicbrainz(config)
 
     def resolve_release(
         self, album_artist: str, album: str

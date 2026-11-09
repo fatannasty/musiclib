@@ -6,11 +6,12 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import musicbrainzngs
 import mutagen
 
+from .brainz import configure_musicbrainz
 from .config import Config
 from .db import Database
 from .duplicates import normalize
@@ -101,14 +102,21 @@ def _credit_name(value: Any) -> str:
     return "".join(names).strip()
 
 
-def lookup_track(track: Any) -> List[Dict[str, Any]]:
-    if not track.title and not track.artist:
-        raise ValueError("Track needs at least a title or artist tag to search MusicBrainz.")
+def lookup_track(
+    track: Any, title: Optional[str] = None, artist: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    search_title = ((track.title if title is None else title) or "").strip()
+    search_artist = ((track.artist if artist is None else artist) or "").strip()
+    if not search_title and not search_artist:
+        raise ValueError("Enter a title or artist to search MusicBrainz. File tags are unchanged.")
+    terms = {}
+    if search_title:
+        terms["recording"] = search_title
+    if search_artist:
+        terms["artist"] = search_artist
     try:
-        response = musicbrainzngs.search_recordings(
-            artist=track.artist or "", recording=track.title or "", limit=10
-        )
-    except musicbrainzngs.WebServiceError as exc:
+        response = musicbrainzngs.search_recordings(limit=10, **terms)
+    except musicbrainzngs.MusicBrainzError as exc:
         raise RuntimeError(f"MusicBrainz lookup failed: {exc}") from exc
     if not isinstance(response, dict) or not isinstance(response.get("recording-list", []), list):
         raise RuntimeError("MusicBrainz returned an unexpected response.")
@@ -124,6 +132,7 @@ class MetadataReview:
     def __init__(self, config: Config, db: Database):
         self.config = config
         self.db = db
+        configure_musicbrainz(config)
         db.execute(
             "CREATE TABLE IF NOT EXISTS metadata_reviews ("
             "id INTEGER PRIMARY KEY, track_id INTEGER NOT NULL, path TEXT NOT NULL, "
@@ -131,7 +140,9 @@ class MetadataReview:
             "created_at TEXT NOT NULL, applied_at TEXT)"
         )
 
-    def propose(self, track_id: int) -> Dict[str, Any]:
+    def propose(
+        self, track_id: int, title: Optional[str] = None, artist: Optional[str] = None
+    ) -> Dict[str, Any]:
         track = self.db.get_track(track_id)
         if track is None or track.status == "deleted":
             raise ValueError("Track is not available in the library.")
@@ -139,7 +150,7 @@ class MetadataReview:
             raise ValueError("Track is outside the configured library.")
         if not os.path.isfile(track.path):
             raise ValueError("Track file is missing from disk.")
-        candidates = lookup_track(track)
+        candidates = lookup_track(track, title=title, artist=artist)
         cursor = self.db.execute(
             "INSERT INTO metadata_reviews "
             "(track_id,path,file_hash,candidates,status,created_at) VALUES (?,?,?,?,?,?)",
@@ -155,6 +166,7 @@ class MetadataReview:
                 "artist": track.artist, "album_artist": track.album_artist,
                 "album": track.album, "year": track.year, "track_no": track.track_no,
                 "disc_no": track.disc_no, "genre": track.genre,
+                "mbid_track": track.mbid_track, "mbid_release": track.mbid_release,
             },
             "candidates": candidates,
         }
