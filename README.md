@@ -123,8 +123,10 @@ musiclib serve               # http://127.0.0.1:8000
 ```
 
 Tabs: Overview (stats, scan, issues), Duplicates (review and re-pick keepers),
-Bad Files (doctor), Organize (rename preview/apply), Cover Art, Missing Music
-(MusicBrainz gaps), Usenet (indexer search + SABnzbd queue).
+Bad Files (doctor), Library (browse tracks and review MusicBrainz tag suggestions
+field by field; nothing is selected or written until you choose fields and confirm),
+Organize (rename preview/apply), Cover Art, Missing Music (MusicBrainz gaps), Usenet
+(indexer search + SABnzbd queue).
 
 ### LAN access
 
