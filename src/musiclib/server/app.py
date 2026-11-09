@@ -71,6 +71,8 @@ class RestoreBody(BaseModel):
 
 class MetadataLookupBody(BaseModel):
     track_id: int
+    title: Optional[str] = None
+    artist: Optional[str] = None
 
 
 class MetadataApplyBody(BaseModel):
@@ -324,7 +326,9 @@ def create_app(config: Config) -> FastAPI:
     @jobs.operation
     def metadata_lookup(body: MetadataLookupBody) -> Dict[str, Any]:
         try:
-            return MetadataReview(config, db).propose(body.track_id)
+            return MetadataReview(config, db).propose(
+                body.track_id, title=body.title, artist=body.artist
+            )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:

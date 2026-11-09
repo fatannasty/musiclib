@@ -128,6 +128,12 @@ field by field; nothing is selected or written until you choose fields and confi
 Organize (rename preview/apply), Cover Art, Missing Music (MusicBrainz gaps), Usenet
 (indexer search + SABnzbd queue).
 
+In Library, choose **Lookup**, enter or correct the title and/or artist, then
+choose **Search MusicBrainz**. This works even when a file has no title or artist
+tags. Search terms do not modify file tags; only explicitly selected suggestions
+are written after confirmation. Lookup failures display the provider error so
+network or service problems can be distinguished from an empty search.
+
 ### LAN access
 
 Run the dashboard on all interfaces so any device on your network can use it:

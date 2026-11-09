@@ -1,4 +1,6 @@
 
+import musicbrainzngs
+import pytest
 from conftest import make_mp3
 from fastapi.testclient import TestClient
 
@@ -148,3 +150,112 @@ def test_review_rejects_bad_candidate_or_field_without_changing_file(lib_env, mo
         else:
             raise AssertionError("Expected invalid review input to be refused")
         assert path.read_bytes() == before
+
+
+def test_first_lookup_configures_client(lib_env, monkeypatch):
+    env = lib_env
+    make_mp3(env.library / "song.mp3", tags={"title": "Song"})
+    Scanner(env.config, env.db).scan()
+    monkeypatch.setattr(musicbrainzngs.musicbrainz, "_useragent", "")
+    env.config.brainz["contact"] = "https://github.com/fatannasty/musiclib"
+
+    def search(**kwargs):
+        assert "musiclib/0.1" in musicbrainzngs.musicbrainz._useragent
+        assert env.config.brainz["contact"] in musicbrainzngs.musicbrainz._useragent
+        return _musicbrainz_result()
+
+    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/lookup", json={"track_id": env.db.all_tracks()[0].id})
+        assert response.status_code == 200
+
+
+@pytest.mark.parametrize("title,artist", [
+    ("Correct Song", "Correct Artist"), ("Correct Song", ""), ("", "Correct Artist"),
+])
+def test_manual_lookup_for_untagged_file_preserves_tags(lib_env, monkeypatch, title, artist):
+    env = lib_env
+    path = env.library / "untagged.mp3"
+    make_mp3(path)
+    Scanner(env.config, env.db).scan()
+    track = env.db.all_tracks()[0]
+    before = path.read_bytes()
+    calls = []
+
+    def search(**kwargs):
+        calls.append(kwargs)
+        return _musicbrainz_result()
+
+    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/lookup", json={
+            "track_id": track.id, "title": f" {title} ", "artist": f" {artist} ",
+        })
+        assert response.status_code == 200
+        assert response.json()["track"]["title"] is None
+        assert response.json()["track"]["artist"] is None
+    expected = {"limit": 10}
+    if title:
+        expected["recording"] = title
+    if artist:
+        expected["artist"] = artist
+    assert calls == [expected]
+    assert path.read_bytes() == before
+    assert env.db.get_track(track.id).title is None
+
+
+def test_manual_lookup_can_override_existing_tags(lib_env, monkeypatch):
+    env = lib_env
+    make_mp3(env.library / "song.mp3", tags={"title": "Wrong Song", "artist": "Wrong Artist"})
+    Scanner(env.config, env.db).scan()
+    calls = []
+
+    def search(**kwargs):
+        calls.append(kwargs)
+        return {"recording-list": []}
+
+    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    MetadataReview(env.config, env.db).propose(
+        env.db.all_tracks()[0].id, title="Correct Song", artist=""
+    )
+    assert calls == [{"limit": 10, "recording": "Correct Song"}]
+
+
+def test_empty_manual_search_is_actionable_without_provider_call(lib_env, monkeypatch):
+    env = lib_env
+    make_mp3(env.library / "untagged.mp3")
+    Scanner(env.config, env.db).scan()
+
+    def search(**kwargs):
+        pytest.fail("Empty search must not call MusicBrainz")
+
+    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/lookup", json={
+            "track_id": env.db.all_tracks()[0].id, "title": " ", "artist": " ",
+        })
+        assert response.status_code == 400
+        assert "Enter a title or artist" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("error", [
+    musicbrainzngs.NetworkError("connection timed out"),
+    musicbrainzngs.UsageError("client configuration error"),
+])
+def test_provider_failure_has_actionable_api_error(lib_env, monkeypatch, error):
+    env = lib_env
+    path = env.library / "song.mp3"
+    make_mp3(path, tags={"title": "Song"})
+    Scanner(env.config, env.db).scan()
+    before = path.read_bytes()
+
+    def search(**kwargs):
+        raise error
+
+    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/lookup", json={"track_id": env.db.all_tracks()[0].id})
+        assert response.status_code == 502
+        assert "MusicBrainz lookup failed" in response.json()["detail"]
+        assert str(error) in response.json()["detail"]
+    assert path.read_bytes() == before
