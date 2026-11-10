@@ -65,11 +65,16 @@ def test_reviewed_restore_survives_restart_and_uses_only_saved_targets(lib_env, 
             "target": str(env.library / "unreviewed.flac"),
         })
         assert response.status_code == 200
-        assert wait_job(client, response.json()["job_id"])["summary"] == {"restored": 2, "errors": 0}
+        assert wait_job(client, response.json()["job_id"])["summary"] == {
+            "restored": 2, "errors": 0, "scan_errors": 0,
+        }
         for entry in entries[:2]:
             assert Path(entry["path"]).read_bytes() == entry["data"]
             assert not Path(entry["moved_to"]).exists()
-            assert env.db.get_track(entry["track_id"]).status == "suspect"
+            track = env.db.get_track(entry["track_id"])
+            assert track.status == "ok"
+            assert track.title == f"Song {entries.index(entry)}"
+        assert env.db.albums_all()[0].have_tracks == 2
         assert Path(entries[2]["moved_to"]).read_bytes() == entries[2]["data"]
         assert not Path(entries[2]["path"]).exists()
         assert not (env.library / "unreviewed.flac").exists()
@@ -289,7 +294,9 @@ def test_restore_accepts_old_entries_without_hashes_and_blocks_empty_ready_list(
         job_id = response.json()["job_id"]
         assert wait_job(client, job_id)["summary"]["ready"] == 1
         response = client.post("/api/trash/restore-reviewed", json={"preview_job_id": job_id})
-        assert wait_job(client, response.json()["job_id"])["summary"] == {"restored": 1, "errors": 0}
+        assert wait_job(client, response.json()["job_id"])["summary"] == {
+            "restored": 1, "errors": 0, "scan_errors": 0,
+        }
         assert Path(entry["path"]).read_bytes() == entry["data"]
         response = client.post("/api/trash/restore-preview", json={
             "deletion_ids": list(range(1000, 1200)),

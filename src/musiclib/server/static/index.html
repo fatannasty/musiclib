@@ -245,7 +245,7 @@ async function showJobResults(job) {
     "rename-preview": ["moves", "skipped_files"], "rename-reviewed": ["moves", "errors", "skipped_files"],
     "artwork-preview": ["tracks", "warnings"], "artwork-reviewed": ["applied", "errors"],
     "trash-preview": ["tracks"], "trash-reviewed": ["trashed", "errors"],
-    "restore-preview": ["entries"], "restore-reviewed": ["restored", "errors"],
+    "restore-preview": ["entries"], "restore-reviewed": ["restored", "errors", "scan_errors"],
   }[job.kind] || [];
   container.querySelector(".sections").innerHTML = sections.map(([key, value]) => `<span class="tag dim">${esc(key)}: ${value}</span>`).join("") +
     lists.map(key => `<button class="action ghost" data-section="${key}">${esc(key)}</button>`).join("");
@@ -1508,7 +1508,9 @@ const views = {
             try {
               const result = await post("/api/trash/restore", {deletion_id:item.id});
               selected.delete(item.id);
-              toast(`Restored ${result.restored}`); await draw(); await loadStats();
+              toast(result.scan_errors?.length ?
+                `Restored; metadata refresh failed: ${result.scan_errors.map(item => `${item.path}: ${item.error}`).join("; ")}` :
+                `Restored ${result.restored}`); await draw(); await loadStats();
             } catch (e) { toast(e.message, true); }
           };
         });
@@ -1558,11 +1560,15 @@ const views = {
           status.textContent = "Restoring reviewed files. Progress and saved results are in Activity.";
           await refreshActivity();
           const result = await pollJob(job_id, "Reviewed recovery");
-          const failures = await api(`/api/jobs/${job_id}/results/errors?limit=200`);
+          const [failures, scanErrors] = await Promise.all([
+            api(`/api/jobs/${job_id}/results/errors?limit=200`),
+            api(`/api/jobs/${job_id}/results/scan_errors?limit=200`),
+          ]);
           if (!panel.isConnected) return;
           status.innerHTML = `<p>${result.summary.restored} files restored; ${failures.total} errors.
-            Run Scan to refresh restored file metadata. Results remain in Activity; create a fresh preview to retry.</p>` +
-            failures.items.map(item => `<p role="alert">${esc(item.path || item.deletion_id)}: ${esc(item.error)}</p>`).join("");
+            ${scanErrors.total} metadata refresh errors. Results remain in Activity; create a fresh preview to retry.</p>` +
+            failures.items.map(item => `<p role="alert">${esc(item.path || item.deletion_id)}: ${esc(item.error)}</p>`).join("") +
+            scanErrors.items.map(item => `<p role="alert">${esc(item.path)}: ${esc(item.error)}</p>`).join("");
           selected.clear(); await draw(); await loadStats();
         } catch (e) { status.textContent = e.message; toast(e.message, true); }
         finally {

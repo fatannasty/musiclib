@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import uuid
@@ -10,11 +11,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .config import Config
 from .db import Database
 from .fsops import case_insensitive_exists, is_inside, move_no_replace
-from .scanner import file_hash
+from .scanner import Scanner, file_hash
+
+logger = logging.getLogger(__name__)
 
 
 class RestoreReview:
     def __init__(self, config: Config, db: Database):
+        self.config = config
         self.db = db
         self.library = str(Path(config.library).expanduser().resolve())
         self.trash_root = str(Path(config.trash_dir).expanduser().resolve())
@@ -151,7 +155,7 @@ class RestoreReview:
         entries = [item for item in json.loads(row["entries"]) if item["status"] == "ready"]
         if not entries:
             raise ValueError("This preview has no files ready to restore.")
-        restored, errors = [], []
+        restored, errors, restored_paths = [], [], []
         for index, snapshot in enumerate(entries):
             if progress:
                 progress("Restoring reviewed files", index, len(entries), snapshot["path"])
@@ -170,6 +174,7 @@ class RestoreReview:
 
                 move_no_replace(snapshot["source"], snapshot["target"], verify=verify)
                 restored.append({"deletion_id": snapshot["deletion_id"], "path": snapshot["target"]})
+                restored_paths.append(snapshot["target"])
                 try:
                     self.db.mark_restored(snapshot["deletion_id"])
                     track = self.db.find_track_by_path(snapshot["target"])
@@ -184,6 +189,22 @@ class RestoreReview:
                     "deletion_id": snapshot["deletion_id"], "path": snapshot["path"],
                     "source": snapshot["source"], "error": str(exc),
                 })
+        scan_errors = []
+        if restored_paths:
+            try:
+                scan_report = Scanner(self.config, self.db).refresh_paths(
+                    restored_paths, progress_state=progress,
+                )
+                scan_errors = [
+                    {
+                        "path": path,
+                        "error": "File was restored, but its catalog metadata could not be refreshed. Run Scan.",
+                    }
+                    for path in scan_report.error_paths
+                ]
+            except Exception as exc:
+                logger.exception("Could not refresh catalog metadata after reviewed restore")
+                scan_errors = [{"path": path, "error": str(exc)} for path in restored_paths]
         if progress:
             progress("Restore complete", len(entries), len(entries), "")
-        return {"restored": restored, "errors": errors}
+        return {"restored": restored, "errors": errors, "scan_errors": scan_errors}
