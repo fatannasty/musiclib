@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Query
@@ -21,12 +21,14 @@ from ..duplicates import DuplicateFinder
 from ..fingerprint import compute_all, fpcalc_available
 from ..fsops import is_inside, move_no_replace
 from ..metadata_review import ALBUM_FIELDS, EDITABLE_FIELDS, TRACK_FIELDS, MetadataReview
+from ..models import audio_format
 from ..rename import Renamer
 from ..restore_review import RestoreReview
 from ..scanner import Scanner
 from ..trash_review import TrashReview
 from ..usenet import Sabnzbd, SabnzbdError, search_all
 from .jobs import JobRegistry
+from .playback import MEDIA_TYPES, Playback
 
 STATIC_DIR = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
@@ -197,6 +199,7 @@ def create_app(config: Config) -> FastAPI:
     app = FastAPI(title="musiclib", docs_url=None, redoc_url=None)
     db = Database(config.db_path)
     jobs = JobRegistry(db)
+    playback = Playback(config, db)
 
     def sab_client() -> Sabnzbd:
         if not config.sabnzbd.get("api_key"):
@@ -214,6 +217,27 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/stats")
     def stats() -> Dict[str, Any]:
         return db.stats()
+
+    @app.get("/api/tracks/{track_id}/playback")
+    def playback_info(track_id: int) -> Dict[str, Any]:
+        return playback.info(track_id)
+
+    @app.get("/api/tracks/{track_id}/audio")
+    async def track_audio(
+        track_id: int, mode: Literal["original", "compatible"] = "original",
+        start: float = Query(0, ge=0, allow_inf_nan=False),
+    ) -> Response:
+        track = playback.source(track_id)
+        if mode == "original":
+            if start:
+                raise HTTPException(400, "Original playback uses byte ranges to seek.")
+            return FileResponse(
+                track.path, media_type=MEDIA_TYPES[audio_format(track.path)],
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            )
+        if track.duration and start >= track.duration:
+            raise HTTPException(416, "Playback position is past the end of the track.")
+        return await playback.compatible(track, start)
 
     @app.post("/api/scan")
     def scan(body: ScanBody) -> Dict[str, str]:

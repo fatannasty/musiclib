@@ -60,6 +60,29 @@ runs at a time. Interrupted jobs are marked for review on restart. The Library t
 supports catalog search and filters; Recovery lists trashed files and restores
 them only when the original path is still free.
 
+## Listen to tracks
+
+Use **Play** in Library track lists, album pages, Duplicates, or Bad Files to
+audition a file before editing or removing it. The player stays open while you
+switch tabs. It shows the source format, bitrate, sample rate, bit depth, and
+channel count when those are available. Playback never edits the source file.
+
+**Original file** streams the unchanged audio with seeking, using the formats
+your browser supports (typically MP3, FLAC, WAV, AAC/M4A, Ogg, and Opus; support
+varies by browser and codec). If the browser cannot play it, the player falls
+back to **Compatibility MP3**, or you can select that mode yourself. FFmpeg
+decodes the app's supported formats, including ALAC, WMA, AIFF, APE, and WavPack,
+into a temporary live MP3 stream. FFmpeg is included in the Docker image; local
+installs need `ffmpeg` on the server's PATH for compatibility mode.
+
+Compatibility playback is **lossy 320 kbps MP3, 48 kHz stereo**, not a bit-perfect
+quality reference. Prefer Original for comparing audio quality; browser/device
+mixing and output settings can still affect what you hear. Use the **Position**
+slider to jump within a compatibility stream. At most two compatibility streams
+can run per server process; switching tracks or choosing **Stop and close** releases the
+decoder. Missing, deleted, trashed, out-of-library, and symbolic-link sources
+cannot be played. Listening does not replace the **Bad Files** decode checks.
+
 ## Duplicate detection
 
 Three passes, merged with union-find:
