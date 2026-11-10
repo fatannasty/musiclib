@@ -4,10 +4,12 @@ import json
 import os
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 import musicbrainzngs
 import mutagen
 
@@ -17,6 +19,9 @@ from .db import Database
 from .duplicates import normalize
 from .fsops import is_inside
 from .scanner import Scanner, ScanReport, file_hash, scan_worker
+
+CAA_FRONT = "https://coverartarchive.org/release/{mbid}/front-250"
+ITUNES_SEARCH = "https://itunes.apple.com/search"
 
 EDITABLE_FIELDS = (
     "title", "artist", "album", "album_artist", "year",
@@ -68,11 +73,14 @@ def _recording_candidate(recording: Dict[str, Any], track: Any) -> Dict[str, Any
                 break
         if position:
             break
+    release_mbid = release.get("id")
     return {
         "source": "MusicBrainz",
         "confidence": score,
         "recording_mbid": recording.get("id"),
-        "release_mbid": release.get("id"),
+        "release_mbid": release_mbid,
+        "cover_url": CAA_FRONT.format(mbid=release_mbid) if release_mbid else None,
+        "cover_fallback": None,
         "fields": {
             "title": title or None,
             "artist": artist or None,
@@ -81,8 +89,9 @@ def _recording_candidate(recording: Dict[str, Any], track: Any) -> Dict[str, Any
             "year": year,
             "track_no": position.get("position") if position else None,
             "disc_no": medium.get("position") if position else None,
+            "genre": None,
             "mbid_track": recording.get("id"),
-            "mbid_release": release.get("id"),
+            "mbid_release": release_mbid,
         },
     }
 
@@ -102,30 +111,152 @@ def _credit_name(value: Any) -> str:
     return "".join(names).strip()
 
 
+def _candidate_key(candidate: Dict[str, Any]) -> Tuple[str, str, str]:
+    fields = candidate.get("fields") or {}
+    return (
+        normalize(fields.get("title")),
+        normalize(fields.get("artist")),
+        normalize(fields.get("album")),
+    )
+
+
+def _itunes_artwork(url: Any) -> Optional[str]:
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return None
+    return url.replace("100x100bb", "300x300bb").replace("100x100", "300x300")
+
+
+def _itunes_candidate(item: Dict[str, Any], track: Any) -> Optional[Dict[str, Any]]:
+    title = item.get("trackName") if isinstance(item.get("trackName"), str) else ""
+    artist = item.get("artistName") if isinstance(item.get("artistName"), str) else ""
+    if not title:
+        return None
+    album = item.get("collectionName") if isinstance(item.get("collectionName"), str) else None
+    album_artist = item.get("collectionArtistName") if isinstance(item.get("collectionArtistName"), str) else None
+    genre = item.get("primaryGenreName") if isinstance(item.get("primaryGenreName"), str) else None
+    year = None
+    released = str(item.get("releaseDate") or "")
+    if released[:4].isdigit():
+        year = int(released[:4])
+    score = 70
+    if normalize(title) == normalize(track.title):
+        score += 10
+    if normalize(artist) == normalize(track.artist):
+        score += 10
+    return {
+        "source": "iTunes",
+        "confidence": min(100, score),
+        "recording_mbid": None,
+        "release_mbid": None,
+        "cover_url": _itunes_artwork(item.get("artworkUrl100")),
+        "cover_fallback": None,
+        "fields": {
+            "title": title or None,
+            "artist": artist or None,
+            "album": album,
+            "album_artist": album_artist or artist or None,
+            "year": year,
+            "track_no": item.get("trackNumber"),
+            "disc_no": item.get("discNumber"),
+            "genre": genre,
+            "mbid_track": None,
+            "mbid_release": None,
+        },
+    }
+
+
+def search_itunes(title: str, artist: str, track: Any) -> List[Dict[str, Any]]:
+    term = " ".join(part for part in (artist, title) if part).strip()
+    if not term:
+        return []
+    try:
+        response = httpx.get(
+            ITUNES_SEARCH,
+            params={"term": term, "entity": "song", "limit": 5},
+            headers={"User-Agent": "musiclib/0.1"},
+            timeout=4.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, OSError, ValueError, TypeError):
+        return []
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        return []
+    candidates = []
+    for item in payload["results"]:
+        if not isinstance(item, dict):
+            continue
+        candidate = _itunes_candidate(item, track)
+        if candidate:
+            candidates.append(candidate)
+    return candidates
+
+
+def search_musicbrainz(title: str, artist: str, track: Any) -> List[Dict[str, Any]]:
+    terms = {}
+    if title:
+        terms["recording"] = title
+    if artist:
+        terms["artist"] = artist
+    try:
+        response = musicbrainzngs.search_recordings(limit=6, **terms)
+    except musicbrainzngs.MusicBrainzError as exc:
+        raise RuntimeError(f"MusicBrainz lookup failed: {exc}") from exc
+    if not isinstance(response, dict) or not isinstance(response.get("recording-list", []), list):
+        raise RuntimeError("MusicBrainz returned an unexpected response.")
+    return [
+        _recording_candidate(recording, track)
+        for recording in _dict_list(response.get("recording-list"))
+        if recording.get("id") and recording.get("title")
+    ]
+
+
+def _merge_candidates(
+    musicbrainz: List[Dict[str, Any]], itunes: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    merged: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    extras: List[Dict[str, Any]] = []
+    for candidate in musicbrainz:
+        merged[_candidate_key(candidate)] = candidate
+    for candidate in itunes:
+        key = _candidate_key(candidate)
+        existing = merged.get(key)
+        if existing is None:
+            extras.append(candidate)
+            continue
+        if candidate.get("cover_url"):
+            existing["cover_fallback"] = existing.get("cover_url")
+            existing["cover_url"] = candidate["cover_url"]
+        if not existing["fields"].get("genre") and candidate["fields"].get("genre"):
+            existing["fields"]["genre"] = candidate["fields"]["genre"]
+        existing["source"] = "MusicBrainz + iTunes"
+        existing["confidence"] = max(existing["confidence"], candidate["confidence"])
+    return sorted([*merged.values(), *extras], key=lambda item: item["confidence"], reverse=True)
+
+
 def lookup_track(
     track: Any, title: Optional[str] = None, artist: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     search_title = ((track.title if title is None else title) or "").strip()
     search_artist = ((track.artist if artist is None else artist) or "").strip()
     if not search_title and not search_artist:
-        raise ValueError("Enter a title or artist to search MusicBrainz. File tags are unchanged.")
-    terms = {}
-    if search_title:
-        terms["recording"] = search_title
-    if search_artist:
-        terms["artist"] = search_artist
-    try:
-        response = musicbrainzngs.search_recordings(limit=10, **terms)
-    except musicbrainzngs.MusicBrainzError as exc:
-        raise RuntimeError(f"MusicBrainz lookup failed: {exc}") from exc
-    if not isinstance(response, dict) or not isinstance(response.get("recording-list", []), list):
-        raise RuntimeError("MusicBrainz returned an unexpected response.")
-    candidates = [
-        _recording_candidate(recording, track)
-        for recording in _dict_list(response.get("recording-list"))
-        if recording.get("id") and recording.get("title")
-    ]
-    return sorted(candidates, key=lambda item: item["confidence"], reverse=True)
+        raise ValueError("Enter a title or artist to search. File tags are unchanged.")
+    musicbrainz_error = None
+    musicbrainz_hits: List[Dict[str, Any]] = []
+    itunes_hits: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        musicbrainz_future = pool.submit(search_musicbrainz, search_title, search_artist, track)
+        itunes_future = pool.submit(search_itunes, search_title, search_artist, track)
+        try:
+            musicbrainz_hits = musicbrainz_future.result()
+        except RuntimeError as exc:
+            musicbrainz_error = exc
+        itunes_hits = itunes_future.result()
+    if not musicbrainz_hits and not itunes_hits:
+        if musicbrainz_error:
+            raise musicbrainz_error
+        return []
+    return _merge_candidates(musicbrainz_hits, itunes_hits)
 
 
 class MetadataReview:

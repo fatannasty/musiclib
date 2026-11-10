@@ -122,20 +122,23 @@ Manual search: `musiclib search "artist - album"` then `musiclib fill "artist - 
 musiclib serve               # http://127.0.0.1:8000
 ```
 
-Tabs: Overview (stats, scan, issues), Duplicates (review and re-pick keepers),
-Bad Files (doctor), Library (browse tracks and review MusicBrainz tag suggestions
+Tabs: Overview (stats widgets, scan, issues), Duplicates (review and re-pick keepers),
+Bad Files (doctor), Library (browse tracks and review tag suggestions
 field by field; nothing is selected or written until you choose fields and confirm),
 Organize (rename preview/apply), Cover Art, Missing Music (MusicBrainz gaps), Usenet
 (indexer search + SABnzbd queue).
 
 In Library, choose **Lookup**, enter or correct the title and/or artist, then
-choose **Search MusicBrainz**. This works even when a file has no title or artist
+search. MusicBrainz and iTunes are queried together so simple title/artist matches
+return faster when one catalog is slow, and matching albums show Cover Art Archive
+or iTunes artwork previews. This works even when a file has no title or artist
 tags. Search terms do not modify file tags; only explicitly selected suggestions
-are written after confirmation. Lookup failures display the provider error so
+are written after confirmation. Artwork previews are not embedded until you use
+Cover Art. Lookup failures display the provider error so
 network or service problems can be distinguished from an empty search.
 
 For bulk tagging, select up to 100 Library tracks across pages and choose **Look up
-selected tracks**. Review the candidate for each file and select the individual
+selected tracks**. Review the album cards for each file and select the individual
 fields to write, then choose **Apply reviewed tags** and confirm the batch.
 No fields are selected automatically; changing a candidate clears that track's
 field selection. Files without search terms are reported separately and can be

@@ -1,16 +1,24 @@
 import threading
 from pathlib import Path
 
+import httpx
 import musicbrainzngs
 import pytest
 from conftest import make_mp3
 from fastapi.testclient import TestClient
 from test_jobs_api import wait_job
 
-from musiclib.metadata_review import MetadataReview, lookup_track
+from musiclib.metadata_review import MetadataReview, lookup_track, search_itunes
 from musiclib.models import Track
 from musiclib.scanner import Scanner
 from musiclib.server.app import create_app
+
+
+@pytest.fixture(autouse=True)
+def _quiet_itunes(monkeypatch):
+    def offline(*args, **kwargs):
+        raise httpx.TimeoutException("itunes disabled in tests")
+    monkeypatch.setattr("musiclib.metadata_review.httpx.get", offline)
 
 
 def _musicbrainz_result():
@@ -45,6 +53,7 @@ def test_lookup_provides_source_and_confidence(monkeypatch):
     assert results[0]["fields"]["album"] == "Correct Album"
     assert results[0]["fields"]["track_no"] == "3"
     assert results[0]["fields"]["mbid_track"] == "recording-1"
+    assert results[0]["cover_url"] == "https://coverartarchive.org/release/release-1/front-250"
 
 
 def test_lookup_rejects_malformed_musicbrainz_response(monkeypatch):
@@ -197,7 +206,7 @@ def test_manual_lookup_for_untagged_file_preserves_tags(lib_env, monkeypatch, ti
         assert response.status_code == 200
         assert response.json()["track"]["title"] is None
         assert response.json()["track"]["artist"] is None
-    expected = {"limit": 10}
+    expected = {"limit": 6}
     if title:
         expected["recording"] = title
     if artist:
@@ -221,7 +230,7 @@ def test_manual_lookup_can_override_existing_tags(lib_env, monkeypatch):
     MetadataReview(env.config, env.db).propose(
         env.db.all_tracks()[0].id, title="Correct Song", artist=""
     )
-    assert calls == [{"limit": 10, "recording": "Correct Song"}]
+    assert calls == [{"limit": 6, "recording": "Correct Song"}]
 
 
 def test_empty_manual_search_is_actionable_without_provider_call(lib_env, monkeypatch):
@@ -393,3 +402,91 @@ def test_bulk_provider_failure_continues_and_holds_library_lock(lib_env, monkeyp
         assert wait_job(client, job_id)["summary"] == {"reviews": 1, "errors": 1}
         error = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"][0]
         assert "provider unavailable" in error["error"]
+
+
+def _itunes_song(**overrides):
+    item = {
+        "trackName": "Correct Song",
+        "artistName": "Correct Artist",
+        "collectionName": "Correct Album",
+        "collectionArtistName": "Correct Artist",
+        "releaseDate": "2004-01-02T12:00:00Z",
+        "trackNumber": 3,
+        "discNumber": 1,
+        "primaryGenreName": "Rock",
+        "artworkUrl100": "https://example.test/cover/100x100bb.jpg",
+    }
+    item.update(overrides)
+    return item
+
+
+def test_itunes_cover_merges_with_musicbrainz_match(monkeypatch):
+    monkeypatch.setattr(
+        "musiclib.metadata_review.musicbrainzngs.search_recordings",
+        lambda **kwargs: _musicbrainz_result(),
+    )
+    monkeypatch.setattr(
+        "musiclib.metadata_review.search_itunes",
+        lambda *args, **kwargs: [
+            {
+                "source": "iTunes", "confidence": 90, "cover_url": "https://example.test/cover/300x300bb.jpg",
+                "cover_fallback": None, "recording_mbid": None, "release_mbid": None,
+                "fields": {
+                    "title": "Correct Song", "artist": "Correct Artist", "album": "Correct Album",
+                    "album_artist": "Correct Artist", "year": 2004, "track_no": 3, "disc_no": 1,
+                    "genre": "Rock", "mbid_track": None, "mbid_release": None,
+                },
+            }
+        ],
+    )
+    results = lookup_track(Track(title="Correct Song", artist="Correct Artist"))
+    assert len(results) == 1
+    assert results[0]["source"] == "MusicBrainz + iTunes"
+    assert results[0]["cover_url"] == "https://example.test/cover/300x300bb.jpg"
+    assert results[0]["cover_fallback"] == "https://coverartarchive.org/release/release-1/front-250"
+    assert results[0]["fields"]["genre"] == "Rock"
+    assert results[0]["fields"]["mbid_track"] == "recording-1"
+
+
+def test_itunes_results_are_used_when_musicbrainz_fails(monkeypatch):
+    def fail(**kwargs):
+        raise musicbrainzngs.NetworkError("connection timed out")
+
+    monkeypatch.setattr("musiclib.metadata_review.musicbrainzngs.search_recordings", fail)
+    monkeypatch.setattr(
+        "musiclib.metadata_review.search_itunes",
+        lambda *args, **kwargs: [{
+            "source": "iTunes", "confidence": 80, "cover_url": "https://example.test/a.jpg",
+            "cover_fallback": None, "fields": {
+                "title": "Correct Song", "artist": "Correct Artist", "album": "Correct Album",
+                "album_artist": "Correct Artist", "year": 2004, "track_no": 1, "disc_no": 1,
+                "genre": "Rock", "mbid_track": None, "mbid_release": None,
+            },
+        }],
+    )
+    results = lookup_track(Track(title="Correct Song", artist="Correct Artist"))
+    assert results[0]["source"] == "iTunes"
+    assert results[0]["fields"]["title"] == "Correct Song"
+
+
+def test_search_itunes_parses_artwork_and_ignores_bad_payloads(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": [_itunes_song(), "skip", {"trackName": ""}]}
+
+    monkeypatch.setattr("musiclib.metadata_review.httpx.get", lambda *args, **kwargs: FakeResponse())
+    results = search_itunes(
+        "Correct Song", "Correct Artist", Track(title="Correct Song", artist="Correct Artist")
+    )
+    assert results[0]["cover_url"] == "https://example.test/cover/300x300bb.jpg"
+    assert results[0]["fields"]["genre"] == "Rock"
+    assert results[0]["fields"]["year"] == 2004
+
+    def boom(*args, **kwargs):
+        raise httpx.TimeoutException("slow")
+
+    monkeypatch.setattr("musiclib.metadata_review.httpx.get", boom)
+    assert search_itunes("Song", "Artist", Track(title="Song")) == []
