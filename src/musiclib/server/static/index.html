@@ -91,12 +91,33 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .hint { color: var(--dim); font-size: 12px; }
 .keep-flag { color: var(--green); font-weight: 600; }
 button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+button[aria-disabled=true] { opacity: .5; cursor: not-allowed; transform: none; }
+[hidden] { display: none !important; }
+details > summary { cursor: pointer; color: var(--dim); padding: 6px 0; }
+.action-menu { position: relative; }
+.action-menu > summary { padding: 8px 12px; border: 1px solid var(--border); border-radius: 12px; color: var(--text); }
+.action-menu .menu-items { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; }
 .activity {
   margin: 0 24px 16px; padding: 14px 16px; border: 1px solid var(--border);
   border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow);
 }
 .activity progress { width: 100%; height: 10px; accent-color: var(--accent); }
 .activity .path { overflow-wrap: anywhere; color: var(--dim); }
+.activity-heading, .job-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.activity-heading h2 { font-size: 15px; }
+.activity-heading { justify-content: space-between; }
+.job-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(100px, 180px) auto; gap: 12px; align-items: center; padding: 8px 0; }
+.job-row p { overflow-wrap: anywhere; }
+.activity-details { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; }
+.workspace { border: 1px solid var(--accent); border-radius: var(--radius); padding: 16px; margin: 14px 0; scroll-margin-top: 16px; }
+.workspace .card { box-shadow: none; }
+.workspace table { min-width: 640px; }
+.workspace td.path { min-width: 180px; }
+.workspace-header { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: start; margin-bottom: 12px; }
+.workspace-steps { display: flex; flex-wrap: wrap; list-style: none; gap: 8px; margin: 8px 0; color: var(--dim); }
+.workspace-steps li { padding: 2px 8px; border-bottom: 2px solid var(--border); }
+.workspace-steps [aria-current=step] { color: var(--accent); border-color: var(--accent); }
+.selection-actions { border-left: 2px solid var(--accent); padding-left: 12px; }
 .table-scroll { overflow-x: auto; margin-bottom: 12px; }
 .pager { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
 .widgets { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 8px 0 16px; }
@@ -159,6 +180,9 @@ body.player-open #toast { bottom: 260px; }
   main { padding: 12px; }
   input[type=text], input[type=search], input[type=number] { min-width: 0; max-width: 100%; }
   .metadata-field { grid-template-columns: 1fr; }
+  .job-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .job-row progress { grid-column: 1 / -1; grid-row: 2; }
+  .workspace { padding: 10px; }
   body.player-open { padding-bottom: 330px; }
   body.player-open #toast { bottom: 340px; }
 }
@@ -172,10 +196,18 @@ body.player-open #toast { bottom: 260px; }
 </header>
 <nav id="nav"></nav>
 <aside class="activity" aria-label="Library activity">
-  <h2 style="font-size:15px">Activity</h2>
-  <div id="activity-current" role="status" aria-live="polite">Loading activity...</div>
-  <details><summary>Job history and results</summary><div id="activity-history"></div></details>
-  <div id="activity-results"></div>
+  <div class="activity-heading"><h2>Activity</h2><span id="activity-lock" class="hint"></span></div>
+  <div id="activity-current">Loading activity...</div>
+  <div class="job-line"><p id="activity-notice" role="status"></p>
+    <button class="action ghost" id="activity-dismiss" hidden>Dismiss notice</button></div>
+  <details id="activity-details"><summary>Details, history and results</summary>
+    <div id="activity-live-details" class="activity-details"></div>
+    <p class="hint">Stop waits for the next safe checkpoint. Current files, requests and decoder workers
+    may finish first. Completed changes remain; trash moves are recoverable in Recovery.
+    Create a fresh preview before retrying stopped work.</p>
+    <div id="activity-history"></div>
+    <div id="activity-results"></div>
+  </details>
 </aside>
 <main id="main"></main>
 <aside id="player" class="player" aria-label="Track quality player" hidden>
@@ -202,6 +234,103 @@ const TABS = [
   ["usenet", "Usenet"], ["settings", "Settings"],
 ];
 const state = { tab: "overview", jobs: [], libraryView: "albums", libraryBatch: 50 };
+const activeJob = job => ["queued", "running", "stopping"].includes(job.status);
+const jobNames = {
+  scan: "Scan library", doctor: "Check audio files", duplicates: "Find duplicates",
+  "duplicates-apply": "Trash duplicate copies", "album-duplicates-preview": "Compare selected duplicates",
+  "album-duplicates-apply": "Clean selected duplicates", rename: "Organize library", art: "Find / download artwork",
+  brainz: "Check album completeness", "issues-trash": "Trash selected bad files",
+  "metadata-lookup": "Look up track metadata", "metadata-apply": "Save track tags",
+  "album-apply": "Save album tags", "rename-preview": "Preview selected organization",
+  "rename-reviewed": "Move reviewed files", "artwork-preview": "Preview artwork",
+  "artwork-reviewed": "Save reviewed artwork", "trash-preview": "Preview selected trash",
+  "trash-reviewed": "Trash reviewed files", "restore-preview": "Preview recovery",
+  "restore-reviewed": "Restore reviewed files",
+};
+const friendlyLabel = value => String(value).replace(/[_-]/g, " ").replace(/^\w/, c => c.toUpperCase());
+const jobName = job => jobNames[job.kind] || friendlyLabel(job.kind);
+function createReviewWorkspace(root, onClose = () => {}) {
+  let revision = 0, current = null;
+  const owns = token => current !== null && token === revision && root.isConnected;
+  const stage = (token, name) => {
+    if (!owns(token)) return;
+    current.stage = name;
+    root.querySelectorAll("[data-workspace-step]").forEach(step => {
+      if (step.dataset.workspaceStep === name) step.setAttribute("aria-current", "step");
+      else step.removeAttribute("aria-current");
+    });
+  };
+  const close = () => {
+    revision++; current = null; root.hidden = true;
+    root.querySelector("[data-workspace-content]").disabled = false;
+    root.querySelectorAll("[data-review-slot]").forEach(slot => slot.replaceChildren());
+    root.querySelector("[data-workspace-status]").textContent = "";
+    onClose();
+  };
+  const leave = () => {
+    if (!current) return true;
+    if ((current.busy || current.stage !== "results") && !confirm(current.busy ?
+      "Leave this running review? The job will continue in Activity. Unsaved choices will be discarded." :
+      "Discard the open review and its unsaved choices? No additional files will be changed.")) return false;
+    close(); return true;
+  };
+  root.querySelector("[data-workspace-close]").onclick = leave;
+  return {
+    owns, stage, leave,
+    begin(kind, title) {
+      if (current?.busy) { toast("Wait for this review to finish, or stop its job in Activity.", true); return null; }
+      if (!leave()) return null;
+      current = {kind, stage: "select", busy: false};
+      root.hidden = false;
+      root.querySelector("[data-workspace-title]").textContent = title;
+      stage(revision, "select");
+      return revision;
+    },
+    busy(token, busy) {
+      if (!owns(token)) return;
+      current.busy = busy;
+      root.querySelector("[data-workspace-content]").disabled = busy;
+      root.querySelector("[data-workspace-close]").textContent = busy ? "Leave review" : "Close review";
+    },
+    fail(token, message) {
+      if (owns(token)) root.querySelector("[data-workspace-status]").textContent = message;
+    },
+    get active() { return current !== null; },
+    get unfinished() { return current !== null && (current.busy || current.stage !== "results"); },
+  };
+}
+function leaveLibraryReview() {
+  return !state.libraryWorkspace || state.libraryWorkspace.leave();
+}
+function applyJobLocks(root = document) {
+  const writing = state.jobs.some(job => activeJob(job) && !job.read_only);
+  const searching = state.jobs.some(job => activeJob(job) && job.read_only);
+  root.querySelectorAll("[data-operation], [data-lookup-operation]").forEach(button => {
+    const locked = button.hasAttribute("data-lookup-operation") ? searching : writing;
+    if (locked) {
+      button.setAttribute("aria-disabled", "true");
+      button.dataset.jobLocked = button.hasAttribute("data-lookup-operation") ?
+        "A catalog search is running. See Activity." : "A library operation is running. See Activity.";
+    } else {
+      button.removeAttribute("aria-disabled");
+      delete button.dataset.jobLocked;
+    }
+  });
+}
+function blockLockedAction(event, button) {
+  applyJobLocks();
+  const locked = button?.closest("[data-job-locked]");
+  if (!locked) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  toast(locked.dataset.jobLocked);
+}
+document.addEventListener("click", event => blockLockedAction(event, event.target), true);
+document.addEventListener("submit", event =>
+  blockLockedAction(event, event.submitter || event.target.querySelector('[type="submit"]')), true);
+window.addEventListener("beforeunload", event => {
+  if (!state.libraryWorkspace?.unfinished) return;
+  event.preventDefault(); event.returnValue = "";
+});
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const albumSourceOptions = selected => [
@@ -378,6 +507,7 @@ async function pollJob(id, label) {
 }
 
 window.addEventListener("unhandledrejection", event => {
+  event.preventDefault();
   toast(event.reason?.message || String(event.reason), true);
 });
 const latestJob = kind => state.jobs.find(j => j.kind === kind && j.status === "done");
@@ -429,7 +559,11 @@ function duplicateGroupMarkup(g, approved, scope) {
 }
 async function showJobResults(job) {
   const container = $("#activity-results");
-  container.innerHTML = `<h3>${esc(job.kind)} results</h3><div class="row sections"></div><div class="results-page"></div>`;
+  $("#activity-details").open = true;
+  container.innerHTML = `<div class="activity-details"><div class="row"><h3>${esc(jobName(job))} results</h3>
+    <button class="action ghost" data-close-results>Close results</button></div>
+    <div class="row sections"></div><div class="results-page"></div></div>`;
+  container.querySelector("[data-close-results]").onclick = () => { container.innerHTML = ""; };
   const sections = Object.entries(job.summary || {}).filter(([, value]) => typeof value === "number");
   const lists = {
     scan: [], doctor: ["results", "failures"], duplicates: ["groups"],
@@ -442,44 +576,36 @@ async function showJobResults(job) {
     "trash-preview": ["tracks"], "trash-reviewed": ["trashed", "errors"],
     "restore-preview": ["entries"], "restore-reviewed": ["restored", "errors", "scan_errors"],
   }[job.kind] || [];
-  container.querySelector(".sections").innerHTML = sections.map(([key, value]) => `<span class="tag dim">${esc(key)}: ${value}</span>`).join("") +
-    lists.map(key => `<button class="action ghost" data-section="${key}">${esc(key)}</button>`).join("");
+  container.querySelector(".sections").innerHTML = sections.map(([key, value]) =>
+    `<span class="tag dim">${esc(friendlyLabel(key))}: ${esc(key === "reclaimed_bytes" ? fmtBytes(value) : value)}</span>`).join("") +
+    lists.filter(key => job.summary?.[key] !== 0).map(key =>
+      `<button class="action ghost" data-section="${key}">${esc(friendlyLabel(key))}</button>`).join("");
   container.querySelectorAll("[data-section]").forEach(button => button.onclick = () => {
+    container.querySelectorAll("[data-section]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
     pagedTable(container.querySelector(".results-page"),
       offset => api(`/api/jobs/${job.id}/results/${button.dataset.section}?offset=${offset}`),
-      ["Result"], item => `<tr><td class="path">${esc(JSON.stringify(item, null, 2))}</td></tr>`);
+      ["File / item", "Outcome / details"], resultRow);
   });
-  if (job.kind === "metadata-lookup") {
+  const reviewKinds = {
+    "metadata-lookup": ["bulk-lookup", "Review suggestions"],
+    "rename-preview": ["rename", "Review organization"],
+    "artwork-preview": ["artwork", "Review artwork"],
+    "trash-preview": ["trash", "Review trash"],
+  };
+  if (reviewKinds[job.kind]) {
+    const [kind, label] = reviewKinds[job.kind];
     const button = document.createElement("button");
     button.className = "action ghost";
-    button.textContent = "Review suggestions";
-    button.onclick = () => { state.metadataLookupJob = job.id; state.tab = "library"; render(); };
-    container.querySelector(".sections").append(button);
-  }
-  if (job.kind === "rename-preview") {
-    const button = document.createElement("button");
-    button.className = "action ghost";
-    button.textContent = "Review rename preview";
-    button.onclick = () => {
-      state.renamePreviewJob = job.id; state.libraryView = "albums"; state.tab = "library"; render();
-    };
-    container.querySelector(".sections").append(button);
-  }
-  if (job.kind === "artwork-preview") {
-    const button = document.createElement("button");
-    button.className = "action ghost";
-    button.textContent = "Review artwork preview";
-    button.onclick = () => {
-      state.artworkPreviewJob = job.id; state.libraryView = "albums"; state.tab = "library"; render();
-    };
-    container.querySelector(".sections").append(button);
-  }
-  if (job.kind === "trash-preview") {
-    const button = document.createElement("button");
-    button.className = "action ghost";
-    button.textContent = "Review trash preview";
-    button.onclick = () => {
-      state.trashPreviewJob = job.id; state.libraryView = "albums"; state.tab = "library"; render();
+    button.textContent = label;
+    button.onclick = async () => {
+      if (state.tab === "library" && state.openLibraryReview) {
+        await state.openLibraryReview(kind, job.id);
+      } else {
+        if (!leaveLibraryReview()) return;
+        state.libraryReview = {kind, jobId: job.id};
+        state.libraryView = "albums"; state.tab = "library";
+        await render();
+      }
     };
     container.querySelector(".sections").append(button);
   }
@@ -492,44 +618,89 @@ async function showJobResults(job) {
     };
     container.querySelector(".sections").append(button);
   }
-  container.querySelector("[data-section]")?.click();
+  const first = container.querySelector("[data-section]");
+  if (first) first.click();
+  else container.querySelector(".results-page").textContent = "No file-level details to display.";
 }
-async function refreshActivity() {
-  try {
-    state.jobs = await api("/api/jobs");
-    const activeJobs = state.jobs.filter(j => ["queued", "running", "stopping"].includes(j.status));
-    $("#activity-current").innerHTML = activeJobs.length ? activeJobs.map(active => `
-      <p><b>${esc(active.kind)}: ${esc(active.phase)}</b> · ${elapsed(active)}</p>
-      <p class="hint">${active.read_only ? "Catalog search — runs separately from library changes." : "Library operation — other file changes are temporarily locked."}</p>
-      <progress ${active.total !== null ? `value="${active.completed}" max="${Math.max(1, active.total)}"` : ""}></progress>
-      <p>${active.total !== null ? `${active.completed} / ${active.total} processed` : "Working — total not yet known"}</p>
-      <p class="path">${esc(active.current)}</p>
-      <button class="action ghost" data-stop-job="${active.id}" ${active.status === "stopping" ? "disabled" : ""}>
-        ${active.status === "stopping" ? "Stopping safely..." : "Stop job"}</button>
-      <p class="hint">Stops at the next safe checkpoint. Current file/album work, network requests,
-      decoder workers, and catalog maintenance may finish first. Completed changes are not undone.
-      Restore completed trash moves from Recovery. Stopped previews must be created again.</p>`).join("") : "<p>No background work running.</p>";
-    document.querySelectorAll("[data-stop-job]").forEach(button => button.onclick = async () => {
+function resultRow(item) {
+  if (item === null || typeof item !== "object") {
+    return `<tr><td colspan="2">${esc(item)}</td></tr>`;
+  }
+  const file = item.path || item.source || item.track?.path ||
+    [item.artist, item.album || item.title].filter(Boolean).join(" — ") ||
+    (item.track_id ? `Track ${item.track_id}` : item.review_id ? `Review ${item.review_id}` : "Result");
+  const detail = item.error || item.reason || item.detail || item.status ||
+  (Array.isArray(item.fields) ? `Updated: ${item.fields.map(friendlyLabel).join(", ")}` :
+      item.members ? `${item.members.length} duplicate copies` :
+      item.candidates ? `${item.candidates.length} suggestions` : "See technical details");
+  return `<tr><td class="path">${esc(file)}${item.target ? `<p>→ ${esc(item.target)}</p>` : ""}</td>
+    <td>${esc(detail)}<details><summary>Technical details</summary>
+    <pre class="path" style="white-space:pre-wrap">${esc(JSON.stringify(item, null, 2))}</pre></details></td></tr>`;
+}
+function renderCurrentJobs(activeJobs) {
+  const container = $("#activity-current");
+  const signature = activeJobs.map(job => job.id).join(",");
+  if (container.dataset.jobs !== signature) {
+    container.dataset.jobs = signature;
+    container.innerHTML = activeJobs.length ? activeJobs.map(job => `
+      <div class="job-row" data-job="${esc(job.id)}">
+        <div><b>${esc(jobName(job))}</b><p class="hint" data-job-phase role="status"></p></div>
+        <div><progress aria-label="${esc(jobName(job))} progress"></progress>
+          <p class="hint" data-job-count></p></div>
+        <button class="action ghost" data-stop-job="${esc(job.id)}">Stop job</button>
+      </div>`).join("") : '<p class="hint">No background work running.</p>';
+    container.querySelectorAll("[data-stop-job]").forEach(button => button.onclick = async () => {
       button.disabled = true;
       try {
         await post(`/api/jobs/${button.dataset.stopJob}/cancel`, {});
-        toast("Stop requested. Waiting for the current file or request to finish safely.");
-      } catch (e) { toast(e.message, true); }
+        toast("Stop requested. Completed changes will remain.");
+      } catch (e) { $("#activity-notice").textContent = e.message; toast(e.message, true); }
       await refreshActivity();
     });
-    document.querySelectorAll("[data-operation]").forEach(button => {
-      button.disabled = activeJobs.some(job => !job.read_only);
-    });
-    document.querySelectorAll("[data-lookup-operation]").forEach(button => {
-      button.disabled = activeJobs.some(job => job.read_only);
-    });
+  }
+  activeJobs.forEach(job => {
+    const row = container.querySelector(`[data-job="${job.id}"]`);
+    row.querySelector("[data-job-phase]").textContent = `${job.phase} · ${elapsed(job)}`;
+    row.querySelector("[data-job-count]").textContent = job.total == null ? "Working…" :
+      `${job.completed} / ${job.total} processed`;
+    const progress = row.querySelector("progress");
+    if (job.total == null) progress.removeAttribute("value");
+    else { progress.max = Math.max(1, job.total); progress.value = job.completed; }
+    const stop = row.querySelector("[data-stop-job]");
+    stop.disabled = job.status === "stopping";
+    stop.textContent = job.status === "stopping" ? "Stopping safely…" : "Stop job";
+  });
+  $("#activity-lock").textContent = activeJobs.some(job => !job.read_only) ?
+    "File changes locked · browsing and playback available" :
+    activeJobs.length ? "Catalog search busy · browsing available" : "";
+  const details = $("#activity-live-details");
+  if (details.parentElement.open) details.innerHTML = activeJobs.map(job =>
+    `<p><b>${esc(jobName(job))}</b> · ${job.read_only ? "Catalog search" : "Library operation"}</p>
+    <p class="path">${esc(job.current || "Preparing the next step")}</p>`).join("");
+}
+async function refreshActivity() {
+  const request = state.activityRequest = (state.activityRequest || 0) + 1;
+  try {
+    const jobs = await api("/api/jobs");
+    if (request !== state.activityRequest) return;
+    state.jobs = jobs;
+    renderCurrentJobs(state.jobs.filter(activeJob));
+    applyJobLocks();
+    const failed = state.jobs.find(job => job.status === "error" && !state.dismissedErrors?.has(job.id));
+    $("#activity-notice").textContent = failed ? `${jobName(failed)} failed: ${failed.error}` : "";
+    $("#activity-dismiss").hidden = !failed;
+    $("#activity-dismiss").onclick = () => {
+      (state.dismissedErrors ||= new Set()).add(failed.id);
+      refreshActivity();
+    };
+    if (!$("#activity-details").open) return;
     const history = $("#activity-history");
     if (history.dataset.jobs !== JSON.stringify(state.jobs.map(j => [j.id, j.status]))) {
       history.dataset.jobs = JSON.stringify(state.jobs.map(j => [j.id, j.status]));
       await pagedTable(history,
         async offset => ({ items: state.jobs.slice(offset, offset + 50), total: state.jobs.length }),
         ["Task", "Status", "Elapsed", "Result"],
-        job => `<tr><td>${esc(job.kind)}</td><td>${esc(job.status)}</td><td>${elapsed(job)}</td><td>${job.error ? esc(job.error) :
+        job => `<tr><td>${esc(jobName(job))}</td><td>${esc(job.status === "cancelled" ? "Stopped" : friendlyLabel(job.status))}</td><td>${elapsed(job)}</td><td>${job.error ? esc(job.error) :
           job.status === "done" ? `<button class="action ghost" data-result="${job.id}">View results</button>` :
           job.status === "cancelled" ? `Stopped at ${job.completed}${job.total == null ? "" : ` / ${job.total}`}. Completed changes remain.` :
           "In progress"}</td></tr>`,
@@ -537,7 +708,9 @@ async function refreshActivity() {
           button.onclick = () => showJobResults(state.jobs.find(j => j.id === button.dataset.result));
         }));
     }
-  } catch (e) { $("#activity-current").textContent = `Cannot refresh activity: ${e.message}`; }
+  } catch (e) {
+    if (request === state.activityRequest) $("#activity-notice").textContent = `Cannot refresh activity: ${e.message}`;
+  }
 }
 async function runTask(kind, body) {
   const { job_id } = await post(`/api/tasks/${kind}`, body);
@@ -613,13 +786,13 @@ const views = {
       <button class="action ghost" id="dupe-clear">Clear selection</button>
       <span class="hint" id="dupe-selected" role="status">0 groups selected</span>
     </div><div id="dupe-list"><div class="empty">Click "Find duplicates" to analyze the library.</div></div>
-    <div class="card"><h3>Manual duplicate review</h3>
+    <details class="card"><summary>Choose duplicate files manually</summary><h3>Manual duplicate review</h3>
       <p>Search your library, add files you know are copies, choose the one to keep, then move the rest to trash.</p>
       <div class="row" style="margin-top:12px"><input type="search" id="manual-query" placeholder="Search artist, album, title, or path">
       <button class="action ghost" id="manual-search">Search</button></div>
       <div id="manual-results" class="hint"></div><div id="manual-picked"></div>
-      <button class="action danger" id="manual-apply" style="display:none">Trash selected copies</button>
-    </div>`;
+      <button class="action danger" id="manual-apply" data-operation style="display:none">Trash selected copies</button>
+    </details>`;
     const reviewed = new Map();
     let currentGroups = [];
     const updateGroups = () => {
@@ -848,44 +1021,83 @@ const views = {
     <p class="hint">Albums are grouped from your scanned library. Open an album to edit tags, upload artwork, or organize its tracks. Catalog images are previews; use Change artwork to upload a cover or Cover Art for automatic downloads.</p>
     <div class="row" id="library-track-tools"><button class="action ghost" id="metadata-select-page">Select this page</button>
       <button class="action ghost" id="metadata-clear-selection">Clear selection</button>
-      <span id="metadata-selection-count">0 tracks selected</span>
-      <button class="action" id="metadata-lookup-bulk" data-lookup-operation>Look up selected tracks</button>
-      <button class="action" id="metadata-album-bulk" data-lookup-operation>Find album matches</button>
+      <span id="metadata-selection-count" role="status">0 tracks selected</span></div>
+    <div class="row selection-actions" id="track-selection-actions" hidden>
       <button class="action" id="metadata-merge-tracks" data-operation>Merge selected tracks into an album</button>
-      <button class="action ghost" id="metadata-dupes" data-operation>Review selected duplicates</button></div>
+      <button class="action ghost" id="metadata-dupes" data-operation>Review selected duplicates</button>
+      <details class="action-menu"><summary>Catalog lookup</summary><div class="menu-items">
+        <button class="action ghost" id="metadata-album-bulk" data-lookup-operation>Find album matches</button>
+        <button class="action ghost" id="metadata-lookup-bulk" data-lookup-operation>Look up each track</button>
+      </div></details><p class="hint">Up to 200 tracks per review; individual lookups up to 100. Preview before applying.</p></div>
     <div class="row" id="library-album-tools">
       <button class="action ghost" id="album-select-loaded">Select loaded albums</button>
       <button class="action ghost" id="album-clear">Clear album selection</button>
       <span class="hint" id="album-selection-count" role="status">0 albums selected</span>
-      <button class="action" id="album-merge" data-operation>Merge selected albums</button>
+      <button class="action" id="album-merge" data-operation hidden>Merge selected albums</button>
     </div>
-    <p class="hint">Select up to 200 tracks. Per-track lookup is limited to 100 files. Album tagging writes the same album fields to every selected file after you confirm. Files are not renamed unless you choose that option.</p>
-    <div id="metadata-album"></div>
-    <div id="manual-album-result" role="status"></div>
-    <div id="album-rename-review"></div>
-    <div id="album-artwork-review"></div>
-    <div id="album-trash-review"></div>
-    <div id="album-dupe-review"></div>
-    <div id="metadata-bulk"></div>
-    <div id="metadata-search"></div><div id="metadata-review"></div>
+    <div id="library-workspace" class="workspace" role="region" aria-label="Active library review" hidden>
+    <div class="workspace-header"><div><h2 data-workspace-title tabindex="-1" style="font-size:17px">Review</h2>
+      <ol class="workspace-steps" aria-label="Review progress">
+        <li data-workspace-step="select">1. Select</li><li data-workspace-step="preview">2. Preview</li>
+        <li data-workspace-step="confirm">3. Confirm</li><li data-workspace-step="results">4. Results</li>
+      </ol></div><button class="action ghost" data-workspace-close>Close review</button></div>
+    <p data-workspace-status role="status"></p>
+    <fieldset data-workspace-content style="border:0;min-width:0;padding:0">
+    <div id="manual-editor" data-review-slot></div><div id="artwork-editor" data-review-slot></div>
+    <div id="metadata-album" data-review-slot></div>
+    <div id="manual-album-result" role="status" data-review-slot></div>
+    <div id="album-rename-review" data-review-slot></div>
+    <div id="album-artwork-review" data-review-slot></div>
+    <div id="album-trash-review" data-review-slot></div>
+    <div id="album-dupe-review" data-review-slot></div>
+    <div id="metadata-bulk" data-review-slot></div>
+    <div id="metadata-search" data-review-slot></div><div id="metadata-review" data-review-slot></div>
+    </fieldset>
+    </div>
     <div id="library-albums"></div>
     <div id="library-album-page"></div>
     <div id="library-table"></div>`;
     const selectedTracks = new Set();
     const selectedAlbums = new Map();
     const loadedAlbums = new Map();
+    const workspace = createReviewWorkspace($("#library-workspace"), () => { state.libraryReview = null; });
+    state.libraryWorkspace = workspace;
+    const beginReview = (kind, title) => {
+      const token = workspace.begin(kind, title);
+      if (token !== null) {
+        state.libraryReview = {kind};
+        $("#library-workspace").scrollIntoView({behavior: "smooth", block: "start"});
+        $("#library-workspace [data-workspace-title]").focus({preventScroll: true});
+      }
+      return token;
+    };
+    const savedReview = state.libraryReview;
+    const rememberReview = (kind, jobId) => { state.libraryReview = {kind, jobId}; };
+    const scrollReview = () => $("#library-workspace").scrollIntoView({behavior: "smooth", block: "start"});
+    const showOutcome = (panel, status, title) => {
+      status.className = "card";
+      status.insertAdjacentHTML("afterbegin", `<h3>${esc(title)}</h3>`);
+      panel.replaceChildren(status);
+      scrollReview();
+    };
     const albumKey = album => JSON.stringify([album.album_artist, album.album]);
     let pageTracks = [];
     let albumOffset = 0, albumTotal = 0, albumGeneration = 0, albumLoading = false;
     let albumFilters = {};
     const updateAlbumSelection = () => {
       $("#album-selection-count").textContent = `${selectedAlbums.size} albums selected`;
+      $("#album-merge").hidden = selectedAlbums.size < 2;
       el.querySelectorAll("[data-select-album]").forEach(input => {
         input.checked = selectedAlbums.has(input.dataset.selectAlbum);
       });
     };
     const updateSelection = () => {
       $("#metadata-selection-count").textContent = `${selectedTracks.size} tracks selected`;
+      $("#metadata-clear-selection").hidden = !selectedTracks.size;
+      $("#track-selection-actions").hidden = !selectedTracks.size || state.libraryView !== "tracks";
+      $("#metadata-merge-tracks").hidden = selectedTracks.size < 2;
+      $("#metadata-dupes").hidden = selectedTracks.size < 2;
+      el.querySelectorAll("[data-album-selection-actions]").forEach(actions => { actions.hidden = !selectedTracks.size; });
       el.querySelectorAll("[data-select-track]").forEach(input => {
         input.checked = selectedTracks.has(Number(input.dataset.selectTrack));
       });
@@ -915,6 +1127,7 @@ const views = {
       $("#library-table").style.display = view === "tracks" ? "" : "none";
       $("#library-album-tools").style.display = view === "albums" ? "" : "none";
       $("#library-track-tools").style.display = view === "tracks" ? "" : "none";
+      updateSelection();
     };
     const watchAlbumScroll = () => {
       state.libraryObserver?.disconnect();
@@ -995,6 +1208,7 @@ const views = {
       load.onclick = () => searchAlbums(albumOffset > 0);
     };
     const openAlbum = async (albumArtist, album) => {
+      if (!workspace.leave()) return;
       const params = new URLSearchParams({
         album_artist: albumArtist, album, status: $("#library-status").value,
       });
@@ -1014,17 +1228,21 @@ const views = {
           <div class="album-hero">${albumCover(detail.cover_url)}
             <div><h3>${esc(detail.album)}</h3>
             <p>${esc(detail.album_artist)} · ${esc(detail.year || "—")} · ${detail.track_count} tracks${detail.bad_count ? ` · ${detail.bad_count} bad` : ""}</p>
-            <button class="action" data-edit-album>Edit album tags</button>
-            <button class="action ghost" data-number-album>Renumber selected</button>
-            <button class="action ghost" data-artwork-album data-operation>Change artwork</button>
-            <button class="action ghost" data-rename-album data-operation>Preview organization</button>
-            <button class="action ghost" data-dupes-album data-operation>Review album duplicates</button>
-            <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button>
-            <button class="action danger" data-trash-album data-operation>Trash selected</button></div>
+            <div class="row selection-actions" data-album-selection-actions>
+              <button class="action" data-edit-album data-operation>Edit album tags</button>
+              <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button>
+              <details class="action-menu"><summary>More album actions</summary><div class="menu-items">
+                <button class="action ghost" data-number-album data-operation>Renumber selected</button>
+                <button class="action ghost" data-artwork-album data-operation>Change artwork</button>
+                <button class="action ghost" data-rename-album data-operation>Preview organization</button>
+                <button class="action ghost" data-dupes-album data-operation>Review album duplicates</button>
+              </div></details>
+              <details class="action-menu"><summary>Remove files</summary><div class="menu-items">
+                <button class="action danger" data-trash-album data-operation>Trash selected</button>
+              </div></details>
+            </div></div>
           </div>
           ${detail.track_count > 200 ? '<p class="hint">Only the first 200 tracks are selected. Edit larger albums in batches.</p>' : ''}
-          <div data-manual-editor></div>
-          <div data-artwork-editor></div>
           <div class="table-scroll"><table><thead><tr><th>Select</th><th>Disc</th><th>Track</th><th>Title</th><th>Artist</th><th>Status</th><th>Listen / Edit</th></tr></thead>
           <tbody>${detail.tracks.map(track =>
             `<tr><td><input type="checkbox" data-select-track="${track.id}" aria-label="Select ${esc(track.title || track.path)}"></td>
@@ -1033,6 +1251,7 @@ const views = {
             <td>${playButton(track.id, track.title || track.path)} <button class="action ghost" data-edit-track="${track.id}">Edit track</button></td></tr>`
           ).join("")}</tbody></table></div></div>`;
         pageEl.querySelector("[data-back]").onclick = () => {
+          if (!workspace.leave()) return;
           pageEl.innerHTML = ""; $("#library-albums").style.display = "";
           $("#library-track-tools").style.display = "none";
           pageTracks = []; selectedTracks.clear(); updateSelection(); watchAlbumScroll();
@@ -1042,13 +1261,18 @@ const views = {
         pageEl.querySelector("[data-trash-album]").onclick = async () => {
           const trackIds = detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id);
           if (!trackIds.length) { toast("Select tracks to trash first.", true); return; }
+          const token = beginReview("trash", "Review selected trash");
+          if (token === null) return;
+          workspace.busy(token, true); workspace.stage(token, "preview");
           try {
             const { job_id } = await post("/api/trash/preview-selected", {track_ids: trackIds});
-            state.trashPreviewJob = job_id;
+            if (!workspace.owns(token)) return;
+            rememberReview("trash", job_id);
             await refreshActivity();
             await pollJob(job_id, "Selected album trash preview");
-            if (el.isConnected) await loadTrashReview(job_id);
-          } catch (e) { toast(e.message, true); }
+            await loadTrashReview(job_id, token);
+          } catch (e) { workspace.fail(token, e.message); toast(e.message, true); }
+          finally { workspace.busy(token, false); }
         };
         bindAlbumActions(pageEl, detail);
         updateSelection();
@@ -1056,16 +1280,24 @@ const views = {
       } catch (e) { toast(e.message, true); }
     };
     const previewOrganization = async trackIds => {
+      const token = beginReview("rename", "Review file organization");
+      if (token === null) return;
+      workspace.busy(token, true); workspace.stage(token, "preview");
       try {
         const { job_id } = await post("/api/rename/preview-selected", {track_ids: trackIds});
-        state.renamePreviewJob = job_id;
+        if (!workspace.owns(token)) return;
+        rememberReview("rename", job_id);
         await refreshActivity();
         await pollJob(job_id, "Selected file organization preview");
-        if (el.isConnected) await loadRenameReview(job_id);
-      } catch (e) { toast(e.message, true); }
+        await loadRenameReview(job_id, token);
+      } catch (e) { workspace.fail(token, e.message); toast(e.message, true); }
+      finally { workspace.busy(token, false); }
     };
     const reviewAlbumDuplicates = async trackIds => {
       if (trackIds.length < 2) { toast("Select at least two tracks to compare.", true); return; }
+      const token = beginReview("duplicates", "Review selected duplicates");
+      if (token === null) return;
+      workspace.busy(token, true); workspace.stage(token, "preview");
       const panel = el.querySelector("#album-dupe-review");
       panel.innerHTML = '<div class="card" role="status">Comparing selected tracks. No files are being removed.</div>';
       try {
@@ -1076,14 +1308,14 @@ const views = {
           api(`/api/jobs/${job_id}/results/groups?limit=200`),
           api(`/api/jobs/${job_id}/results/tracks?limit=200`),
         ]);
-        if (!panel.isConnected) return;
+        if (!workspace.owns(token)) return;
+        workspace.stage(token, "confirm");
         const groups = result.items;
         const approved = new Set();
         panel.innerHTML = `<div class="card"><h3>Review album duplicates</h3>
           <p>${groups.length} possible duplicate groups among ${targets.total} selected tracks.
           ${previewJob.summary.skipped || 0} bad or unavailable tracks excluded.
-          Compare quality and listen before choosing one keeper per group. Only approved copies go to recoverable trash.
-          Other albums and the main Duplicates review list are unchanged.</p>
+          Listen, choose keepers, then approve groups. Only approved copies go to recoverable trash.</p>
           <div class="row"><button class="action ghost" data-dupe-select-all>Select all groups</button>
             <button class="action ghost" data-dupe-clear>Clear selection</button>
             <span class="hint" data-dupe-count role="status">0 groups selected</span></div>
@@ -1119,6 +1351,7 @@ const views = {
           apply.disabled = true;
           const status = panel.querySelector("[data-dupe-status]");
           let accepted = false;
+          workspace.busy(token, true);
           try {
             const snapshots = Object.fromEntries(targets.items.map(track => [
               track.id, {path: track.path, file_hash: track.file_hash},
@@ -1134,21 +1367,27 @@ const views = {
               api(`/api/jobs/${applyId}/results/remaining_ids?limit=200`),
               api(`/api/jobs/${applyId}/results/failures?limit=200`),
             ]);
-            if (!panel.isConnected) return;
+            if (!workspace.owns(token)) return;
+            workspace.stage(token, "results");
             status.innerHTML = `<p>${job.summary.trashed} copies trashed; ${job.summary.failed} failures.
               Review filenames before organizing the remaining tracks. Trashed files can be restored in Recovery.</p>` +
               failures.items.map(item => `<p role="alert">${esc(item.path)}: ${esc(item.error)}</p>`).join("") +
               (remaining.total ? '<button class="action" data-organize-remaining data-operation>Preview organization of remaining tracks</button>' : "");
             const organize = status.querySelector("[data-organize-remaining]");
             if (organize) organize.onclick = () => previewOrganization(remaining.items);
+            showOutcome(panel, status, "Duplicate cleanup results");
             selectedTracks.clear(); updateSelection();
             await searchAlbums(); await loadStats();
           } catch (e) { status.textContent = e.message; toast(e.message, true); }
-          finally { if (accepted) apply.remove(); else apply.disabled = false; }
+          finally {
+            workspace.busy(token, false);
+            if (accepted) apply.remove(); else apply.disabled = false;
+          }
         };
         await refreshActivity();
-        panel.scrollIntoView({behavior: "smooth", block: "start"});
-      } catch (e) { panel.textContent = e.message; toast(e.message, true); }
+        scrollReview();
+      } catch (e) { workspace.fail(token, e.message); toast(e.message, true); }
+      finally { workspace.busy(token, false); }
     };
     const bindAlbumActions = (pageEl, detail) => {
       pageEl.querySelector("[data-tag-album]").onclick = () => $("#metadata-album-bulk").click();
@@ -1160,42 +1399,43 @@ const views = {
       pageEl.querySelector("[data-edit-album]").onclick = () => {
         const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
         if (!tracks.length) { toast("Select tracks to edit first.", true); return; }
-        renderManualEditor(pageEl.querySelector("[data-manual-editor]"), tracks);
+        renderManualEditor($("#manual-editor"), tracks);
       };
       pageEl.querySelector("[data-number-album]").onclick = () => {
         const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
         if (!tracks.length) { toast("Select tracks to number first.", true); return; }
-        renderManualEditor(pageEl.querySelector("[data-manual-editor]"), tracks, "numbering");
+        renderManualEditor($("#manual-editor"), tracks, "numbering");
       };
       pageEl.querySelectorAll("[data-edit-track]").forEach(button => button.onclick = () => {
         const track = detail.tracks.find(item => item.id === Number(button.dataset.editTrack));
-        renderManualEditor(pageEl.querySelector("[data-manual-editor]"), [track], "track");
+        renderManualEditor($("#manual-editor"), [track], "track");
       });
       pageEl.querySelector("[data-artwork-album]").onclick = () => {
         const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
         if (!tracks.length) { toast("Select tracks for artwork first.", true); return; }
-        renderArtworkUpload(pageEl.querySelector("[data-artwork-editor]"), tracks);
+        renderArtworkUpload($("#artwork-editor"), tracks);
       };
       pageEl.querySelectorAll("[data-select-track]").forEach(input => input.onchange = () => {
         selectTrack(Number(input.dataset.selectTrack), input.checked); updateSelection();
       });
     };
-    const loadTrashReview = async jobId => {
+    const loadTrashReview = async (jobId, token) => {
       const [job, targets] = await Promise.all([
         api(`/api/jobs/${jobId}`),
         api(`/api/jobs/${jobId}/results/tracks?limit=200`),
       ]);
       const preview = job.summary;
       const review = await api(`/api/trash/reviews/${preview.review_id}`);
-      if (!el.isConnected) return;
+      if (!workspace.owns(token)) return;
+      workspace.stage(token, review.status === "review" ? "confirm" : "results");
       const panel = el.querySelector("#album-trash-review");
       panel.innerHTML = `<div class="card"><h3>Review selected files for trash</h3>
         <p>${preview.ready} ready (${fmtBytes(preview.bytes)}) · ${preview.blocked} blocked.
-        No music files have been moved. Only the files listed as ready below can be trashed by this preview;
-        changing album checkboxes does not change this saved list.</p>
-        <p>These are recoverable moves, not permanent deletion. Tags, artwork, other tracks,
+        Only this saved ready list will move to recoverable trash. Changed or moved files are skipped.</p>
+        <details><summary>Trash safety and recovery</summary><p>No music files have been moved.
+        Changing album checkboxes does not change this saved list. Tags, artwork, other tracks,
         folder images, and empty folders stay untouched. Changed or moved files are skipped.
-        Use the Recovery tab to restore a file while its original path is free.</p>
+        Use Recovery to restore a file while its original path is free.</p></details>
         <div class="table-scroll"><table><thead><tr><th>File</th><th>Trash destination</th><th>Size</th><th>Status</th><th>Reason</th></tr></thead>
         <tbody>${targets.items.map(track => `<tr><td class="path">${esc(track.path || track.track_id)}</td>
           <td class="path">${esc(track.target || "—")}</td><td>${fmtBytes(track.size)}</td>
@@ -1206,7 +1446,7 @@ const views = {
         <button class="action ghost" data-trash-close>Close preview</button>
         <div role="status" data-trash-status></div></div>`;
       panel.querySelector("[data-trash-close]").onclick = () => {
-        state.trashPreviewJob = null; panel.innerHTML = "";
+        workspace.leave();
       };
       const apply = panel.querySelector("[data-trash-confirm]");
       let applying = false;
@@ -1217,6 +1457,7 @@ const views = {
         const status = panel.querySelector("[data-trash-status]");
         close.disabled = true;
         let accepted = false;
+        workspace.busy(token, true);
         try {
           const { job_id } = await post("/api/trash/apply-reviewed", {preview_job_id: jobId});
           accepted = true;
@@ -1224,23 +1465,28 @@ const views = {
           await refreshActivity();
           const result = await pollJob(job_id, "Reviewed album trash");
           const failures = await api(`/api/jobs/${job_id}/results/errors?limit=200`);
-          if (!panel.isConnected) return;
+          if (!workspace.owns(token)) return;
+          workspace.stage(token, "results"); state.libraryReview = null;
           status.innerHTML = `<p>${result.summary.trashed} files trashed; ${failures.total} errors.
             Restore moved files from Recovery. Results remain in Activity; create a fresh preview to retry.</p>` +
             failures.items.map(item => `<p role="alert">${esc(item.path || item.track_id)}: ${esc(item.error)}</p>`).join("");
+          showOutcome(panel, status, "Trash results");
           selectedTracks.clear(); updateSelection();
           await searchAlbums(); await loadStats();
         } catch (e) { status.textContent = e.message; toast(e.message, true); }
         finally {
           applying = false; close.disabled = false;
-          if (accepted) { state.trashPreviewJob = null; apply.remove(); }
+          workspace.busy(token, false);
+          if (accepted) { if (workspace.owns(token)) state.libraryReview = null; apply.remove(); }
           else apply.disabled = false;
         }
       };
       await refreshActivity();
-      panel.scrollIntoView({behavior: "smooth", block: "start"});
+      scrollReview();
     };
     const renderArtworkUpload = (panel, tracks) => {
+      const token = beginReview("artwork", "Change selected artwork");
+      if (token === null) return;
       panel.innerHTML = `<form class="card"><h3>Artwork for ${tracks.length} selected tracks</h3>
         <p>These tracks are fixed for this preview. Choose a JPEG or PNG image up to 8 MiB and 25 million pixels.
         Previewing does not modify music files. The reviewed cover replaces only the main embedded cover;
@@ -1252,9 +1498,10 @@ const views = {
       const input = panel.querySelector("[data-artwork-file]");
       const status = panel.querySelector("[data-artwork-upload-status]");
       const submit = panel.querySelector('[type="submit"]');
-      panel.querySelector("[data-artwork-upload-close]").onclick = () => { panel.innerHTML = ""; };
+      panel.querySelector("[data-artwork-upload-close]").onclick = () => { workspace.leave(); };
       input.onchange = () => {
-        state.artworkPreviewJob = null; $("#album-artwork-review").innerHTML = "";
+        rememberReview("artwork"); $("#album-artwork-review").innerHTML = "";
+        workspace.stage(token, "select");
         status.textContent = input.files.length ? "Image selected. Preview artwork before applying." : "";
       };
       let uploading = false;
@@ -1266,6 +1513,7 @@ const views = {
           status.textContent = "Choose a JPEG or PNG image no larger than 8 MiB."; return;
         }
         uploading = true; input.disabled = true; submit.disabled = true;
+        workspace.busy(token, true); workspace.stage(token, "preview");
         status.textContent = "Preparing an artwork preview. No music files are being changed.";
         try {
           const image_base64 = await new Promise((resolve, reject) => {
@@ -1274,21 +1522,26 @@ const views = {
             reader.onerror = () => reject(new Error("Cannot read the selected image."));
             reader.readAsDataURL(file);
           });
+          if (!workspace.owns(token)) return;
           const { job_id } = await post("/api/artwork/preview", {
             track_ids: tracks.map(track => track.id), image_base64, filename: file.name,
           });
-          state.artworkPreviewJob = job_id;
+          if (!workspace.owns(token)) return;
+          rememberReview("artwork", job_id);
           await refreshActivity();
           await pollJob(job_id, "Artwork preview");
-          if (!panel.isConnected) return;
+          if (!workspace.owns(token)) return;
           status.textContent = "Preview ready. Review the image and file list before applying.";
-          await loadArtworkReview(job_id);
+          await loadArtworkReview(job_id, token);
         } catch (e) { status.textContent = e.message; toast(e.message, true); }
-        finally { uploading = false; input.disabled = false; submit.disabled = false; }
+        finally {
+          workspace.busy(token, false);
+          uploading = false; input.disabled = false; submit.disabled = false;
+        }
       };
-      panel.scrollIntoView({behavior: "smooth", block: "start"});
+      scrollReview();
     };
-    const loadArtworkReview = async jobId => {
+    const loadArtworkReview = async (jobId, token) => {
       const [job, targets, warnings] = await Promise.all([
         api(`/api/jobs/${jobId}`),
         api(`/api/jobs/${jobId}/results/tracks?limit=200`),
@@ -1296,8 +1549,10 @@ const views = {
       ]);
       const preview = job.summary;
       const review = await api(`/api/artwork/reviews/${preview.review_id}`);
-      if (!el.isConnected) return;
+      if (!workspace.owns(token)) return;
+      workspace.stage(token, review.status === "review" ? "confirm" : "results");
       const panel = el.querySelector("#album-artwork-review");
+      $("#artwork-editor").replaceChildren();
       const current = targets.items.find(track => track.has_embedded_art && track.status === "ready");
       panel.innerHTML = `<div class="card"><h3>Review album artwork</h3>
         <p>${preview.ready} ready · ${preview.blocked} blocked. Only these files can be changed by this preview.</p>
@@ -1320,7 +1575,7 @@ const views = {
         <button class="action ghost" data-artwork-close>Close preview</button>
         <div role="status" data-artwork-status></div></div>`;
       panel.querySelector("[data-artwork-close]").onclick = () => {
-        state.artworkPreviewJob = null; panel.innerHTML = "";
+        workspace.leave();
       };
       const apply = panel.querySelector("[data-artwork-confirm]");
       let applying = false;
@@ -1331,6 +1586,7 @@ const views = {
         close.disabled = true;
         const status = panel.querySelector("[data-artwork-status]");
         let accepted = false;
+        workspace.busy(token, true);
         try {
           const { job_id } = await post("/api/artwork/apply-reviewed", {preview_job_id: jobId});
           accepted = true;
@@ -1338,36 +1594,41 @@ const views = {
           await refreshActivity();
           const result = await pollJob(job_id, "Album artwork");
           const failures = await api(`/api/jobs/${job_id}/results/errors?limit=200`);
-          if (!panel.isConnected) return;
+          if (!workspace.owns(token)) return;
+          workspace.stage(token, "results"); state.libraryReview = null;
           status.innerHTML = `<p>${result.summary.applied} files updated; ${failures.total} failed.
             Results are saved in Activity. Create a fresh preview before retrying.</p>` +
             failures.items.map(item => `<p role="alert">${esc(item.path || item.track_id)}: ${esc(item.error)}</p>`).join("");
+          showOutcome(panel, status, "Artwork results");
           await $("#library-search").onclick(); await loadStats();
         } catch (e) { status.textContent = e.message; toast(e.message, true); }
         finally {
           applying = false;
+          workspace.busy(token, false);
           close.disabled = false;
-          if (accepted) { state.artworkPreviewJob = null; apply.remove(); }
+          if (accepted) { if (workspace.owns(token)) state.libraryReview = null; apply.remove(); }
           else apply.disabled = false;
         }
       };
       await refreshActivity();
-      panel.scrollIntoView({behavior: "smooth", block: "start"});
+      scrollReview();
     };
-    const loadRenameReview = async jobId => {
+    const loadRenameReview = async (jobId, token) => {
       const [job, moves, skipped] = await Promise.all([
         api(`/api/jobs/${jobId}`),
         api(`/api/jobs/${jobId}/results/moves?limit=200`),
         api(`/api/jobs/${jobId}/results/skipped_files?limit=200`),
       ]);
-      if (!el.isConnected) return;
+      if (!workspace.owns(token)) return;
+      workspace.stage(token, "confirm");
       const panel = el.querySelector("#album-rename-review");
       panel.innerHTML = `<div class="card"><h3>Review selected-file organization</h3>
         <p>${job.summary.ready} ready · ${job.summary.blocked} blocked · ${job.summary.already_ok} already organized · ${skipped.total} skipped.</p>
-        <p>These are the fixed targets for this preview, using your Organize album templates even for loose root files.
-        No files have been moved. Conflicts are blocked, not renamed with an unexpected suffix.
+        <p>Review the exact destinations below. No files have moved. Conflicts are blocked.</p>
+        <details><summary>Organization safety</summary><p>These fixed targets use your Organize album templates,
+        even for loose root files. Conflicts are not renamed with an unexpected suffix.
         Permission checks are advisory; filesystem errors are checked again when applying.
-        Artwork and empty folders are left untouched.</p>
+        Artwork and empty folders are left untouched.</p></details>
         <div class="table-scroll"><table><thead><tr><th>Current path</th><th>Proposed path</th><th>Status</th><th>Reason</th></tr></thead>
         <tbody>${moves.items.map(move => `<tr><td class="path">${esc(move.source)}</td>
           <td class="path">${esc(move.target)}</td><td>${esc(move.status)}</td><td>${esc(move.reason)}</td></tr>`).join("")}</tbody></table></div>
@@ -1376,7 +1637,7 @@ const views = {
         <button class="action ghost" data-rename-close>Close preview</button>
         <div data-rename-status role="status"></div></div>`;
       panel.querySelector("[data-rename-close]").onclick = () => {
-        state.renamePreviewJob = null; panel.innerHTML = "";
+        workspace.leave();
       };
       const apply = panel.querySelector("[data-rename-confirm]");
       let applying = false;
@@ -1387,6 +1648,7 @@ const views = {
         const close = panel.querySelector("[data-rename-close]");
         apply.disabled = true; close.disabled = true;
         let accepted = false;
+        workspace.busy(token, true);
         try {
           const { job_id } = await post("/api/rename/apply-reviewed", {preview_job_id: jobId});
           accepted = true;
@@ -1394,28 +1656,33 @@ const views = {
           await refreshActivity();
           const result = await pollJob(job_id, "Selected album organization");
           const outcomes = await api(`/api/jobs/${job_id}/results/moves?limit=200`);
-          if (!panel.isConnected) return;
+          if (!workspace.owns(token)) return;
+          workspace.stage(token, "results"); state.libraryReview = null;
           status.innerHTML = `<p>${result.summary.moved} files moved; ${result.summary.errors} errors.
             Results are saved in Activity. Create a new preview before retrying.</p>` +
             outcomes.items.map(item => `<p class="path">${esc(item.source)} → ${esc(item.target)}:
               ${esc(item.status)} ${esc(item.reason)}</p>`).join("");
-          state.renamePreviewJob = null;
+          showOutcome(panel, status, "Organization results");
           apply.remove();
           selectedTracks.clear(); updateSelection();
           await searchAlbums(); await loadStats();
         } catch (e) { status.textContent = e.message; toast(e.message, true); }
         finally {
           applying = false; close.disabled = false;
+          workspace.busy(token, false);
           if (accepted) apply.remove(); else apply.disabled = false;
         }
       };
       await refreshActivity();
-      panel.scrollIntoView({behavior: "smooth", block: "start"});
+      scrollReview();
     };
     const renderManualEditor = (panel, tracks, mode = "album") => {
       const isTrack = mode === "track";
       const isNumbering = mode === "numbering";
       const isMerge = mode === "merge";
+      const token = beginReview("manual", isMerge ? "Merge albums" : isNumbering ? "Renumber tracks" :
+        isTrack ? "Edit track tags" : "Edit album tags");
+      if (token === null) return;
       const orderedTracks = [...tracks];
       const labels = isNumbering ? {track_no: "Track number", disc_no: "Disc number"} : isTrack ? {
         title: "Title", artist: "Track artist", track_no: "Track number", disc_no: "Disc number",
@@ -1457,7 +1724,7 @@ const views = {
             aria-label="${esc(label)}" value="${esc(common(key))}" maxlength="1000" ${isMerge && ["album", "album_artist"].includes(key) ? "" : "disabled"}
             ${["year", "track_no", "disc_no"].includes(key) ? 'min="1" max="9999" step="1"' : ""}>
         </div>`).join("")}</fieldset>
-        <button type="submit" class="action">Preview changes</button>
+        <button type="submit" class="action" data-operation>Preview changes</button>
         <button type="button" class="action ghost" data-edit-cancel>Cancel</button>
         <div data-edit-status role="status"></div><div data-edit-preview></div></form>`;
       const form = panel.querySelector("form");
@@ -1467,7 +1734,9 @@ const views = {
       const fieldset = form.querySelector("[data-edit-fields]");
       const cancel = form.querySelector("[data-edit-cancel]");
       let busy = false;
-      const invalidate = () => { previewEl.innerHTML = ""; status.textContent = ""; };
+      const invalidate = () => {
+        previewEl.innerHTML = ""; status.textContent = ""; workspace.stage(token, "select");
+      };
       const drawOrder = () => {
         const body = form.querySelector("[data-number-order]");
         if (!body) return;
@@ -1490,7 +1759,7 @@ const views = {
         form.elements.namedItem(input.dataset.editField).disabled = !input.checked;
       });
       form.oninput = invalidate;
-      cancel.onclick = () => { if (!busy) panel.innerHTML = ""; };
+      cancel.onclick = () => { if (!busy) workspace.leave(); };
       form.onsubmit = async event => {
         event.preventDefault();
         if (busy) return;
@@ -1506,6 +1775,7 @@ const views = {
           return;
         }
         busy = true;
+        workspace.busy(token, true); workspace.stage(token, "preview");
         submit.disabled = true; fieldset.disabled = true; cancel.disabled = true;
         previewEl.innerHTML = "";
         status.textContent = "Preparing review. Files have not been changed.";
@@ -1518,7 +1788,8 @@ const views = {
             fields, values,
           };
           const preview = await post(`/api/metadata/${endpoint}/preview`, body);
-          if (!form.isConnected) return;
+          if (!workspace.owns(token)) return;
+          workspace.stage(token, "confirm");
           status.textContent = `${preview.reviews.length} files ready; ${preview.errors.length} unavailable. No tags written.`;
           const failures = items => items.map(item =>
             `<p role="alert">${esc(item.path || item.review_id || item.track_id)}: ${esc(item.error)}</p>`).join("");
@@ -1539,6 +1810,7 @@ const views = {
           if (apply) apply.onclick = async () => {
             if (busy || !confirm(`Save ${fields.length} selected field(s) on ${preview.reviews.length} files? ${unchanged} Files will not be renamed.`)) return;
             busy = true;
+            workspace.busy(token, true);
             apply.disabled = true; fieldset.disabled = true; submit.disabled = true; cancel.disabled = true;
             status.textContent = "Saving reviewed tags. Results will be saved in Activity.";
             let accepted = false;
@@ -1555,7 +1827,8 @@ const views = {
                 api(`/api/jobs/${job_id}/results/applied?limit=200`),
                 api(`/api/jobs/${job_id}/results/errors?limit=200`),
               ]);
-              if (!el.isConnected) return;
+              if (!workspace.owns(token)) return;
+              workspace.stage(token, "results");
               status.textContent = "Tags saved. Results are below. Create a fresh preview for further changes.";
               $("#manual-album-result").innerHTML = `<div class="card"><h3>${isMerge ? "Album merge" : isNumbering ? "Track numbering" : isTrack ? "Track edit" : "Album edit"} results</h3>
                 <p>${applied.total} files updated; ${errors.total} failed; ${preview.errors.length} unavailable at preview.
@@ -1564,12 +1837,14 @@ const views = {
                 ${applied.total && !isTrack && !isNumbering ? '<button class="action" data-organize-edited data-operation>Preview organization of updated files</button>' : ""}</div>`;
               const organize = $("#manual-album-result").querySelector("[data-organize-edited]");
               if (organize) organize.onclick = () => previewOrganization(applied.items.map(item => item.track_id));
+              panel.replaceChildren();
               selectedAlbums.clear(); updateAlbumSelection();
               selectedTracks.clear(); updateSelection();
               await searchAlbums(); await loadStats();
             } catch (e) { status.textContent = e.message; toast(e.message, true); }
             finally {
               busy = false;
+              workspace.busy(token, false);
               if (accepted) apply.remove(); else apply.disabled = false;
               fieldset.disabled = false; submit.disabled = false; cancel.disabled = false;
             }
@@ -1577,14 +1852,16 @@ const views = {
         } catch (e) { status.textContent = e.message; }
         finally {
           busy = false;
+          workspace.busy(token, false);
           submit.disabled = false; fieldset.disabled = false; cancel.disabled = false;
         }
       };
-      panel.scrollIntoView({behavior: "smooth", block: "start"});
+      scrollReview();
     };
     const [genreRows, formatRows, settings] = await Promise.all([
       api("/api/genres"), api("/api/formats"), api("/api/settings"),
     ]);
+    if (!el.isConnected) return;
     $("#library-genre").insertAdjacentHTML("beforeend", genreRows.map(g => `<option>${esc(g)}</option>`).join(""));
     $("#library-format").insertAdjacentHTML("beforeend", formatRows.map(f => `<option>${esc(f)}</option>`).join(""));
     $("#library-view-albums").onclick = () => { setView("albums"); $("#library-search").click(); };
@@ -1602,7 +1879,7 @@ const views = {
       if (selectedTracks.size < 2) { toast("Select at least two tracks to merge.", true); return; }
       try {
         const tracks = await post("/api/tracks/selected", {track_ids: [...selectedTracks]});
-        if (el.isConnected) renderManualEditor($("#metadata-album"), tracks, "merge");
+        if (el.isConnected) renderManualEditor($("#manual-editor"), tracks, "merge");
       } catch (e) { toast(e.message, true); }
     };
     $("#album-merge").onclick = async () => {
@@ -1619,7 +1896,7 @@ const views = {
         })}`)));
         const tracks = [...new Map(details.flatMap(detail => detail.tracks).map(track => [track.id, track])).values()];
         if (tracks.length > 200) throw new Error("Album membership changed. Select at most 200 tracks and try again.");
-        if (el.isConnected) renderManualEditor($("#metadata-album"), tracks, "merge");
+        if (el.isConnected) renderManualEditor($("#manual-editor"), tracks, "merge");
       } catch (e) { toast(e.message, true); }
       finally { button.disabled = false; }
     };
@@ -1649,6 +1926,8 @@ const views = {
         });
     };
     const renderMetadataSearch = track => {
+      const token = beginReview("track-lookup", "Look up track metadata");
+      if (token === null) return;
       const searchPanel = el.querySelector("#metadata-search");
       el.querySelector("#metadata-review").innerHTML = "";
       searchPanel.innerHTML = `<form class="card"><h3>Search MusicBrainz</h3>
@@ -1657,7 +1936,7 @@ const views = {
         <div class="row">
           <label>Title <input type="text" name="title" value="${esc(track.title || "")}"></label>
           <label>Artist <input type="text" name="artist" value="${esc(track.artist || "")}"></label>
-          <button type="submit" class="action">Search catalogs</button>
+          <button type="submit" class="action" data-lookup-operation>Search catalogs</button>
         </div><p role="status" class="hint" data-search-status></p></form>`;
       const form = searchPanel.querySelector("form");
       const submit = form.querySelector('button[type="submit"]');
@@ -1671,20 +1950,23 @@ const views = {
           return;
         }
         submit.disabled = true;
+        workspace.busy(token, true); workspace.stage(token, "preview");
         status.textContent = "Searching MusicBrainz and iTunes… You can continue working in the library.";
         el.querySelector("#metadata-review").innerHTML = "";
         try {
           const review = await post("/api/metadata/lookup", {track_id: track.id, title, artist});
-          if (!form.isConnected) return;
+          if (!workspace.owns(token)) return;
           status.textContent = "";
-          renderMetadataReview(review);
+          workspace.stage(token, "confirm");
+          renderMetadataReview(review, $("#metadata-review"), null, token);
         } catch (e) {
           if (form.isConnected) status.textContent = e.message;
         } finally {
+          workspace.busy(token, false);
           submit.disabled = false;
         }
       };
-      searchPanel.scrollIntoView({behavior: "smooth", block: "start"});
+      scrollReview();
     };
     const coverMarkup = candidate => {
       const src = candidate.cover_url || "";
@@ -1693,7 +1975,7 @@ const views = {
       return `<img class="cover" alt="" loading="lazy" src="${esc(src)}" data-fallback="${esc(fallback)}"
         onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.replaceWith(Object.assign(document.createElement('div'),{className:'cover-ph',textContent:'♪'}));}">`;
     };
-    const renderMetadataReview = (review, panel = $("#metadata-review"), onSelection = null) => {
+    const renderMetadataReview = (review, panel, onSelection, token) => {
       const warnings = (review.warnings || []).map(message => `<p role="alert">${esc(message)}</p>`).join("");
       if (!review.candidates.length) {
         panel.innerHTML = `<div class="card"><h3>No catalog matches</h3>
@@ -1741,7 +2023,8 @@ const views = {
             .map(input => input.dataset.metadataField);
         panel.querySelector("[data-metadata-cancel]").onclick = () => {
           if (onSelection) onSelection(null);
-          panel.innerHTML = "";
+          if (onSelection) panel.innerHTML = "";
+          else workspace.leave();
         };
         if (onSelection) {
           panel.querySelectorAll("[data-metadata-field]").forEach(input => input.onchange = () => {
@@ -1757,26 +2040,32 @@ const views = {
           if (!fields.length) { toast("Select at least one field to apply.", true); return; }
           if (!confirm(`Apply ${fields.length} selected tag(s) to this file?`)) return;
           const applyButton = panel.querySelector("[data-metadata-apply]");
+          workspace.busy(token, true);
           try {
             applyButton.disabled = true;
             const result = await post("/api/metadata/apply", {
               review_id: review.review_id, candidate_index: candidateIndex, fields,
             });
+            if (!workspace.owns(token)) return;
+            workspace.stage(token, "results");
+            $("#metadata-search").replaceChildren();
             toast(`Updated ${fields.join(", ")}`);
             panel.innerHTML = `<div class="card"><h3>Tags updated</h3><p>${esc(result.path)}</p></div>`;
             await $("#library-search").onclick(); await loadStats();
-          } catch (e) { toast(e.message, true); applyButton.disabled = false; }
+          } catch (e) { workspace.fail(token, e.message); toast(e.message, true); applyButton.disabled = false; }
+          finally { workspace.busy(token, false); }
         };
       };
       renderCandidate();
-      if (!onSelection) panel.scrollIntoView({behavior: "smooth", block: "start"});
+      if (!onSelection) scrollReview();
     };
-    const loadBulkReview = async jobId => {
+    const loadBulkReview = async (jobId, token) => {
       const [reviews, errors] = await Promise.all([
         api(`/api/jobs/${jobId}/results/reviews?limit=100`),
         api(`/api/jobs/${jobId}/results/errors?limit=100`),
       ]);
-      if (!el.isConnected) return;
+      if (!workspace.owns(token)) return;
+      workspace.stage(token, "confirm");
       const panel = el.querySelector("#metadata-bulk");
       const choices = new Map();
       panel.innerHTML = `<div class="card"><h3>Bulk metadata review</h3>
@@ -1794,8 +2083,9 @@ const views = {
         renderMetadataReview(review, card, selection => {
           if (selection) choices.set(review.review_id, selection);
           else choices.delete(review.review_id);
+          workspace.stage(token, "confirm");
           panel.querySelector("[data-bulk-count]").textContent = `${choices.size} tracks ready`;
-        });
+        }, token);
       });
       panel.querySelector("[data-bulk-apply]").onclick = async () => {
         const selected = [...choices.values()];
@@ -1804,10 +2094,14 @@ const views = {
         if (!confirm(`Write ${count} selected tag(s) across ${selected.length} file(s)? Files are processed individually; failures will be listed.`)) return;
         const status = panel.querySelector("[data-bulk-status]");
         const button = panel.querySelector("[data-bulk-apply]");
+        workspace.busy(token, true);
+        let accepted = false;
+        let finished = false;
         try {
           button.disabled = true;
           cards.disabled = true;
           const { job_id } = await post("/api/metadata/apply-bulk", {reviews: selected});
+          accepted = true;
           status.textContent = "Applying reviewed tags. Progress and saved results are in Activity.";
           await refreshActivity();
           await pollJob(job_id, "Bulk tag updates");
@@ -1815,7 +2109,9 @@ const views = {
             api(`/api/jobs/${job_id}/results/applied?limit=100`),
             api(`/api/jobs/${job_id}/results/errors?limit=100`),
           ]);
-          if (!panel.isConnected) return;
+          if (!workspace.owns(token)) return;
+          finished = true;
+          workspace.stage(token, "results"); state.libraryReview = null;
           status.innerHTML = `<p>${applied.total} files updated; ${failures.total} failed.</p>` +
             failures.items.map(item => `<p role="alert">Review ${item.review_id}: ${esc(item.error)}</p>`).join("");
           applied.items.forEach(item => {
@@ -1825,7 +2121,14 @@ const views = {
           panel.querySelector("[data-bulk-count]").textContent = `${choices.size} tracks ready`;
           await $("#library-search").onclick(); await loadStats();
         } catch (e) { status.textContent = e.message; toast(e.message, true); }
-        finally { button.disabled = false; cards.disabled = false; }
+        finally {
+          workspace.busy(token, false);
+          if (accepted && !finished) {
+            button.remove();
+            if (workspace.owns(token)) state.libraryReview = null;
+          } else button.disabled = false;
+          cards.disabled = accepted && !finished;
+        }
       };
     };
     const albumLabels = {
@@ -1834,6 +2137,9 @@ const views = {
     };
     $("#metadata-album-bulk").onclick = async () => {
       if (!selectedTracks.size) { toast("Select tracks to tag as one album first.", true); return; }
+      const token = beginReview("album-lookup", "Find album matches");
+      if (token === null) return;
+      const trackIds = [...selectedTracks];
       const panel = el.querySelector("#metadata-album");
       const first = pageTracks.find(track => selectedTracks.has(track.id)) || {};
       panel.innerHTML = `<form class="card"><h3>Tag selected tracks as one album</h3>
@@ -1842,7 +2148,7 @@ const views = {
           <label>Album <input type="text" name="album" value="${esc(first.album || "")}"></label>
           <label>Artist <input type="text" name="artist" value="${esc(first.album_artist || first.artist || "")}"></label>
           <label>Lookup source <select name="source">${albumSourceOptions(settings.catalog.album_source)}</select></label>
-          <button type="submit" class="action">Find album matches</button>
+          <button type="submit" class="action" data-lookup-operation>Find album matches</button>
         </div><p role="status" class="hint" data-album-status></p>
         <div data-album-notice role="alert" style="overflow-wrap:anywhere"></div>
         <button type="button" class="action ghost" data-album-offline hidden>Search library only</button>
@@ -1862,6 +2168,7 @@ const views = {
         const results = form.querySelector("[data-album-results]");
         const submit = form.querySelector('button[type="submit"]');
         const source = form.elements.namedItem("source").value;
+        workspace.busy(token, true); workspace.stage(token, "preview");
         submit.disabled = true;
         notice.textContent = "";
         offline.hidden = true;
@@ -1870,12 +2177,13 @@ const views = {
         results.innerHTML = "";
         try {
           const payload = await post("/api/metadata/album-suggest", {
-            track_ids: [...selectedTracks],
+            track_ids: trackIds,
             album: form.elements.namedItem("album").value.trim(),
             artist: form.elements.namedItem("artist").value.trim(),
             source,
           });
-          if (!form.isConnected) return;
+          if (!workspace.owns(token)) return;
+          workspace.stage(token, "confirm");
           status.textContent = `${payload.tracks.length} tracks · ${payload.suggestions.length} suggestions`;
           notice.textContent = (payload.warnings || []).join(" ");
           offline.hidden = !payload.warnings?.length || source === "library";
@@ -1901,7 +2209,7 @@ const views = {
             <div>${fields.map(key => `<label class="metadata-field"><span><input type="checkbox" data-album-field="${key}"> ${albumLabels[key]}</span>
               <span>Suggested: ${esc(suggestion.fields[key])}</span></label>`).join("")}</div>
             <label class="check"><input type="checkbox" data-album-rename> Also rename these files using current Organize templates</label>
-            <button class="action" data-album-apply data-operation>Apply album tags</button>`;
+            <button type="button" class="action" data-album-apply data-operation>Apply album tags</button>`;
             results.querySelectorAll('input[type="radio"]').forEach(radio => radio.onchange = () => {
               suggestionIndex = Number(radio.value); draw();
             });
@@ -1911,6 +2219,8 @@ const views = {
               const rename = results.querySelector("[data-album-rename]").checked;
               if (!confirm(`Write ${chosen.length} album field(s) to ${payload.tracks.length} file(s)${rename ? " and rename them" : ""}?`)) return;
               const button = results.querySelector("[data-album-apply]");
+              workspace.busy(token, true);
+              let accepted = false;
               try {
                 button.disabled = true;
                 const values = {};
@@ -1921,6 +2231,7 @@ const views = {
                     track.id, {path: track.path, file_hash: track.file_hash},
                   ])),
                 });
+                accepted = true;
                 status.textContent = "Applying album tags. Progress is in Activity.";
                 await refreshActivity();
                 await pollJob(job_id, "Album tag update");
@@ -1929,10 +2240,20 @@ const views = {
                   api(`/api/jobs/${job_id}/results/errors?limit=200`),
                   api(`/api/jobs/${job_id}/results/rename_errors?limit=200`),
                 ]);
+                if (!workspace.owns(token)) return;
+                workspace.stage(token, "results");
                 status.innerHTML = `<p>${applied.total} files updated; ${errors.total} failed; ${renameErrors.total} rename errors.</p>` +
                   errors.items.map(item => `<p role="alert">${esc(item.path || item.track_id)}: ${esc(item.error)}</p>`).join("");
                 await $("#library-search").onclick(); await loadStats();
-              } catch (e) { toast(e.message, true); button.disabled = false; }
+              } catch (e) { workspace.fail(token, e.message); toast(e.message, true); }
+              finally {
+                workspace.busy(token, false);
+                if (accepted) {
+                  results.replaceChildren();
+                  submit.disabled = true;
+                  offline.hidden = true;
+                } else button.disabled = false;
+              }
             };
           };
           draw();
@@ -1942,41 +2263,43 @@ const views = {
           notice.textContent = e.message;
           offline.hidden = source === "library";
         }
-        finally { submit.disabled = false; }
+        finally { workspace.busy(token, false); submit.disabled = false; }
       };
-      panel.scrollIntoView({behavior: "smooth", block: "start"});
+      scrollReview();
     };
     $("#metadata-lookup-bulk").onclick = async () => {
       if (!selectedTracks.size) { toast("Select tracks to look up first.", true); return; }
       if (selectedTracks.size > 100) { toast("Per-track lookup is limited to 100 files. Use album tagging for larger groups.", true); return; }
+      const token = beginReview("bulk-lookup", "Look up selected tracks");
+      if (token === null) return;
+      workspace.busy(token, true); workspace.stage(token, "preview");
       try {
         const { job_id } = await post("/api/metadata/lookup-bulk", {track_ids: [...selectedTracks]});
-        state.metadataLookupJob = job_id;
+        if (!workspace.owns(token)) return;
+        rememberReview("bulk-lookup", job_id);
         await refreshActivity();
         await pollJob(job_id, "Bulk catalog lookup");
-        await loadBulkReview(job_id);
-      } catch (e) { toast(e.message, true); }
+        await loadBulkReview(job_id, token);
+      } catch (e) { workspace.fail(token, e.message); toast(e.message, true); }
+      finally { workspace.busy(token, false); }
     };
     $("#library-query").onkeydown = event => {
       if (event.key === "Enter") { event.preventDefault(); $("#library-search").click(); }
     };
     await $("#library-search").onclick();
-    if (state.renamePreviewJob) {
-      const job = await api(`/api/jobs/${state.renamePreviewJob}`);
-      if (job.status === "done") await loadRenameReview(job.id);
-    }
-    if (state.artworkPreviewJob) {
-      const job = await api(`/api/jobs/${state.artworkPreviewJob}`);
-      if (job.status === "done") await loadArtworkReview(job.id);
-    }
-    if (state.trashPreviewJob) {
-      const job = await api(`/api/jobs/${state.trashPreviewJob}`);
-      if (job.status === "done") await loadTrashReview(job.id);
-    }
-    if (state.metadataLookupJob) {
-      const job = await api(`/api/jobs/${state.metadataLookupJob}`);
-      if (job.status === "done") await loadBulkReview(job.id);
-    }
+    if (!el.isConnected) return;
+    state.openLibraryReview = async (kind, jobId) => {
+      const loaders = {rename: loadRenameReview, artwork: loadArtworkReview, trash: loadTrashReview,
+        "bulk-lookup": loadBulkReview};
+      const token = beginReview(kind, "Review saved results");
+      if (token === null) return;
+      rememberReview(kind, jobId);
+      workspace.busy(token, true); workspace.stage(token, "preview");
+      try { await loaders[kind](jobId, token); }
+      catch (e) { workspace.fail(token, e.message); toast(e.message, true); }
+      finally { workspace.busy(token, false); }
+    };
+    if (savedReview?.jobId) await state.openLibraryReview(savedReview.kind, savedReview.jobId);
   },
 
   async recovery(el) {
@@ -2154,8 +2477,8 @@ const views = {
 
   async art(el) {
     el.innerHTML = `<div class="row">
-      <button class="action" id="btn-missing">Find missing art</button>
-      <button class="action" id="btn-dl" style="display:none">Download & embed</button>
+      <button class="action" id="btn-missing" data-operation>Find missing art</button>
+      <button class="action" id="btn-dl" data-operation style="display:none">Download & embed</button>
     </div><div id="art-out"><div class="empty">Art comes from the Cover Art Archive (MusicBrainz).</div></div>`;
     $("#btn-missing").onclick = async () => {
       const job = await runTask("art", {});
@@ -2178,7 +2501,7 @@ const views = {
 
   async missing(el) {
     el.innerHTML = `<div class="row">
-      <button class="action" id="btn-refresh">Compare with MusicBrainz</button>
+      <button class="action" id="btn-refresh" data-operation>Compare with MusicBrainz</button>
       <span class="hint">Detects tracks your albums are missing, then fetch them from Usenet.</span>
     </div><div id="miss-out"><div class="empty">Run a comparison to find gaps in your albums.</div></div>`;
     $("#btn-refresh").onclick = async () => {
@@ -2334,6 +2657,9 @@ const views = {
 };
 
 async function render() {
+  if (!leaveLibraryReview()) { state.tab = "library"; return; }
+  state.libraryWorkspace = null;
+  state.openLibraryReview = null;
   state.libraryObserver?.disconnect();
   try { await loadStats(); } catch (e) { toast(e.message, true); }
   const nav = $("#nav");
@@ -2346,17 +2672,15 @@ async function render() {
   main.innerHTML = TABS.map(([id]) => `<section id="tab-${id}" class="${state.tab === id ? "active" : ""}"></section>`).join("");
   const el = $(`#tab-${state.tab}`);
   try { await views[state.tab](el); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-  el.querySelectorAll("button.action:not(.ghost):not([data-lookup-operation])").forEach(button => { button.dataset.operation = ""; });
-  const active = state.jobs.some(j => ["queued", "running", "stopping"].includes(j.status) && !j.read_only);
-  el.querySelectorAll("[data-operation]").forEach(button => { button.disabled = active; });
-  const searching = state.jobs.some(j => ["queued", "running", "stopping"].includes(j.status) && j.read_only);
-  el.querySelectorAll("[data-lookup-operation]").forEach(button => { button.disabled = searching; });
+  applyJobLocks(el);
 }
 async function watchActivity() {
   await refreshActivity();
   setTimeout(watchActivity, 1500);
 }
 async function startDashboard() {
+  $("#activity-details").ontoggle = () => { if ($("#activity-details").open) refreshActivity(); };
+  new MutationObserver(() => applyJobLocks($("#main"))).observe($("#main"), {childList: true, subtree: true});
   await refreshActivity();
   await render();
   watchActivity();
