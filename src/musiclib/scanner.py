@@ -23,6 +23,7 @@ ART_KEYS = {
     "mp3": ("APIC",),
     "flac": ("__picture",),
     "mp4": ("covr",),
+    "alac": ("covr",),
     "ogg": ("metadata_block_picture",),
     "opus": ("metadata_block_picture",),
     "wma": ("WM/Picture",),
@@ -73,8 +74,12 @@ def _has_embedded_art(path: str, fmt: str, audio: mutagen.File) -> bool:
     keys = ART_KEYS.get(fmt, ())
     if fmt == "flac":
         return bool(audio.pictures)
+    tags = audio.tags or {}
     for key in keys:
-        if key in (audio.tags or {}):
+        if key == "APIC" and hasattr(tags, "getall"):
+            if tags.getall("APIC"):
+                return True
+        elif key in tags:
             return True
     return False
 

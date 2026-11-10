@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +16,7 @@ from .brainz import configure_musicbrainz, search_recordings, search_releases
 from .config import Config
 from .db import Database
 from .duplicates import normalize
-from .fsops import is_inside
+from .fsops import atomic_edit, is_inside
 from .models import Track
 from .scanner import Scanner, ScanReport, file_hash, scan_worker
 
@@ -272,13 +270,8 @@ def lookup_track(
 
 
 def write_audio_tags(path: Path, tags_to_write: Dict[str, Any]) -> Dict[str, Any]:
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{path.stem}.musiclib-", suffix=path.suffix, dir=path.parent
-    )
-    os.close(fd)
-    try:
-        shutil.copy2(path, temp_name)
-        audio = mutagen.File(temp_name, easy=True)
+    def edit(temporary: Path) -> Dict[str, Any]:
+        audio = mutagen.File(temporary, easy=True)
         if audio is None:
             raise ValueError("Audio format does not support editable metadata.")
         if audio.tags is None:
@@ -286,16 +279,13 @@ def write_audio_tags(path: Path, tags_to_write: Dict[str, Any]) -> Dict[str, Any
         for key, value in tags_to_write.items():
             audio[key] = [str(value)]
         audio.save()
-        result = scan_worker(temp_name)
+        result = scan_worker(str(temporary))
         if result.get("error"):
             raise ValueError(f"Updated file could not be read: {result['error']}")
         result["path"] = str(path)
-        os.replace(temp_name, path)
         return result
-    except Exception:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
-        raise
+
+    return atomic_edit(path, edit)
 
 
 def _most_common(values: List[Any]) -> Any:

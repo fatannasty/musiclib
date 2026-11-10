@@ -262,12 +262,14 @@ class Database:
             "SUM(CASE WHEN status='bad' THEN 1 ELSE 0 END) AS bad_count, "
             "SUM(CASE WHEN has_embedded_art=1 THEN 1 ELSE 0 END) AS art_count, "
             "MAX(mbid_release) AS mbid_release, "
-            "MIN(CASE WHEN has_embedded_art=1 THEN id END) AS cover_track_id "
+            "MIN(CASE WHEN has_embedded_art=1 THEN path END) AS cover_path "
             f"FROM tracks WHERE {where} GROUP BY 1, 2"
         )
         total = self.query_one(f"SELECT COUNT(*) AS n FROM ({grouped})", params)["n"]
         rows = self.query(
-            grouped + " ORDER BY album_artist COLLATE NOCASE, album COLLATE NOCASE "
+            "SELECT g.*, cover.id AS cover_track_id, cover.file_hash AS cover_hash FROM (" + grouped + ") AS g "
+            "LEFT JOIN tracks AS cover ON cover.path=g.cover_path "
+            "ORDER BY g.album_artist COLLATE NOCASE, g.album COLLATE NOCASE "
             "LIMIT ? OFFSET ?",
             params + [limit, offset],
         )
@@ -289,7 +291,7 @@ class Database:
             params.append(status)
         return self.query(
             "SELECT id, path, artist, album_artist, album, title, genre, format, "
-            "bitrate, year, track_no, disc_no, status, mbid_release, has_embedded_art "
+            "bitrate, year, track_no, disc_no, status, mbid_release, has_embedded_art, file_hash "
             f"FROM tracks WHERE {where} ORDER BY disc_no, track_no, path",
             params,
         )
