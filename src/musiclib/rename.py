@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shutil
@@ -7,12 +8,13 @@ import sqlite3
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import Config
 from .db import Database
-from .fsops import case_insensitive_exists, remove_empty_dirs
+from .fsops import case_insensitive_exists, is_inside, remove_empty_dirs
 from .models import Track
+from .scanner import file_hash
 
 FORBIDDEN_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 CLEANUP_RE = re.compile(r"\(\s*\)|\[\s*\]")
@@ -123,17 +125,18 @@ class Renamer:
             return False
         return len(relative.parts) == 3 and relative.parts[0] == folder
 
-    def plan(self, tracks: Optional[List[Track]] = None) -> RenameReport:
-        tracks = tracks or self.db.all_tracks()
+    def plan(
+        self, tracks: Optional[List[Track]] = None, album_mode: bool = False,
+    ) -> RenameReport:
+        tracks = self.db.all_tracks() if tracks is None else tracks
         tracks = [t for t in tracks if t.status in ("ok", "suspect")]
         report = RenameReport()
         for track in tracks:
             source = str(Path(track.path).resolve())
             if not os.path.exists(source):
                 report.skipped.append((track.path, "file missing on disk"))
-                self.db.update_track_columns(track.id, status="deleted")
                 continue
-            if self._is_library_root_track(source):
+            if not album_mode and self._is_library_root_track(source):
                 target = str(Path(self.singles_target_path(track)).resolve())
             elif not track.title or not track.album:
                 report.skipped.append(
@@ -143,12 +146,158 @@ class Renamer:
             else:
                 target = str(Path(self.target_path(track)).resolve())
             if self._same_file(source, target):
-                if source != track.path:
-                    self._repath(track.id, source)
                 report.already_ok += 1
                 continue
             report.moves.append(MovePlan(track, source, target))
         return report
+
+    def preview_selected(
+        self, track_ids: List[int],
+        progress: Optional[Callable[[str, int, int, str], None]] = None,
+    ) -> Dict[str, Any]:
+        if not 1 <= len(track_ids) <= 200 or len(set(track_ids)) != len(track_ids):
+            raise ValueError("Select between 1 and 200 distinct tracks.")
+        tracks, skipped = [], []
+        for track_id in track_ids:
+            track = self.db.get_track(track_id)
+            if track is None or track.status not in ("ok", "suspect"):
+                skipped.append({"track_id": track_id, "reason": "Track is unavailable or marked bad."})
+            elif not is_inside(track.path, self.library) or Path(track.path).is_symlink():
+                skipped.append({
+                    "track_id": track_id, "path": track.path,
+                    "reason": "File is outside the library or is a symbolic link.",
+                })
+            else:
+                tracks.append(track)
+        report = self.plan(tracks, album_mode=True)
+        skipped.extend({"path": path, "reason": reason} for path, reason in report.skipped)
+        targets: Dict[str, int] = {}
+        for move in report.moves:
+            key = move.target.casefold()
+            targets[key] = targets.get(key, 0) + 1
+        moves = []
+        for index, move in enumerate(report.moves, start=1):
+            if progress:
+                progress("Checking selected rename targets", index - 1, len(report.moves), move.source)
+            reason = ""
+            try:
+                reason = self._review_problem(move.source, move.target, move.track.id)
+                if targets[move.target.casefold()] > 1:
+                    reason = "Multiple selected files have the same target. Fix their titles or numbers."
+                if not move.track.file_hash or file_hash(move.source) != move.track.file_hash:
+                    reason = "File changed since the last scan or has no hash. Scan it before renaming."
+            except OSError as exc:
+                reason = str(exc)
+            moves.append({
+                "track_id": move.track.id, "path": move.track.path,
+                "source": move.source, "target": move.target,
+                "file_hash": move.track.file_hash,
+                "status": "blocked" if reason else "ready", "reason": reason,
+            })
+            if progress:
+                progress("Checking selected rename targets", index, len(report.moves), move.source)
+        return {
+            "moves": moves, "skipped_files": skipped, "already_ok": report.already_ok,
+            "ready": sum(move["status"] == "ready" for move in moves),
+            "blocked": sum(move["status"] == "blocked" for move in moves),
+            "templates": {"album": self.template, "multidisc": self.template_multidisc},
+        }
+
+    def apply_selected(
+        self, preview: Dict[str, Any],
+        progress: Optional[Callable[[str, int, int, str], None]] = None,
+    ) -> Dict[str, Any]:
+        if preview["templates"] != {"album": self.template, "multidisc": self.template_multidisc}:
+            raise ValueError("Organize templates changed. Create a new rename preview.")
+        moves = [dict(move) for move in preview["moves"] if move["status"] == "ready"]
+        errors, moved = [], 0
+        for index, move in enumerate(moves, start=1):
+            if progress:
+                progress("Renaming reviewed files", index - 1, len(moves), move["source"])
+            try:
+                track = self.db.get_track(move["track_id"])
+                if (
+                    track is None or track.status not in ("ok", "suspect")
+                    or track.path != move["path"] or track.file_hash != move["file_hash"]
+                    or Path(track.path).is_symlink()
+                    or str(Path(track.path).resolve()) != move["source"]
+                    or str(Path(self.target_path(track)).resolve()) != move["target"]
+                ):
+                    raise ValueError("Track changed since preview. Create a new preview.")
+                reason = self._review_problem(move["source"], move["target"], track.id)
+                if reason:
+                    raise ValueError(reason)
+                if file_hash(move["source"]) != move["file_hash"]:
+                    raise ValueError("File changed since preview. Scan it and preview again.")
+                self._move_no_replace(move["source"], move["target"])
+                moved += 1
+                try:
+                    self._repath(track.id, move["target"])
+                except sqlite3.Error as exc:
+                    raise ValueError(
+                        f"File moved to {move['target']}, but catalog update failed: {exc}. Run Scan."
+                    ) from exc
+                move.update(status="done", reason="")
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                move.update(status="error", reason=str(exc))
+                errors.append({
+                    "track_id": move["track_id"], "source": move["source"],
+                    "target": move["target"], "error": str(exc),
+                })
+            if progress:
+                progress("Renaming reviewed files", index, len(moves), move["source"])
+        return {
+            "moved": moved, "moves": moves, "errors": errors,
+            "blocked": preview["blocked"], "already_ok": preview["already_ok"],
+            "skipped_files": preview["skipped_files"],
+        }
+
+    def _review_problem(self, source: str, target: str, track_id: Optional[int]) -> str:
+        if not is_inside(source, self.library) or not is_inside(target, self.library):
+            return "Source or target is outside the configured library."
+        if not os.path.isfile(source):
+            return "Source file is missing from disk."
+        if os.path.lexists(target) or case_insensitive_exists(Path(target).parent, Path(target).name):
+            return "Target is occupied (including case-only filename conflicts). No file will be overwritten."
+        occupant = self.db.query_one(
+            "SELECT id FROM tracks WHERE path=? AND status!='deleted' AND id!=?",
+            (target, track_id),
+        )
+        if occupant:
+            return "Target belongs to another catalog entry. Run Scan and preview again."
+        parent = Path(target).parent
+        while not parent.exists():
+            parent = parent.parent
+        if not parent.is_dir():
+            return f"Target parent is not a folder: {parent}"
+        if not os.access(Path(source).parent, os.W_OK | os.X_OK):
+            return "Cannot rename from the source folder. Check NAS folder permissions and PUID/PGID."
+        if not os.access(parent, os.W_OK | os.X_OK):
+            return "Cannot write to the target folder. Check NAS folder permissions and PUID/PGID."
+        return ""
+
+    def _move_no_replace(self, source: str, target: str) -> None:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        created = False
+        try:
+            try:
+                os.link(source, target, follow_symlinks=False)
+                created = True
+            except OSError as exc:
+                if exc.errno not in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP, errno.EMLINK):
+                    raise
+                # NAS mounts may forbid links even when copying and removing files is allowed.
+                with open(source, "rb") as src, open(target, "xb") as dest:
+                    created = True
+                    shutil.copyfileobj(src, dest)
+                    dest.flush()
+                    os.fsync(dest.fileno())
+                shutil.copystat(source, target)
+            os.unlink(source)
+        except OSError:
+            if created:
+                os.unlink(target)
+            raise
 
     def apply(self, report: Optional[RenameReport] = None) -> RenameReport:
         report = report or self.plan()

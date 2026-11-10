@@ -242,6 +242,7 @@ async function showJobResults(job) {
     rename: ["moves", "skipped_files", "errors"], art: ["albums"], "duplicates-apply": [],
     "metadata-lookup": ["reviews", "errors"], "metadata-apply": ["applied", "errors"],
     "issues-trash": ["failures"], "album-apply": ["applied", "errors", "rename_errors"],
+    "rename-preview": ["moves", "skipped_files"], "rename-reviewed": ["moves", "errors", "skipped_files"],
   }[job.kind] || [];
   container.querySelector(".sections").innerHTML = sections.map(([key, value]) => `<span class="tag dim">${esc(key)}: ${value}</span>`).join("") +
     lists.map(key => `<button class="action ghost" data-section="${key}">${esc(key)}</button>`).join("");
@@ -255,6 +256,15 @@ async function showJobResults(job) {
     button.className = "action ghost";
     button.textContent = "Review suggestions";
     button.onclick = () => { state.metadataLookupJob = job.id; state.tab = "library"; render(); };
+    container.querySelector(".sections").append(button);
+  }
+  if (job.kind === "rename-preview") {
+    const button = document.createElement("button");
+    button.className = "action ghost";
+    button.textContent = "Review rename preview";
+    button.onclick = () => {
+      state.renamePreviewJob = job.id; state.libraryView = "albums"; state.tab = "library"; render();
+    };
     container.querySelector(".sections").append(button);
   }
   container.querySelector("[data-section]")?.click();
@@ -541,6 +551,7 @@ const views = {
     <p class="hint">Select up to 200 tracks. Per-track lookup is limited to 100 files. Album tagging writes the same album fields to every selected file after you confirm. Files are not renamed unless you choose that option.</p>
     <div id="metadata-album"></div>
     <div id="manual-album-result" role="status"></div>
+    <div id="album-rename-review"></div>
     <div id="metadata-bulk"></div>
     <div id="metadata-search"></div><div id="metadata-review"></div>
     <div id="library-albums"></div>
@@ -630,6 +641,7 @@ const views = {
             <div><h3>${esc(detail.album)}</h3>
             <p>${esc(detail.album_artist)} · ${esc(detail.year || "—")} · ${detail.track_count} tracks${detail.bad_count ? ` · ${detail.bad_count} bad` : ""}</p>
             <button class="action" data-edit-album>Edit album tags</button>
+            <button class="action ghost" data-rename-album data-operation>Preview organization</button>
             <button class="action ghost" data-tag-album data-operation>Find catalog matches</button></div>
           </div>
           ${detail.track_count > 200 ? '<p class="hint">Only the first 200 tracks are selected. Edit larger albums in batches.</p>' : ''}
@@ -642,6 +654,17 @@ const views = {
           ).join("")}</tbody></table></div></div>`;
         pageEl.querySelector("[data-back]").onclick = () => { pageEl.innerHTML = ""; searchAlbums(); };
         pageEl.querySelector("[data-tag-album]").onclick = () => $("#metadata-album-bulk").click();
+        pageEl.querySelector("[data-rename-album]").onclick = async () => {
+          const trackIds = detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id);
+          if (!trackIds.length) { toast("Select tracks to organize first.", true); return; }
+          try {
+            const { job_id } = await post("/api/rename/preview-selected", {track_ids: trackIds});
+            state.renamePreviewJob = job_id;
+            await refreshActivity();
+            await pollJob(job_id, "Selected album rename preview");
+            if (el.isConnected) await loadRenameReview(job_id);
+          } catch (e) { toast(e.message, true); }
+        };
         pageEl.querySelector("[data-edit-album]").onclick = () => {
           const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
           if (!tracks.length) { toast("Select tracks to edit first.", true); return; }
@@ -653,6 +676,59 @@ const views = {
         updateSelection();
         await refreshActivity();
       } catch (e) { toast(e.message, true); }
+    };
+    const loadRenameReview = async jobId => {
+      const [job, moves, skipped] = await Promise.all([
+        api(`/api/jobs/${jobId}`),
+        api(`/api/jobs/${jobId}/results/moves?limit=200`),
+        api(`/api/jobs/${jobId}/results/skipped_files?limit=200`),
+      ]);
+      if (!el.isConnected) return;
+      const panel = el.querySelector("#album-rename-review");
+      panel.innerHTML = `<div class="card"><h3>Review selected-file organization</h3>
+        <p>${job.summary.ready} ready · ${job.summary.blocked} blocked · ${job.summary.already_ok} already organized · ${skipped.total} skipped.</p>
+        <p>These are the fixed targets for this preview, using your Organize album templates even for loose root files.
+        No files have been moved. Conflicts are blocked, not renamed with an unexpected suffix.
+        Permission checks are advisory; filesystem errors are checked again when applying.
+        Artwork and empty folders are left untouched.</p>
+        <div class="table-scroll"><table><thead><tr><th>Current path</th><th>Proposed path</th><th>Status</th><th>Reason</th></tr></thead>
+        <tbody>${moves.items.map(move => `<tr><td class="path">${esc(move.source)}</td>
+          <td class="path">${esc(move.target)}</td><td>${esc(move.status)}</td><td>${esc(move.reason)}</td></tr>`).join("")}</tbody></table></div>
+        ${skipped.items.map(item => `<p>${esc(item.path || item.track_id)}: ${esc(item.reason)}</p>`).join("")}
+        ${job.summary.ready ? '<button class="action" data-rename-confirm data-operation>Apply ready moves</button>' : ''}
+        <button class="action ghost" data-rename-close>Close preview</button>
+        <div data-rename-status role="status"></div></div>`;
+      panel.querySelector("[data-rename-close]").onclick = () => {
+        state.renamePreviewJob = null; panel.innerHTML = "";
+      };
+      const apply = panel.querySelector("[data-rename-confirm]");
+      let applying = false;
+      if (apply) apply.onclick = async () => {
+        if (applying || !confirm(`Move ${job.summary.ready} selected file(s) to the exact paths shown? Blocked and skipped files stay untouched. Changed files will be rejected.`)) return;
+        applying = true;
+        const status = panel.querySelector("[data-rename-status]");
+        const close = panel.querySelector("[data-rename-close]");
+        apply.disabled = true; close.disabled = true;
+        try {
+          const { job_id } = await post("/api/rename/apply-reviewed", {preview_job_id: jobId});
+          status.textContent = "Moving reviewed files. Progress and saved results are in Activity.";
+          await refreshActivity();
+          const result = await pollJob(job_id, "Selected album organization");
+          const outcomes = await api(`/api/jobs/${job_id}/results/moves?limit=200`);
+          if (!panel.isConnected) return;
+          status.innerHTML = `<p>${result.summary.moved} files moved; ${result.summary.errors} errors.
+            Results are saved in Activity. Create a new preview before retrying.</p>` +
+            outcomes.items.map(item => `<p class="path">${esc(item.source)} → ${esc(item.target)}:
+              ${esc(item.status)} ${esc(item.reason)}</p>`).join("");
+          state.renamePreviewJob = null;
+          apply.remove();
+          selectedTracks.clear(); updateSelection();
+          await searchAlbums(); await loadStats();
+        } catch (e) { status.textContent = e.message; toast(e.message, true); apply.disabled = false; }
+        finally { applying = false; close.disabled = false; }
+      };
+      await refreshActivity();
+      panel.scrollIntoView({behavior: "smooth", block: "start"});
     };
     const renderAlbumEditor = (panel, tracks) => {
       const labels = {
@@ -1069,6 +1145,10 @@ const views = {
       if (event.key === "Enter") { event.preventDefault(); $("#library-search").click(); }
     };
     await $("#library-search").onclick();
+    if (state.renamePreviewJob) {
+      const job = await api(`/api/jobs/${state.renamePreviewJob}`);
+      if (job.status === "done") await loadRenameReview(job.id);
+    }
     if (state.metadataLookupJob) {
       const job = await api(`/api/jobs/${state.metadataLookupJob}`);
       if (job.status === "done") await loadBulkReview(job.id);
