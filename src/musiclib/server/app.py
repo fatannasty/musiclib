@@ -365,12 +365,12 @@ def create_app(config: Config) -> FastAPI:
             reviews, errors = [], []
             total = len(body.track_ids)
             for index, track_id in enumerate(body.track_ids):
-                jobs.update("Looking up MusicBrainz suggestions", index, total, str(track_id))
+                jobs.update("Looking up catalog suggestions", index, total, str(track_id))
                 try:
                     reviews.append(reviewer.propose(track_id))
                 except (ValueError, RuntimeError, OSError) as exc:
                     errors.append({"track_id": track_id, "error": str(exc)})
-                jobs.update("Looking up MusicBrainz suggestions", index + 1, total, str(track_id))
+                jobs.update("Looking up catalog suggestions", index + 1, total, str(track_id))
             return {"reviews": reviews, "errors": errors}
 
         return {"job_id": jobs.start("metadata-lookup", run)}
