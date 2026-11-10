@@ -196,7 +196,8 @@ class Artwork:
 
     def album_tracks(self, album: Album) -> List:
         return self.db.query(
-            "SELECT * FROM tracks WHERE LOWER(album_artist)=LOWER(?) AND "
+            "SELECT * FROM tracks WHERE "
+            "LOWER(COALESCE(NULLIF(album_artist,''),'Unknown Artist'))=LOWER(?) AND "
             "LOWER(album)=LOWER(?) AND status IN ('ok','suspect') ORDER BY path",
             (album.album_artist, album.album),
         )

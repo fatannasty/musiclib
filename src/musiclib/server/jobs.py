@@ -8,7 +8,7 @@ import time
 import uuid
 from concurrent.futures import CancelledError
 from functools import wraps
-from typing import Any, Dict, Optional, get_type_hints
+from typing import Any, Callable, Dict, Optional, get_type_hints
 
 from fastapi import HTTPException
 
@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 class JobRegistry:
     """Persist activity, with separate serialized lanes for searches and writes."""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, after_write: Optional[Callable[[], None]] = None) -> None:
         self.db = db
+        self.after_write = after_write
         self._lease = threading.Lock()
         self._lookup_lease = threading.Lock()
         self._local = threading.local()
@@ -67,7 +68,11 @@ class JobRegistry:
                 raise self._busy(read_only)
             setattr(self._local, ownership, True)
             try:
-                return fn(*args, **kwargs)
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    if not read_only and self.after_write:
+                        self.after_write()
             finally:
                 setattr(self._local, ownership, False)
                 lease.release()
@@ -121,7 +126,11 @@ class JobRegistry:
                     self.check_cancelled()
                     job["status"] = "running"
                     self._save(job)
-                result = fn(job)
+                try:
+                    result = fn(job)
+                finally:
+                    if not read_only and self.after_write:
+                        self.after_write()
                 with self._state_lock:
                     job.update(
                         status="done", finished=time.time(), phase="Complete",

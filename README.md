@@ -62,6 +62,22 @@ visible; expand **More library details** for duplicate, issue, and album counts.
 Short entrance and hover animations provide feedback without looping decoration.
 The dashboard respects your device's reduced-motion setting, including review scrolling.
 
+Album summaries are reconciled from healthy and flagged catalog tracks when the
+dashboard starts and before each library-changing operation releases its lock,
+including failed or stopped jobs with completed changes. Merges and tag edits
+remove obsolete album identities; trash and recovery update album membership and
+counts. Reconciliation only updates the database and checks artwork filenames in
+member folders: it does not scan audio, change tags, move files, or contact catalogs.
+Restarting the updated app also repairs old summaries without a rescan.
+
+Valid MusicBrainz matches and comparisons survive unchanged scans, artwork changes,
+and file organization. Changing album membership, titles, or track/disc numbers
+clears the affected missing-track comparison; run **Missing Music** again to compare
+the current tracks. Changing tagged release IDs also resets the affected release
+match. The first reconciliation after upgrading clears old comparisons whose inputs
+were not recorded, while retaining known release matches and expected track counts.
+CLI commands reconcile on opening the catalog and after checks, cleanup, and organization.
+
 The dashboard keeps a compact Activity bar with readable task names, phase,
 file counts, elapsed time, and **Stop job**. Expand **Details, history and results**
 for current paths, stop behavior, saved jobs, and paginated results. File-level

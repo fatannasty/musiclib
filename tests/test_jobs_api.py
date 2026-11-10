@@ -1,6 +1,6 @@
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 
 import pytest
 from fastapi import HTTPException
@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from musiclib.doctor import Doctor
 from musiclib.models import Issue, Track
-from musiclib.scanner import ScanReport
+from musiclib.scanner import Scanner, ScanReport
 from musiclib.server.app import create_app
 from musiclib.server.jobs import JobRegistry
 
@@ -76,6 +76,55 @@ def test_failure_is_visible_and_releases_library_lock(lib_env, monkeypatch):
         assert job["status"] == "error"
         assert "share unavailable" in job["error"]
         assert client.post("/api/tasks/rename", json={}).status_code == 200
+
+
+@pytest.mark.parametrize("outcome", ["done", "error", "cancelled"])
+def test_album_finalization_finishes_before_job_status_and_write_lane_release(lib_env, outcome):
+    entered, finish = threading.Event(), threading.Event()
+
+    def finalize():
+        entered.set()
+        assert finish.wait(5)
+        Scanner(lib_env.config, lib_env.db).rebuild_albums()
+
+    registry = JobRegistry(lib_env.db, after_write=finalize)
+
+    def run(job):
+        lib_env.db.upsert_track(Track(path="/music/song", album="New", album_artist="Artist"))
+        if outcome == "error":
+            raise RuntimeError("Write interrupted")
+        if outcome == "cancelled":
+            raise CancelledError()
+        return {}
+
+    try:
+        job_id = registry.start("test", run)
+        assert entered.wait(5)
+        assert registry.get(job_id)["status"] == "running"
+        with pytest.raises(HTTPException) as error:
+            registry.start("other-write", lambda job: {})
+        assert error.value.status_code == 409
+    finally:
+        finish.set()
+        registry.close()
+    assert registry.get(job_id)["status"] == outcome
+    assert [(a.album, a.have_tracks) for a in lib_env.db.albums_all()] == [("New", 1)]
+
+
+def test_album_finalization_failure_is_visible_and_releases_write_lane(lib_env):
+    def fail():
+        raise OSError("Album refresh failed")
+
+    registry = JobRegistry(lib_env.db, after_write=fail)
+    job_id = registry.start("test", lambda job: {})
+    registry.close()
+    job = registry.get(job_id)
+    assert job["status"] == "error"
+    assert "Album refresh failed" in job["error"]
+    with pytest.raises(OSError, match="Album refresh failed"):
+        registry.operation(lambda: {})()
+    registry.after_write = None
+    assert registry.operation(lambda: "available")() == "available"
 
 
 def test_search_and_write_lanes_are_independent_and_bounded(lib_env):

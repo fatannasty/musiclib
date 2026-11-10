@@ -38,7 +38,9 @@ def get_config(config_path: Optional[str] = None) -> Config:
 
 
 def get_db(config: Config) -> Database:
-    return Database(config.db_path)
+    db = Database(config.db_path)
+    Scanner(config, db).rebuild_albums()
+    return db
 
 
 def human_bytes(value: float) -> str:
@@ -170,6 +172,7 @@ def doctor(
                 task, completed=done, current=Path(current).name[:40]
             ),
         )
+    Scanner(config, db).rebuild_albums()
     for result in report.results[:25]:
         color = "red" if result["severity"] == "bad" else "yellow"
         console.print(
@@ -235,6 +238,7 @@ def dupes(
     console.print(f"\n[bold]{len(groups)} duplicate groups, {human_bytes(reclaimed)} reclaimable[/bold]")
     if apply:
         report = finder.apply(groups, hard_delete=hard_delete)
+        Scanner(config, db).rebuild_albums()
         console.print(
             f"[green]{report.trashed} moved to trash, {report.deleted} deleted, "
             f"{human_bytes(report.reclaimed_bytes)} reclaimed[/green]"
@@ -268,6 +272,7 @@ def rename(
     )
     if apply:
         done = renamer.apply(report)
+        Scanner(config, db).rebuild_albums()
         console.print(f"[green]{done.moved} files moved[/green]")
         for src, err in done.errors[:10]:
             console.print(f"[red]error: {src}: {err}[/red]")

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 from .models import Album, Issue, Track
 
@@ -129,11 +131,18 @@ class Database:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        self.albums_dirty = True
         deletion_columns = {
             row["name"] for row in self._conn.execute("PRAGMA table_info(deletions)")
         }
         if "restored_at" not in deletion_columns:
             self._conn.execute("ALTER TABLE deletions ADD COLUMN restored_at TEXT")
+        album_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(albums)")
+        }
+        for column in ("track_signature", "release_signature"):
+            if column not in album_columns:
+                self._conn.execute(f"ALTER TABLE albums ADD COLUMN {column} TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -200,6 +209,7 @@ class Database:
                 "SELECT id FROM tracks WHERE path=?", (track.path,)
             ).fetchone()
             self._conn.commit()
+            self.albums_dirty = True
             if row:
                 track.id = row["id"]
             elif cur.lastrowid:
@@ -212,7 +222,13 @@ class Database:
             return
         cols = ", ".join(f"{k}=?" for k in columns)
         params = list(columns.values()) + [track_id]
-        self.execute(f"UPDATE tracks SET {cols} WHERE id=?", params)
+        with self._lock, self._conn:
+            self._conn.execute(f"UPDATE tracks SET {cols} WHERE id=?", params)
+            if set(columns) & {
+                "album_artist", "album", "year", "mbid_release", "status",
+                "title", "track_no", "disc_no", "path", "has_embedded_art",
+            }:
+                self.albums_dirty = True
 
     def replace_issues(self, track: Track) -> None:
         self.execute("DELETE FROM issues WHERE track_id=?", (track.id,))
@@ -370,6 +386,85 @@ class Database:
         )
         return [self._row_to_album(r) for r in rows]
 
+    def reconcile_albums(self, folder_images: Set[str]) -> None:
+        """Replace derived summaries atomically, retaining only valid catalog caches."""
+        with self._lock, self._conn:
+            groups: Dict[tuple, list] = {}
+            for row in self._conn.execute(
+                "SELECT id, path, album_artist, album, year, mbid_release, has_embedded_art, "
+                "title, disc_no, track_no, "
+                "LOWER(COALESCE(NULLIF(album_artist,''),'Unknown Artist')) AS artist_key, "
+                "LOWER(album) AS album_key FROM tracks "
+                "WHERE status IN ('ok','suspect') AND album IS NOT NULL AND album != '' ORDER BY id"
+            ):
+                groups.setdefault((row["artist_key"], row["album_key"]), []).append(row)
+            existing: Dict[tuple, list] = {}
+            for row in self._conn.execute(
+                "SELECT *, LOWER(album_artist) AS artist_key, LOWER(album) AS album_key "
+                "FROM albums ORDER BY mbid_verified DESC, id"
+            ):
+                existing.setdefault((row["artist_key"], row["album_key"]), []).append(row)
+            retained = set()
+            for key, tracks in groups.items():
+                previous = existing.get(key, [])
+                old = previous[0] if previous else None
+                signature = hashlib.sha256(json.dumps([
+                    [t["id"], t["title"], t["disc_no"], t["track_no"]]
+                    for t in tracks
+                ]).encode()).hexdigest()
+                releases = sorted({t["mbid_release"] for t in tracks if t["mbid_release"]})
+                release_signature = json.dumps(releases)
+                release_changed = old is not None and old["release_signature"] is not None and (
+                    old["release_signature"] != release_signature
+                )
+                unchanged = old is not None and len(previous) == 1 and (
+                    old["track_signature"] == signature and not release_changed
+                )
+                tagged_release = releases[0] if len(releases) == 1 else None
+                mbid = old["mbid_release"] if old and not release_changed else tagged_release
+                verified = old["mbid_verified"] if old and not release_changed else 0
+                years = [t["year"] for t in tracks if t["year"] is not None]
+                year = min(years) if years else (old["year"] if old else None)
+                has_art = any(
+                    t["has_embedded_art"] or str(Path(t["path"]).parent) in folder_images
+                    for t in tracks
+                )
+                art_status = "ok" if has_art else "missing"
+                if old and (
+                    (has_art and old["art_status"] == "downloaded")
+                    or (not has_art and unchanged and old["art_status"] in ("none", "failed", "small"))
+                ):
+                    art_status = old["art_status"]
+                values = (
+                    old["album_artist"] if old else tracks[0]["album_artist"] or "Unknown Artist",
+                    old["album"] if old else tracks[0]["album"],
+                    year, mbid, verified, art_status,
+                    old["expected_tracks"] if old and not release_changed else None,
+                    len(tracks), old["missing_tracks"] if unchanged else None,
+                    signature, release_signature,
+                )
+                if old:
+                    self._conn.execute(
+                        "UPDATE albums SET album_artist=?, album=?, year=?, mbid_release=?, "
+                        "mbid_verified=?, art_status=?, expected_tracks=?, have_tracks=?, "
+                        "missing_tracks=?, track_signature=?, release_signature=? WHERE id=?",
+                        values + (old["id"],),
+                    )
+                    retained.add(old["id"])
+                else:
+                    cursor = self._conn.execute(
+                        "INSERT INTO albums (album_artist,album,year,mbid_release,mbid_verified,"
+                        "art_status,expected_tracks,have_tracks,missing_tracks,"
+                        "track_signature,release_signature) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        values,
+                    )
+                    retained.add(cursor.lastrowid)
+            self._conn.executemany(
+                "DELETE FROM albums WHERE id=?",
+                [(row["id"],) for rows in existing.values() for row in rows if row["id"] not in retained],
+            )
+            self.albums_dirty = False
+
     def _row_to_album(self, row: sqlite3.Row) -> Album:
         return Album(
             id=row["id"], album_artist=row["album_artist"], album=row["album"],
@@ -431,7 +526,7 @@ class Database:
             """
             SELECT COUNT(*) AS tracks,
                    COALESCE(SUM(size), 0) AS bytes,
-                   COUNT(DISTINCT album_artist || char(31) || album) AS albums,
+                   (SELECT COUNT(*) FROM albums) AS albums,
                    COALESCE(SUM(duration), 0) AS seconds,
                    COALESCE(SUM(CASE WHEN has_embedded_art THEN 1 ELSE 0 END), 0) AS with_art
             FROM tracks WHERE status IN ('ok', 'suspect')

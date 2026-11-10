@@ -13,7 +13,7 @@ import mutagen
 from .config import Config
 from .db import Database
 from .fsops import is_inside
-from .models import Album, Issue, Track, audio_format
+from .models import Issue, Track, audio_format
 
 FOLDER_IMAGE_NAMES = [
     "folder.jpg", "folder.png", "cover.jpg", "cover.png", "front.jpg", "front.png",
@@ -394,49 +394,15 @@ class Scanner:
         self.db.upsert_track(track)
 
     def rebuild_albums(self, root: Optional[str] = None) -> None:
-        root = str(Path(root or self.config.library).expanduser())
-        rows = self.db.query(
-            """
-            SELECT album_artist, album, MIN(year) AS year,
-                   COUNT(*) AS have_tracks,
-                   MAX(has_embedded_art) AS any_art,
-                   MAX(mbid_release) AS mbid_release
-            FROM tracks
-            WHERE status IN ('ok', 'suspect') AND album IS NOT NULL AND album != ''
-            GROUP BY LOWER(album_artist), LOWER(album)
-            """
-        )
-        folder_images = self._find_folder_images(root)
-        for row in rows:
-            album = Album(
-                album_artist=row["album_artist"] or "Unknown Artist",
-                album=row["album"],
-                year=row["year"],
-                mbid_release=row["mbid_release"],
-                have_tracks=row["have_tracks"],
+        # Inspect actual member folders, including albums spread across directories.
+        folders = {
+            Path(row["path"]).parent for row in self.db.query(
+                "SELECT path FROM tracks WHERE status IN ('ok','suspect') "
+                "AND album IS NOT NULL AND album != ''"
             )
-            album_dir = self._album_dir(row["album_artist"], row["album"], root)
-            has_folder_art = album_dir in folder_images
-            album.art_status = "ok" if (row["any_art"] or has_folder_art) else "missing"
-            self.db.upsert_album(album)
-
-    def _find_folder_images(self, root: str) -> set:
-        found = set()
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-            for name in FOLDER_IMAGE_NAMES:
-                if name in filenames:
-                    found.add(dirpath)
-        return found
-
-    def _album_dir(self, album_artist: Optional[str], album: str, root: str) -> str:
-        if not album_artist:
-            return ""
-        rows = self.db.query(
-            "SELECT path FROM tracks WHERE LOWER(album_artist)=LOWER(?) "
-            "AND LOWER(album)=LOWER(?) AND status IN ('ok','suspect') LIMIT 1",
-            (album_artist, album),
-        )
-        if not rows:
-            return ""
-        return str(Path(rows[0]["path"]).parent)
+        }
+        folder_images = {
+            str(folder) for folder in folders
+            if any((folder / name).is_file() for name in FOLDER_IMAGE_NAMES)
+        }
+        self.db.reconcile_albums(folder_images)

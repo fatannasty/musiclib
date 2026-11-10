@@ -1,3 +1,6 @@
+import sqlite3
+
+from musiclib.db import Database
 from musiclib.models import Album, Issue, Track
 
 
@@ -52,3 +55,27 @@ def test_stats_and_deletions(lib_env):
     rows = db.query("SELECT * FROM deletions")
     assert len(rows) == 1
     assert rows[0]["reason"] == "test"
+
+
+def test_album_cache_migration_preserves_existing_catalog_and_is_repeatable(tmp_path):
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE albums (id INTEGER PRIMARY KEY, album_artist TEXT NOT NULL, "
+            "album TEXT NOT NULL, year INTEGER, mbid_release TEXT, mbid_verified INTEGER DEFAULT 0, "
+            "art_status TEXT DEFAULT 'unknown', expected_tracks INTEGER, have_tracks INTEGER DEFAULT 0, "
+            "missing_tracks TEXT, UNIQUE(album_artist,album))"
+        )
+        connection.execute(
+            "INSERT INTO albums (album_artist,album,mbid_release,mbid_verified,expected_tracks) "
+            "VALUES ('Artist','Album','resolved',1,12)"
+        )
+    for _ in range(2):
+        db = Database(path)
+        try:
+            album = db.albums_all()[0]
+            assert (album.mbid_release, album.mbid_verified, album.expected_tracks) == ("resolved", True, 12)
+            row = db.query_one("SELECT track_signature,release_signature FROM albums")
+            assert row["track_signature"] is row["release_signature"] is None
+        finally:
+            db.close()

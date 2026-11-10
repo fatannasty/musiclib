@@ -209,7 +209,13 @@ def _coerce(value: Any, current: Any) -> Any:
 def create_app(config: Config) -> FastAPI:
     app = FastAPI(title="musiclib", docs_url=None, redoc_url=None)
     db = Database(config.db_path)
-    jobs = JobRegistry(db)
+    Scanner(config, db).rebuild_albums()
+
+    def refresh_album_summaries() -> None:
+        if db.albums_dirty:
+            Scanner(config, db).rebuild_albums()
+
+    jobs = JobRegistry(db, after_write=refresh_album_summaries)
     playback = Playback(config, db)
 
     def sab_client() -> Sabnzbd:

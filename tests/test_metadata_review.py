@@ -772,6 +772,11 @@ def test_merge_across_folders_preserves_track_identity_then_reviews_organization
         assert albums["total"] == 1
         assert albums["items"][0]["album"] == "Joined"
         assert albums["items"][0]["track_count"] == 2
+        summaries = client.get("/api/albums").json()
+        assert [(a["album_artist"], a["album"], a["have_tracks"]) for a in summaries] == [
+            ("Shared artist", "Joined", 2),
+        ]
+        assert client.get("/api/stats").json()["albums"] == 1
         for index, original in enumerate(tracks):
             current = env.db.get_track(original.id)
             assert current.path == original.path
@@ -823,6 +828,10 @@ def test_stopping_bulk_tag_writes_keeps_completed_edits_and_skips_remaining(lib_
         assert wait_job(client, job_id)["status"] == "cancelled"
         assert env.db.get_track(ids[0]).album == "Updated"
         assert env.db.get_track(ids[1]).album == "Original"
+        summaries = client.get("/api/albums").json()
+        assert {(a["album"], a["have_tracks"]) for a in summaries} == {
+            ("Updated", 1), ("Original", 1),
+        }
 
 
 def test_album_apply_writes_only_chosen_fields(lib_env, monkeypatch):
