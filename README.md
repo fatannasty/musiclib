@@ -147,6 +147,24 @@ Manual edits use saved reviews: files moved or changed since preview are skipped
 and per-file permission errors do not stop the remaining files. Results are saved
 in Activity. After saving, the album grid refreshes to reflect the new tags.
 
+For safe album organization, select up to 200 tracks on an album page and choose
+**Preview organization**. The saved preview lists current and exact proposed paths,
+using the album and multidisc templates in Settings (even for loose root files).
+Previewing does not move files, create folders, or change track records. Duplicate
+targets, existing files (including case-only conflicts), and detected folder
+permission problems are blocked with reasons; files are not silently given suffixes.
+Permission checks are advisory because NAS ACLs or mount conditions can still
+reject an operation when it runs.
+
+Choose **Apply ready moves** and confirm to move only the ready files in that
+preview. Paths, tags/hashes, templates, permissions, and target occupancy are
+checked again before moving. Changed files and new conflicts are reported without
+stopping other files. Existing targets are never overwritten, including if another
+process creates a target during the move. Tags, artwork, and empty folders are left
+untouched. Preview and apply results remain in Activity; use **View results →
+Review rename preview** on a `rename-preview` job to reopen a saved preview after
+refreshing. Create a fresh preview to retry failed files.
+
 In Library, choose **Lookup**, enter or correct the title and/or artist, then
 search. MusicBrainz and iTunes are queried together so simple title/artist matches
 return faster when one catalog is slow, and matching albums show Cover Art Archive

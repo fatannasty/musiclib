@@ -114,6 +114,14 @@ class AlbumEditBody(BaseModel):
     values: Dict[str, Any]
 
 
+class RenamePreviewBody(BaseModel):
+    track_ids: List[int]
+
+
+class RenameReviewedApplyBody(BaseModel):
+    preview_job_id: str
+
+
 class SabAddBody(BaseModel):
     url: str
     name: Optional[str] = None
@@ -647,6 +655,30 @@ def create_app(config: Config) -> FastAPI:
                 for m in report.moves
             ],
         }
+
+    @app.post("/api/rename/preview-selected")
+    def rename_preview_selected(body: RenamePreviewBody) -> Dict[str, str]:
+        if not 1 <= len(body.track_ids) <= 200 or len(set(body.track_ids)) != len(body.track_ids):
+            raise HTTPException(400, "Select between 1 and 200 distinct tracks.")
+        return {"job_id": jobs.start(
+            "rename-preview",
+            lambda job: Renamer(config, db).preview_selected(body.track_ids, progress=jobs.update),
+        )}
+
+    @app.post("/api/rename/apply-reviewed")
+    def rename_apply_reviewed(body: RenameReviewedApplyBody) -> Dict[str, str]:
+        preview_job = jobs.get(body.preview_job_id)
+        if not preview_job or preview_job["kind"] != "rename-preview":
+            raise HTTPException(400, "Choose a saved selected-track rename preview.")
+        if preview_job["status"] != "done":
+            raise HTTPException(400, "The rename preview has not completed successfully.")
+        preview = jobs.result(body.preview_job_id)
+        if not preview["ready"]:
+            raise HTTPException(400, "This preview has no files ready to rename.")
+        return {"job_id": jobs.start(
+            "rename-reviewed",
+            lambda job: Renamer(config, db).apply_selected(preview, progress=jobs.update),
+        )}
 
     @app.get("/api/albums")
     def albums(
