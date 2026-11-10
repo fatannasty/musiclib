@@ -18,6 +18,7 @@ from .config import Config
 from .db import Database
 from .duplicates import normalize
 from .fsops import is_inside
+from .models import Track
 from .scanner import Scanner, ScanReport, file_hash, scan_worker
 
 CAA_FRONT = "https://coverartarchive.org/release/{mbid}/front-250"
@@ -406,11 +407,14 @@ class MetadataReview:
         if not os.path.isfile(track.path):
             raise ValueError("Track file is missing from disk.")
         candidates = lookup_track(track, title=title, artist=artist)
+        return self._save_review(track, candidates)
+
+    def _save_review(self, track: Track, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
         cursor = self.db.execute(
             "INSERT INTO metadata_reviews "
             "(track_id,path,file_hash,candidates,status,created_at) VALUES (?,?,?,?,?,?)",
             (
-                track_id, track.path, track.file_hash or "",
+                track.id, track.path, track.file_hash or "",
                 json.dumps(candidates), "review", datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -425,6 +429,39 @@ class MetadataReview:
             },
             "candidates": candidates,
         }
+
+    def preview_album_edit(
+        self, track_ids: List[int], fields: List[str], values: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not fields or set(fields) - set(ALBUM_FIELDS) or len(set(fields)) != len(fields):
+            raise ValueError("Select one or more distinct album fields to edit.")
+        selected: Dict[str, Any] = {}
+        for field in fields:
+            value = values.get(field)
+            if field == "year":
+                if isinstance(value, bool) or not isinstance(value, (str, int)):
+                    raise ValueError("Year must be a whole number between 1 and 9999.")
+                text = str(value).strip()
+                if not text.isascii() or not text.isdigit() or not 1 <= int(text) <= 9999:
+                    raise ValueError("Year must be a whole number between 1 and 9999.")
+                selected[field] = int(text)
+            else:
+                if not isinstance(value, str) or not value.strip() or len(value) > 1000:
+                    raise ValueError(f"Enter a non-empty value of at most 1000 characters for {field}.")
+                selected[field] = value.strip()
+        tracks = self._tracks_for_album(track_ids)
+        reviews, errors = [], []
+        for track in tracks:
+            if not os.path.isfile(track.path) or not track.file_hash:
+                errors.append({
+                    "track_id": track.id, "path": track.path,
+                    "error": "File is missing or has not been hashed. Scan it before editing.",
+                })
+                continue
+            reviews.append(self._save_review(track, [{
+                "source": "Manual edit", "fields": selected,
+            }]))
+        return {"reviews": reviews, "errors": errors, "fields": fields}
 
     def apply(self, review_id: int, candidate_index: int, fields: List[str]) -> Dict[str, Any]:
         if not fields or set(fields) - set(EDITABLE_FIELDS):

@@ -108,6 +108,12 @@ class AlbumApplyBody(BaseModel):
     rename: bool = False
 
 
+class AlbumEditBody(BaseModel):
+    track_ids: List[int]
+    fields: List[str]
+    values: Dict[str, Any]
+
+
 class SabAddBody(BaseModel):
     url: str
     name: Optional[str] = None
@@ -411,9 +417,12 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/metadata/apply-bulk")
     def metadata_apply_bulk(body: MetadataBulkApplyBody) -> Dict[str, str]:
+        return start_reviewed_apply(body, limit=100)
+
+    def start_reviewed_apply(body: MetadataBulkApplyBody, limit: int) -> Dict[str, str]:
         review_ids = [review.review_id for review in body.reviews]
-        if not 1 <= len(review_ids) <= 100 or len(set(review_ids)) != len(review_ids):
-            raise HTTPException(400, "Select between 1 and 100 distinct reviews.")
+        if not 1 <= len(review_ids) <= limit or len(set(review_ids)) != len(review_ids):
+            raise HTTPException(400, f"Select between 1 and {limit} distinct reviews.")
         if any(
             not review.fields or set(review.fields) - set(EDITABLE_FIELDS)
             or review.candidate_index < 0
@@ -438,6 +447,22 @@ def create_app(config: Config) -> FastAPI:
             return {"applied": applied, "errors": errors}
 
         return {"job_id": jobs.start("metadata-apply", run)}
+
+    @app.post("/api/metadata/album-edit/preview")
+    @jobs.operation
+    def album_edit_preview(body: AlbumEditBody) -> Dict[str, Any]:
+        try:
+            return MetadataReview(config, db).preview_album_edit(
+                body.track_ids, body.fields, body.values,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/metadata/album-edit/apply")
+    def album_edit_apply(body: MetadataBulkApplyBody) -> Dict[str, str]:
+        if any(set(review.fields) - set(ALBUM_FIELDS) for review in body.reviews):
+            raise HTTPException(400, "Only album fields can be applied by the album editor.")
+        return start_reviewed_apply(body, limit=200)
 
     @app.post("/api/metadata/album-suggest")
     @jobs.operation

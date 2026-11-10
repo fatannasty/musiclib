@@ -516,6 +516,147 @@ def test_album_apply_writes_only_chosen_fields(lib_env, monkeypatch):
         assert updated.artist == "Old Artist"
 
 
+def test_manual_album_edit_preview_and_apply_preserve_unselected_tags(lib_env, monkeypatch):
+    env = lib_env
+    for index in range(2):
+        make_mp3(env.library / f"manual-{index}.mp3", tags={
+            "title": f"Song {index}", "artist": f"Performer {index}",
+            "album": "Wrong Album", "tracknumber": index + 1,
+        })
+    Scanner(env.config, env.db).scan()
+    tracks = env.db.all_tracks()
+    before = {track.id: Path(track.path).read_bytes() for track in tracks}
+
+    def no_network(*args, **kwargs):
+        pytest.fail("Manual editing must not query a metadata provider")
+
+    monkeypatch.setattr(musicbrainzngs, "search_recordings", no_network)
+    monkeypatch.setattr(musicbrainzngs, "search_releases", no_network)
+    monkeypatch.setattr("musiclib.metadata_review.httpx.get", no_network)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/album-edit/preview", json={
+            "track_ids": [track.id for track in tracks],
+            "fields": ["album", "album_artist", "year"],
+            "values": {"album": " Correct Album ", "album_artist": "Various Artists",
+                       "year": "2004", "artist": "Must not write"},
+        })
+        assert response.status_code == 200
+        preview = response.json()
+        assert len(preview["reviews"]) == 2
+        assert preview["errors"] == []
+        for review in preview["reviews"]:
+            assert review["track"]["album"] == "Wrong Album"
+            assert review["candidates"][0]["fields"] == {
+                "album": "Correct Album", "album_artist": "Various Artists", "year": 2004,
+            }
+        for track in tracks:
+            assert Path(track.path).read_bytes() == before[track.id]
+        batch = {"reviews": [
+            {"review_id": review["review_id"], "candidate_index": 0, "fields": preview["fields"]}
+            for review in preview["reviews"]
+        ]}
+        job_id = client.post("/api/metadata/album-edit/apply", json=batch).json()["job_id"]
+        assert wait_job(client, job_id)["summary"] == {"applied": 2, "errors": 0}
+        retry_id = client.post("/api/metadata/album-edit/apply", json=batch).json()["job_id"]
+        assert wait_job(client, retry_id)["summary"] == {"applied": 0, "errors": 2}
+    for track in tracks:
+        updated = env.db.get_track(track.id)
+        assert updated.album == "Correct Album"
+        assert updated.album_artist == "Various Artists"
+        assert updated.year == 2004
+        assert updated.artist == track.artist
+        assert updated.title == track.title
+        assert updated.track_no == track.track_no
+        assert updated.path == track.path
+
+
+@pytest.mark.parametrize(("fields", "values"), [
+    ([], {}),
+    (["title"], {"title": "Wrong scope"}),
+    (["album", "album"], {"album": "Duplicate"}),
+    (["album"], {"album": "  "}),
+    (["album"], {"album": ["Not text"]}),
+    (["album"], {"album": "x" * 1001}),
+    (["year"], {"year": True}),
+    (["year"], {"year": 2001.5}),
+    (["year"], {"year": "not a year"}),
+    (["year"], {"year": 0}),
+    (["year"], {"year": 10000}),
+])
+def test_manual_album_edit_rejects_invalid_preview(lib_env, fields, values):
+    with TestClient(create_app(lib_env.config)) as client:
+        response = client.post("/api/metadata/album-edit/preview", json={
+            "track_ids": [1], "fields": fields, "values": values,
+        })
+        assert response.status_code == 400
+        assert lib_env.db.query_one("SELECT COUNT(*) AS n FROM metadata_reviews")["n"] == 0
+        assert client.get("/api/jobs").json() == []
+
+
+def test_manual_album_edit_skips_changed_and_unwritable_files(lib_env, monkeypatch):
+    env = lib_env
+    for index in range(3):
+        make_mp3(env.library / f"manual-{index}.mp3", tags={
+            "title": f"Song {index}", "album": "Original",
+        })
+    Scanner(env.config, env.db).scan()
+    tracks = env.db.all_tracks()
+    reviewer = MetadataReview(env.config, env.db)
+    preview = reviewer.preview_album_edit(
+        [track.id for track in tracks], ["album"], {"album": "New"},
+    )
+    with open(tracks[0].path, "ab") as file:
+        file.write(b"changed externally")
+    from musiclib.metadata_review import write_audio_tags
+
+    def permission_error(path, values):
+        if str(path) == tracks[1].path:
+            raise PermissionError("Read-only music folder")
+        return write_audio_tags(path, values)
+
+    monkeypatch.setattr("musiclib.metadata_review.write_audio_tags", permission_error)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/album-edit/apply", json={"reviews": [
+            {"review_id": review["review_id"], "candidate_index": 0, "fields": ["album"]}
+            for review in preview["reviews"]
+        ]})
+        job_id = response.json()["job_id"]
+        assert wait_job(client, job_id)["summary"] == {"applied": 1, "errors": 2}
+        errors = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"]
+        assert "changed since lookup" in errors[0]["error"]
+        assert "Read-only" in errors[1]["error"]
+    assert env.db.get_track(tracks[0].id).album == "Original"
+    assert env.db.get_track(tracks[1].id).album == "Original"
+    assert env.db.get_track(tracks[2].id).album == "New"
+
+
+def test_manual_album_edit_missing_files_and_batch_limit(lib_env):
+    env = lib_env
+    make_mp3(env.library / "missing.mp3", tags={"title": "Missing"})
+    Scanner(env.config, env.db).scan()
+    track = env.db.all_tracks()[0]
+    Path(track.path).unlink()
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/album-edit/preview", json={
+            "track_ids": [track.id], "fields": ["album"], "values": {"album": "New"},
+        })
+        assert response.json()["reviews"] == []
+        assert "missing" in response.json()["errors"][0]["error"]
+        for ids in ([], [track.id] * 2, list(range(201))):
+            assert client.post("/api/metadata/album-edit/preview", json={
+                "track_ids": ids, "fields": ["album"], "values": {"album": "New"},
+            }).status_code == 400
+        # Two hundred is accepted by the manual editor without changing the catalog batch limit.
+        batch = {"reviews": [
+            {"review_id": index, "candidate_index": 0, "fields": ["album"]}
+            for index in range(200)
+        ]}
+        response = client.post("/api/metadata/album-edit/apply", json=batch)
+        assert response.status_code == 200
+        assert wait_job(client, response.json()["job_id"])["summary"]["errors"] == 200
+        assert client.post("/api/metadata/apply-bulk", json=batch).status_code == 400
+
+
 def test_itunes_results_are_used_when_musicbrainz_fails(monkeypatch):
     def fail(**kwargs):
         raise musicbrainzngs.NetworkError("connection timed out")

@@ -59,7 +59,7 @@ button.action {
 button.action:hover { filter: brightness(1.08); transform: translateY(-1px); }
 button.action.danger { background: var(--red); color: #fff; box-shadow: none; }
 button.action.ghost { background: var(--panel); border: 1px solid var(--border); color: var(--text); box-shadow: none; }
-input[type=text], input[type=search] {
+input[type=text], input[type=search], input[type=number] {
   background: var(--panel); border: 1px solid var(--border); color: var(--text);
   padding: 9px 12px; border-radius: 12px; font-size: 13px; min-width: 320px;
 }
@@ -140,7 +140,7 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 }
 @media (max-width: 600px) {
   main { padding: 12px; }
-  input[type=text], input[type=search] { min-width: 0; max-width: 100%; }
+  input[type=text], input[type=search], input[type=number] { min-width: 0; max-width: 100%; }
   .metadata-field { grid-template-columns: 1fr; }
 }
 </style>
@@ -540,6 +540,7 @@ const views = {
       <button class="action" id="metadata-album-bulk" data-operation>Tag selected as one album</button></div>
     <p class="hint">Select up to 200 tracks. Per-track lookup is limited to 100 files. Album tagging writes the same album fields to every selected file after you confirm. Files are not renamed unless you choose that option.</p>
     <div id="metadata-album"></div>
+    <div id="manual-album-result" role="status"></div>
     <div id="metadata-bulk"></div>
     <div id="metadata-search"></div><div id="metadata-review"></div>
     <div id="library-albums"></div>
@@ -628,8 +629,11 @@ const views = {
           <div class="album-hero">${albumCover(detail.cover_url)}
             <div><h3>${esc(detail.album)}</h3>
             <p>${esc(detail.album_artist)} · ${esc(detail.year || "—")} · ${detail.track_count} tracks${detail.bad_count ? ` · ${detail.bad_count} bad` : ""}</p>
-            <button class="action" data-tag-album data-operation>Tag this album</button></div>
+            <button class="action" data-edit-album>Edit album tags</button>
+            <button class="action ghost" data-tag-album data-operation>Find catalog matches</button></div>
           </div>
+          ${detail.track_count > 200 ? '<p class="hint">Only the first 200 tracks are selected. Edit larger albums in batches.</p>' : ''}
+          <div data-manual-editor></div>
           <div class="table-scroll"><table><thead><tr><th>Select</th><th>#</th><th>Title</th><th>Artist</th><th>Status</th></tr></thead>
           <tbody>${detail.tracks.map(track =>
             `<tr><td><input type="checkbox" data-select-track="${track.id}" aria-label="Select ${esc(track.title || track.path)}"></td>
@@ -638,12 +642,120 @@ const views = {
           ).join("")}</tbody></table></div></div>`;
         pageEl.querySelector("[data-back]").onclick = () => { pageEl.innerHTML = ""; searchAlbums(); };
         pageEl.querySelector("[data-tag-album]").onclick = () => $("#metadata-album-bulk").click();
+        pageEl.querySelector("[data-edit-album]").onclick = () => {
+          const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
+          if (!tracks.length) { toast("Select tracks to edit first.", true); return; }
+          renderAlbumEditor(pageEl.querySelector("[data-manual-editor]"), tracks);
+        };
         pageEl.querySelectorAll("[data-select-track]").forEach(input => input.onchange = () => {
           selectTrack(Number(input.dataset.selectTrack), input.checked); updateSelection();
         });
         updateSelection();
         await refreshActivity();
       } catch (e) { toast(e.message, true); }
+    };
+    const renderAlbumEditor = (panel, tracks) => {
+      const labels = {
+        album: "Album", album_artist: "Album artist", year: "Year", genre: "Genre",
+        artist: "Track artist (replaces each selected artist)", mbid_release: "MusicBrainz release ID",
+      };
+      const common = key => {
+        const values = tracks.map(track => String(track[key] ?? ""));
+        return values.every(value => value === values[0]) ? values[0] : "";
+      };
+      $("#manual-album-result").innerHTML = "";
+      panel.innerHTML = `<form class="card"><h3>Edit tags on ${tracks.length} selected tracks</h3>
+        <p>These tracks are fixed for this edit. Choose fields to change, then preview.
+        Unchecked fields, titles, and track numbers stay unchanged. Blank values cannot clear tags.
+        Mixed values are shown as empty. No catalog lookup or file rename is performed.</p>
+        <fieldset data-edit-fields style="border:0">
+        ${Object.entries(labels).map(([key, label]) => `<div class="row">
+          <label class="check"><input type="checkbox" data-edit-field="${key}"> Change ${esc(label)}</label>
+          <input type="${key === "year" ? "number" : "text"}" name="${key}"
+            aria-label="${esc(label)}" value="${esc(common(key))}" maxlength="1000"
+            ${key === "year" ? 'min="1" max="9999" step="1"' : ""}>
+        </div>`).join("")}</fieldset>
+        <button type="submit" class="action">Preview changes</button>
+        <button type="button" class="action ghost" data-edit-cancel>Cancel</button>
+        <div data-edit-status role="status"></div><div data-edit-preview></div></form>`;
+      const form = panel.querySelector("form");
+      const previewEl = form.querySelector("[data-edit-preview]");
+      const status = form.querySelector("[data-edit-status]");
+      const submit = form.querySelector('[type="submit"]');
+      const fieldset = form.querySelector("[data-edit-fields]");
+      const cancel = form.querySelector("[data-edit-cancel]");
+      let busy = false;
+      form.oninput = () => { previewEl.innerHTML = ""; status.textContent = ""; };
+      cancel.onclick = () => { if (!busy) panel.innerHTML = ""; };
+      form.onsubmit = async event => {
+        event.preventDefault();
+        if (busy) return;
+        const fields = [...form.querySelectorAll("[data-edit-field]:checked")]
+          .map(input => input.dataset.editField);
+        if (!fields.length) { status.textContent = "Choose at least one field to change."; return; }
+        const values = {};
+        fields.forEach(key => { values[key] = form.elements.namedItem(key).value.trim(); });
+        if (fields.some(key => !values[key])) {
+          status.textContent = "Enter a value for every checked field, or uncheck it to leave tags unchanged.";
+          return;
+        }
+        busy = true;
+        submit.disabled = true; fieldset.disabled = true; cancel.disabled = true;
+        previewEl.innerHTML = "";
+        status.textContent = "Preparing review. Files have not been changed.";
+        try {
+          const preview = await post("/api/metadata/album-edit/preview", {
+            track_ids: tracks.map(track => track.id), fields, values,
+          });
+          if (!form.isConnected) return;
+          status.textContent = `${preview.reviews.length} files ready; ${preview.errors.length} unavailable. No tags written.`;
+          const failures = items => items.map(item =>
+            `<p role="alert">${esc(item.path || item.review_id || item.track_id)}: ${esc(item.error)}</p>`).join("");
+          previewEl.innerHTML = failures(preview.errors) +
+            `<div class="table-scroll"><table><thead><tr><th>File</th><th>Field</th><th>Current</th><th>New</th></tr></thead>
+            <tbody>${preview.reviews.map(review => fields.map(key =>
+              `<tr><td class="path">${esc(review.track.path)}</td><td>${esc(labels[key])}</td>
+              <td>${esc(review.track[key] ?? "—")}</td><td>${esc(review.candidates[0].fields[key])}</td></tr>`
+            ).join("")).join("")}</tbody></table></div>` +
+            (preview.reviews.length ? '<button type="button" class="action" data-edit-apply data-operation>Confirm and save tags</button>' : "");
+          const apply = previewEl.querySelector("[data-edit-apply]");
+          if (apply) apply.onclick = async () => {
+            if (busy || !confirm(`Save ${fields.length} selected field(s) on ${preview.reviews.length} files? Titles, track numbers, and unchecked fields stay unchanged. Files will not be renamed.`)) return;
+            busy = true;
+            apply.disabled = true; fieldset.disabled = true; submit.disabled = true; cancel.disabled = true;
+            status.textContent = "Saving reviewed tags. Results will be saved in Activity.";
+            try {
+              const { job_id } = await post("/api/metadata/album-edit/apply", {
+                reviews: preview.reviews.map(review => ({
+                  review_id: review.review_id, candidate_index: 0, fields,
+                })),
+              });
+              await refreshActivity();
+              await pollJob(job_id, "Manual album edit");
+              const [applied, errors] = await Promise.all([
+                api(`/api/jobs/${job_id}/results/applied?limit=200`),
+                api(`/api/jobs/${job_id}/results/errors?limit=200`),
+              ]);
+              if (!el.isConnected) return;
+              $("#manual-album-result").innerHTML = `<div class="card"><h3>Album edit results</h3>
+                <p>${applied.total} files updated; ${errors.total} failed; ${preview.errors.length} unavailable at preview.
+                Files changed since preview are skipped. Details remain in Activity.</p>
+                ${failures(preview.errors)}${failures(errors.items)}</div>`;
+              selectedTracks.clear(); updateSelection();
+              await searchAlbums(); await loadStats();
+            } catch (e) { status.textContent = e.message; toast(e.message, true); }
+            finally {
+              busy = false;
+              apply.disabled = false; fieldset.disabled = false; submit.disabled = false; cancel.disabled = false;
+            }
+          };
+        } catch (e) { status.textContent = e.message; }
+        finally {
+          busy = false;
+          submit.disabled = false; fieldset.disabled = false; cancel.disabled = false;
+        }
+      };
+      panel.scrollIntoView({behavior: "smooth", block: "start"});
     };
     const [genreRows, formatRows] = await Promise.all([api("/api/genres"), api("/api/formats")]);
     $("#library-genre").insertAdjacentHTML("beforeend", genreRows.map(g => `<option>${esc(g)}</option>`).join(""));
