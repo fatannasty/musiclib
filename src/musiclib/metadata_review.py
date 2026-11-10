@@ -44,6 +44,17 @@ TAG_KEYS = {
 }
 
 
+def _edit_number(field: str, value: Any) -> int:
+    label = {"year": "Year", "track_no": "Track number", "disc_no": "Disc number"}[field]
+    message = f"{label} must be a whole number between 1 and 9999."
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError(message)
+    text = str(value).strip()
+    if not text.isascii() or not text.isdigit() or not 1 <= int(text) <= 9999:
+        raise ValueError(message)
+    return int(text)
+
+
 def _recording_candidate(recording: Dict[str, Any], track: Any) -> Dict[str, Any]:
     release = next(iter(_dict_list(recording.get("release-list"))), {})
     artist = _credit_name(recording.get("artist-credit")) or track.artist or ""
@@ -449,6 +460,25 @@ class MetadataReview:
     ) -> Dict[str, Any]:
         return self._preview_edit([track_id], fields, values, TRACK_FIELDS)
 
+    def preview_numbering(
+        self, track_ids: List[int], start_no: Any = 1, disc_no: Any = None,
+    ) -> Dict[str, Any]:
+        tracks = self._tracks_for_album(track_ids)
+        start = _edit_number("track_no", start_no)
+        if start + len(tracks) - 1 > 9999:
+            raise ValueError("The sequence must end at or below track number 9999.")
+        disc = _edit_number("disc_no", disc_no) if disc_no is not None else None
+        fields = ["track_no"] + (["disc_no"] if disc is not None else [])
+        reviews, errors = [], []
+        for index, track in enumerate(tracks):
+            values = {"track_no": start + index}
+            if disc is not None:
+                values["disc_no"] = disc
+            preview = self.preview_track_edit(track.id, fields, values)
+            reviews.extend(preview["reviews"])
+            errors.extend(preview["errors"])
+        return {"reviews": reviews, "errors": errors, "fields": fields}
+
     def _preview_edit(
         self, track_ids: List[int], fields: List[str], values: Dict[str, Any],
         allowed_fields: Tuple[str, ...],
@@ -459,14 +489,7 @@ class MetadataReview:
         for field in fields:
             value = values.get(field)
             if field in ("year", "track_no", "disc_no"):
-                label = {"year": "Year", "track_no": "Track number", "disc_no": "Disc number"}[field]
-                message = f"{label} must be a whole number between 1 and 9999."
-                if isinstance(value, bool) or not isinstance(value, (str, int)):
-                    raise ValueError(message)
-                text = str(value).strip()
-                if not text.isascii() or not text.isdigit() or not 1 <= int(text) <= 9999:
-                    raise ValueError(message)
-                selected[field] = int(text)
+                selected[field] = _edit_number(field, value)
             else:
                 if not isinstance(value, str) or not value.strip() or len(value) > 1000:
                     raise ValueError(f"Enter a non-empty value of at most 1000 characters for {field}.")
