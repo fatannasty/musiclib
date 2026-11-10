@@ -129,6 +129,12 @@ class TrackEditBody(BaseModel):
     values: Dict[str, Any]
 
 
+class NumberingPreviewBody(BaseModel):
+    track_ids: List[int]
+    start_no: Any = 1
+    disc_no: Any = None
+
+
 class RenamePreviewBody(BaseModel):
     track_ids: List[int]
 
@@ -512,6 +518,22 @@ def create_app(config: Config) -> FastAPI:
         if set(body.fields) - set(TRACK_FIELDS):
             raise HTTPException(400, "Only track fields can be applied by the track editor.")
         return start_reviewed_apply(MetadataBulkApplyBody(reviews=[body]), limit=1)
+
+    @app.post("/api/metadata/numbering/preview")
+    @jobs.operation
+    def numbering_preview(body: NumberingPreviewBody) -> Dict[str, Any]:
+        try:
+            return MetadataReview(config, db).preview_numbering(
+                body.track_ids, body.start_no, body.disc_no,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/metadata/numbering/apply")
+    def numbering_apply(body: MetadataBulkApplyBody) -> Dict[str, str]:
+        if any(set(review.fields) - {"track_no", "disc_no"} for review in body.reviews):
+            raise HTTPException(400, "Only track/disc numbers can be applied by the numbering editor.")
+        return start_reviewed_apply(body, limit=200)
 
     @app.post("/api/metadata/album-suggest")
     @jobs.lookup_operation

@@ -160,6 +160,21 @@ detected while preparing the temporary edit. File-health findings remain intact;
 only missing-tag warnings are refreshed after a tag correction. Use **Preview
 organization** separately if you want filenames to reflect corrected titles/numbers.
 
+For a sequence of corrections, select up to 200 album tracks and choose **Renumber
+selected**. Arrange the selected list with **Up/Down**, choose a starting track
+number, and optionally check **Change disc number on all selected tracks**.
+**Preview changes** shows each file's current and proposed numbers, including
+existing totals. Changing the starting number, optional disc, or order invalidates
+the preview; **Confirm and save tags** requires confirmation before any writes.
+
+The sequence follows your arranged list, not filename sorting, and continues
+across selected discs. Select one disc at a time to restart numbering. Numbers
+must remain between 1 and 9999. Existing track/disc totals are preserved, not
+recalculated; unselected files, titles, artists, artwork, and filenames stay
+unchanged. Unavailable files retain their sequence slot rather than shifting
+the rest. Moved/changed files are skipped at apply time, per-file errors remain
+in Activity, and there is no catalog lookup or automatic organization.
+
 On an album page, **Change artwork** lets you upload a JPEG or PNG cover for up
 to 200 selected tracks. Images must be no larger than 8 MiB or 25 million pixels;
 damaged or animated images are rejected. **Preview artwork** shows the uploaded

@@ -1023,6 +1023,190 @@ def test_manual_track_edit_preserves_external_change_during_save(lib_env, monkey
     assert list(env.library.glob(".*.musiclib-*")) == []
 
 
+@pytest.mark.parametrize("disc_no", [None, 2])
+def test_album_numbering_uses_reviewed_order_and_preserves_other_tags(lib_env, monkeypatch, disc_no):
+    import mutagen
+
+    from musiclib.artwork import embed_cover, read_cover
+
+    env = lib_env
+    for index in range(4):
+        path = env.library / (f"{index}.mp3" if index % 2 else f"{index}.flac")
+        tags = {"title": f"Song {index}", "artist": "Performer", "album": "Album"}
+        (make_mp3 if index % 2 else make_flac)(path, tags=tags)
+        audio = mutagen.File(path, easy=True)
+        audio["tracknumber"] = [f"{index + 1}/12"]
+        audio["discnumber"] = ["1/2"]
+        audio.save()
+        embed_cover(path, JPEG_600x400)
+    Scanner(env.config, env.db, workers=1).scan()
+    tracks = env.db.all_tracks()
+    ordered = [tracks[2], tracks[0], tracks[1]]
+    before = {track.id: Path(track.path).read_bytes() for track in tracks}
+    tags_before = {track.id: dict(mutagen.File(track.path, easy=True)) for track in tracks}
+    covers = {track.id: read_cover(track.path, include_folder=False) for track in tracks}
+
+    def no_network(*args, **kwargs):
+        pytest.fail("Numbering must not query a metadata provider")
+
+    monkeypatch.setattr(review_module, "search_recordings", no_network)
+    monkeypatch.setattr(review_module, "search_releases", no_network)
+    monkeypatch.setattr(review_module.httpx, "get", no_network)
+    with TestClient(create_app(env.config)) as client:
+        body = {"track_ids": [track.id for track in ordered], "start_no": " 005 "}
+        if disc_no is not None:
+            body["disc_no"] = disc_no
+        response = client.post("/api/metadata/numbering/preview", json=body)
+        assert response.status_code == 200
+        preview = response.json()
+        assert preview["errors"] == []
+        assert [review["track"]["id"] for review in preview["reviews"]] == [
+            track.id for track in ordered
+        ]
+        assert [review["candidates"][0]["fields"]["track_no"] for review in preview["reviews"]] == [
+            5, 6, 7,
+        ]
+        assert preview["fields"] == ["track_no"] + (["disc_no"] if disc_no is not None else [])
+        assert all(Path(track.path).read_bytes() == before[track.id] for track in tracks)
+    # Saved candidates and their file snapshots survive an application restart.
+    with TestClient(create_app(env.config)) as client:
+        batch = {"reviews": [
+            {"review_id": review["review_id"], "candidate_index": 0, "fields": preview["fields"]}
+            for review in preview["reviews"]
+        ]}
+        response = client.post("/api/metadata/numbering/apply", json=batch)
+        assert response.status_code == 200
+        assert wait_job(client, response.json()["job_id"])["summary"] == {"applied": 3, "errors": 0}
+        response = client.post("/api/metadata/numbering/apply", json=batch)
+        assert wait_job(client, response.json()["job_id"])["summary"] == {"applied": 0, "errors": 3}
+    for index, track in enumerate(ordered, start=5):
+        updated = env.db.get_track(track.id)
+        assert updated.track_no == index
+        assert updated.disc_no == (disc_no or track.disc_no)
+        assert (updated.track_total, updated.disc_total) == (12, 2)
+        assert updated.title == track.title
+        assert updated.artist == track.artist
+        assert updated.path == track.path
+        current = dict(mutagen.File(track.path, easy=True))
+        assert current.pop("tracknumber") == [f"{index}/12"]
+        original = dict(tags_before[track.id])
+        original.pop("tracknumber")
+        if disc_no is not None:
+            assert current.pop("discnumber") == ["2/2"]
+            original.pop("discnumber")
+        assert current == original
+        assert read_cover(track.path, include_folder=False) == covers[track.id]
+    assert Path(tracks[3].path).read_bytes() == before[tracks[3].id]
+
+
+@pytest.mark.parametrize(("start_no", "disc_no", "message"), [
+    (0, None, "Track number"),
+    (True, None, "Track number"),
+    (1.5, None, "Track number"),
+    ("١", None, "Track number"),
+    ("", None, "Track number"),
+    (9999, None, "sequence"),
+    (1, 0, "Disc number"),
+    (1, 10000, "Disc number"),
+    (1, False, "Disc number"),
+    (1, "1/2", "Disc number"),
+])
+def test_album_numbering_rejects_invalid_sequence_before_saving_reviews(
+    lib_env, start_no, disc_no, message,
+):
+    env = lib_env
+    for index in range(2):
+        make_mp3(env.library / f"{index}.mp3", tags={"title": f"Song {index}"})
+    Scanner(env.config, env.db, workers=1).scan()
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/numbering/preview", json={
+            "track_ids": [track.id for track in env.db.all_tracks()],
+            "start_no": start_no, "disc_no": disc_no,
+        })
+        assert response.status_code == 400
+        assert message in response.json()["detail"]
+        assert env.db.query_one("SELECT COUNT(*) AS n FROM metadata_reviews")["n"] == 0
+        assert client.get("/api/jobs").json() == []
+
+
+def test_album_numbering_keeps_slots_for_unavailable_or_failed_files(lib_env, monkeypatch):
+    env = lib_env
+    for index in range(4):
+        make_mp3(env.library / f"{index}.mp3", tags={
+            "title": f"Song {index}", "album": "Album", "tracknumber": index + 1,
+        })
+    Scanner(env.config, env.db, workers=1).scan()
+    tracks = env.db.all_tracks()
+    Path(tracks[1].path).unlink()
+    write = review_module.write_audio_tags
+
+    def deny_one(path, values, **kwargs):
+        if str(path) == tracks[2].path:
+            raise PermissionError("Read-only music folder")
+        return write(path, values, **kwargs)
+
+    monkeypatch.setattr(review_module, "write_audio_tags", deny_one)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/numbering/preview", json={
+            "track_ids": [track.id for track in tracks], "start_no": 4,
+        })
+        assert response.status_code == 200
+        preview = response.json()
+        assert len(preview["errors"]) == 1
+        assert preview["errors"][0]["track_id"] == tracks[1].id
+        assert [review["candidates"][0]["fields"]["track_no"] for review in preview["reviews"]] == [
+            4, 6, 7,
+        ]
+        changed = Path(tracks[0].path)
+        changed.write_bytes(changed.read_bytes() + b"external edit")
+        response = client.post("/api/metadata/numbering/apply", json={"reviews": [
+            {"review_id": review["review_id"], "candidate_index": 0, "fields": ["track_no"]}
+            for review in preview["reviews"]
+        ]})
+        job_id = response.json()["job_id"]
+        assert wait_job(client, job_id)["summary"] == {"applied": 1, "errors": 2}
+        errors = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"]
+        assert "changed since lookup" in errors[0]["error"]
+        assert "Read-only" in errors[1]["error"]
+    assert env.db.get_track(tracks[0].id).track_no == 1
+    assert env.db.get_track(tracks[2].id).track_no == 3
+    assert env.db.get_track(tracks[3].id).track_no == 7
+
+
+def test_album_numbering_limits_and_numbering_only_apply(lib_env):
+    env = lib_env
+    make_mp3(env.library / "song.mp3", tags={"title": "Song"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.all_tracks()[0]
+    with TestClient(create_app(env.config)) as client:
+        for ids in ([], [track.id, track.id], list(range(201))):
+            assert client.post("/api/metadata/numbering/preview", json={
+                "track_ids": ids,
+            }).status_code == 400
+        preview = client.post("/api/metadata/numbering/preview", json={
+            "track_ids": [track.id], "start_no": 9999,
+        }).json()
+        review_id = preview["reviews"][0]["review_id"]
+        assert preview["reviews"][0]["candidates"][0]["fields"] == {"track_no": 9999}
+        for fields in ([], ["title"], ["album"]):
+            assert client.post("/api/metadata/numbering/apply", json={"reviews": [{
+                "review_id": review_id, "candidate_index": 0, "fields": fields,
+            }]}).status_code == 400
+        batch = {"reviews": [
+            {"review_id": index, "candidate_index": 0, "fields": ["track_no"]}
+            for index in range(200)
+        ]}
+        response = client.post("/api/metadata/numbering/apply", json=batch)
+        assert response.status_code == 200
+        # Only the one real review is available; its value came from the saved preview.
+        assert wait_job(client, response.json()["job_id"])["summary"] == {"applied": 1, "errors": 199}
+        assert env.db.get_track(track.id).track_no == 9999
+        assert client.post("/api/metadata/apply-bulk", json=batch).status_code == 400
+        assert client.post("/api/metadata/numbering/apply", json={
+            "reviews": batch["reviews"] + [batch["reviews"][0]],
+        }).status_code == 400
+
+
 def test_itunes_results_are_used_when_musicbrainz_fails(monkeypatch):
     def fail(**kwargs):
         raise musicbrainzngs.NetworkError("connection timed out")

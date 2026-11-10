@@ -669,6 +669,7 @@ const views = {
             <div><h3>${esc(detail.album)}</h3>
             <p>${esc(detail.album_artist)} · ${esc(detail.year || "—")} · ${detail.track_count} tracks${detail.bad_count ? ` · ${detail.bad_count} bad` : ""}</p>
             <button class="action" data-edit-album>Edit album tags</button>
+            <button class="action ghost" data-number-album>Renumber selected</button>
             <button class="action ghost" data-artwork-album data-operation>Change artwork</button>
             <button class="action ghost" data-rename-album data-operation>Preview organization</button>
             <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button>
@@ -713,9 +714,14 @@ const views = {
           if (!tracks.length) { toast("Select tracks to edit first.", true); return; }
           renderManualEditor(pageEl.querySelector("[data-manual-editor]"), tracks);
         };
+        pageEl.querySelector("[data-number-album]").onclick = () => {
+          const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
+          if (!tracks.length) { toast("Select tracks to number first.", true); return; }
+          renderManualEditor(pageEl.querySelector("[data-manual-editor]"), tracks, "numbering");
+        };
         pageEl.querySelectorAll("[data-edit-track]").forEach(button => button.onclick = () => {
           const track = detail.tracks.find(item => item.id === Number(button.dataset.editTrack));
-          renderManualEditor(pageEl.querySelector("[data-manual-editor]"), [track], true);
+          renderManualEditor(pageEl.querySelector("[data-manual-editor]"), [track], "track");
         });
         pageEl.querySelector("[data-artwork-album]").onclick = () => {
           const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
@@ -956,8 +962,11 @@ const views = {
       await refreshActivity();
       panel.scrollIntoView({behavior: "smooth", block: "start"});
     };
-    const renderManualEditor = (panel, tracks, isTrack = false) => {
-      const labels = isTrack ? {
+    const renderManualEditor = (panel, tracks, mode = "album") => {
+      const isTrack = mode === "track";
+      const isNumbering = mode === "numbering";
+      const orderedTracks = [...tracks];
+      const labels = isNumbering ? {track_no: "Track number", disc_no: "Disc number"} : isTrack ? {
         title: "Title", artist: "Track artist", track_no: "Track number", disc_no: "Disc number",
       } : {
         album: "Album", album_artist: "Album artist", year: "Year", genre: "Genre",
@@ -968,16 +977,26 @@ const views = {
         return values.every(value => value === values[0]) ? values[0] : "";
       };
       $("#manual-album-result").innerHTML = "";
-      const endpoint = isTrack ? "track-edit" : "album-edit";
-      const unchanged = isTrack ?
+      const endpoint = isNumbering ? "numbering" : isTrack ? "track-edit" : "album-edit";
+      const unchanged = isNumbering ?
+        "Only these selected tracks are numbered in the order shown. Titles, artists, existing track/disc totals, artwork, and unselected tracks stay unchanged. Disc numbers change only if checked." : isTrack ?
         "Only this track is edited, regardless of the album checkboxes. Unchecked tags, existing track/disc totals, and artwork stay unchanged." :
         "These tracks are fixed for this edit. Unchecked fields, titles, and track numbers stay unchanged. Mixed values are shown as empty.";
-      panel.innerHTML = `<form class="card"><h3>${isTrack ? "Edit track tags" : `Edit tags on ${tracks.length} selected tracks`}</h3>
+      panel.innerHTML = `<form class="card"><h3>${isNumbering ? `Renumber ${tracks.length} selected tracks` : isTrack ? "Edit track tags" : `Edit tags on ${tracks.length} selected tracks`}</h3>
         ${isTrack ? `<p class="path">${esc(tracks[0].path)}</p>` : ""}
         <p>${unchanged} Choose fields to change, then preview. Blank values cannot clear tags.
         No catalog lookup or file rename is performed.</p>
         <fieldset data-edit-fields style="border:0">
-        ${Object.entries(labels).map(([key, label]) => `<div class="row">
+        ${isNumbering ? `<p>Use Up/Down to arrange the sequence. Numbering continues across the selected discs;
+          select one disc at a time to restart. Existing totals are preserved, not recalculated.
+          Unavailable files keep their position in the sequence; remaining files are not shifted.</p>
+          <label>Starting track number <input type="number" name="track_no" value="1"
+            min="1" max="9999" step="1" required></label>
+          <div class="row"><label class="check"><input type="checkbox" data-edit-field="disc_no"> Change disc number on all selected tracks</label>
+          <input type="number" name="disc_no" aria-label="Disc number" value="1" min="1" max="9999" step="1" disabled></div>
+          <div class="table-scroll"><table><thead><tr><th>Sequence</th><th>Title / file</th><th>Current disc</th><th>Current track</th><th>Order</th></tr></thead>
+          <tbody data-number-order></tbody></table></div>` :
+        Object.entries(labels).map(([key, label]) => `<div class="row">
           <label class="check"><input type="checkbox" data-edit-field="${key}"> Change ${esc(label)}</label>
           <input type="${["year", "track_no", "disc_no"].includes(key) ? "number" : "text"}" name="${key}"
             aria-label="${esc(label)}" value="${esc(common(key))}" maxlength="1000" disabled
@@ -993,16 +1012,37 @@ const views = {
       const fieldset = form.querySelector("[data-edit-fields]");
       const cancel = form.querySelector("[data-edit-cancel]");
       let busy = false;
+      const invalidate = () => { previewEl.innerHTML = ""; status.textContent = ""; };
+      const drawOrder = () => {
+        const body = form.querySelector("[data-number-order]");
+        if (!body) return;
+        body.innerHTML = orderedTracks.map((track, index) => `<tr><td>${index + 1}</td>
+          <td>${esc(track.title || "Untitled")}<div class="path">${esc(track.path)}</div></td>
+          <td>${esc(track.disc_no ?? "—")}</td><td>${esc(track.track_no ?? "—")}</td>
+          <td><button type="button" class="action ghost" data-number-up="${index}" aria-label="Move ${esc(track.title || track.path)} up" ${index === 0 ? "disabled" : ""}>Up</button>
+          <button type="button" class="action ghost" data-number-down="${index}" aria-label="Move ${esc(track.title || track.path)} down" ${index === orderedTracks.length - 1 ? "disabled" : ""}>Down</button></td></tr>`).join("");
+        body.querySelectorAll("[data-number-up], [data-number-down]").forEach(button => button.onclick = () => {
+          if (busy) return;
+          const up = button.hasAttribute("data-number-up");
+          const index = Number(up ? button.dataset.numberUp : button.dataset.numberDown);
+          const next = index + (up ? -1 : 1);
+          [orderedTracks[index], orderedTracks[next]] = [orderedTracks[next], orderedTracks[index]];
+          invalidate(); drawOrder();
+        });
+      };
+      drawOrder();
       form.querySelectorAll("[data-edit-field]").forEach(input => input.onchange = () => {
         form.elements.namedItem(input.dataset.editField).disabled = !input.checked;
       });
-      form.oninput = () => { previewEl.innerHTML = ""; status.textContent = ""; };
+      form.oninput = invalidate;
       cancel.onclick = () => { if (!busy) panel.innerHTML = ""; };
       form.onsubmit = async event => {
         event.preventDefault();
         if (busy) return;
-        const fields = [...form.querySelectorAll("[data-edit-field]:checked")]
-          .map(input => input.dataset.editField);
+        const fields = [
+          ...(isNumbering ? ["track_no"] : []),
+          ...[...form.querySelectorAll("[data-edit-field]:checked")].map(input => input.dataset.editField),
+        ];
         if (!fields.length) { status.textContent = "Choose at least one field to change."; return; }
         const values = {};
         fields.forEach(key => { values[key] = form.elements.namedItem(key).value.trim(); });
@@ -1015,10 +1055,14 @@ const views = {
         previewEl.innerHTML = "";
         status.textContent = "Preparing review. Files have not been changed.";
         try {
-          const preview = await post(`/api/metadata/${endpoint}/preview`, {
+          const body = isNumbering ? {
+            track_ids: orderedTracks.map(track => track.id), start_no: values.track_no,
+            ...(fields.includes("disc_no") ? {disc_no: values.disc_no} : {}),
+          } : {
             ...(isTrack ? {track_id: tracks[0].id} : {track_ids: tracks.map(track => track.id)}),
             fields, values,
-          });
+          };
+          const preview = await post(`/api/metadata/${endpoint}/preview`, body);
           if (!form.isConnected) return;
           status.textContent = `${preview.reviews.length} files ready; ${preview.errors.length} unavailable. No tags written.`;
           const failures = items => items.map(item =>
@@ -1049,13 +1093,13 @@ const views = {
               const { job_id } = await post(`/api/metadata/${endpoint}/apply`,
                 isTrack ? reviews[0] : {reviews});
               await refreshActivity();
-              await pollJob(job_id, isTrack ? "Manual track edit" : "Manual album edit");
+              await pollJob(job_id, isNumbering ? "Album track numbering" : isTrack ? "Manual track edit" : "Manual album edit");
               const [applied, errors] = await Promise.all([
                 api(`/api/jobs/${job_id}/results/applied?limit=200`),
                 api(`/api/jobs/${job_id}/results/errors?limit=200`),
               ]);
               if (!el.isConnected) return;
-              $("#manual-album-result").innerHTML = `<div class="card"><h3>${isTrack ? "Track" : "Album"} edit results</h3>
+              $("#manual-album-result").innerHTML = `<div class="card"><h3>${isNumbering ? "Track numbering" : isTrack ? "Track edit" : "Album edit"} results</h3>
                 <p>${applied.total} files updated; ${errors.total} failed; ${preview.errors.length} unavailable at preview.
                 Files changed since preview are skipped. Details remain in Activity.</p>
                 ${failures(preview.errors)}${failures(errors.items)}</div>`;
