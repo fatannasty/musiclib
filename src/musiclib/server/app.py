@@ -5,11 +5,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from mutagen import MutagenError
 from pydantic import BaseModel
 
-from ..artwork import Artwork
+from ..artwork import CAA_FRONT_THUMB, Artwork, read_cover
 from ..brainz import Brainz
 from ..config import Config
 from ..db import Database
@@ -494,6 +494,67 @@ def create_app(config: Config) -> FastAPI:
             params,
         )
         return {"items": [dict(row) for row in rows], "total": total, "offset": max(0, body.offset)}
+
+    @app.get("/api/albums/page")
+    def albums_page(
+        offset: int = Query(0, ge=0), limit: int = Query(48, ge=1, le=100),
+        query: str = "", status: str = "", genre: str = "", format: str = "",
+    ) -> Dict[str, Any]:
+        page = db.album_groups_page(
+            query=query.strip(), status=status, genre=genre, format=format,
+            offset=offset, limit=limit,
+        )
+        items = []
+        for row in page["items"]:
+            mbid = row.get("mbid_release")
+            cover_id = row.get("cover_track_id")
+            cover_url = CAA_FRONT_THUMB.format(mbid=mbid) if mbid else None
+            if not cover_url and cover_id:
+                cover_url = f"/api/tracks/{cover_id}/cover"
+            items.append({
+                "album_artist": row["album_artist"], "album": row["album"],
+                "year": row["year"], "genre": row["genre"],
+                "track_count": row["track_count"], "bad_count": row["bad_count"],
+                "has_art": bool(row["art_count"] or mbid),
+                "mbid_release": mbid, "cover_track_id": cover_id, "cover_url": cover_url,
+            })
+        return {"items": items, "total": page["total"], "offset": page["offset"]}
+
+    @app.get("/api/albums/detail")
+    def albums_detail(
+        album_artist: str = Query(...), album: str = Query(...), status: str = "",
+    ) -> Dict[str, Any]:
+        rows = db.album_tracks(album_artist, album, status=status)
+        if not rows:
+            raise HTTPException(404, "Album was not found in the library.")
+        tracks = [dict(row) for row in rows]
+        mbid = next((track["mbid_release"] for track in tracks if track.get("mbid_release")), None)
+        cover_id = next((track["id"] for track in tracks if track.get("has_embedded_art")), None)
+        cover_url = CAA_FRONT_THUMB.format(mbid=mbid) if mbid else (
+            f"/api/tracks/{cover_id}/cover" if cover_id else None
+        )
+        first = tracks[0]
+        return {
+            "album_artist": album_artist, "album": album,
+            "year": next((track["year"] for track in tracks if track.get("year")), None),
+            "genre": next((track["genre"] for track in tracks if track.get("genre")), first.get("genre")),
+            "track_count": len(tracks),
+            "bad_count": sum(1 for track in tracks if track["status"] == "bad"),
+            "mbid_release": mbid, "cover_url": cover_url, "tracks": tracks,
+        }
+
+    @app.get("/api/tracks/{track_id}/cover")
+    def track_cover(track_id: int) -> Response:
+        track = db.get_track(track_id)
+        if track is None or track.status == "deleted":
+            raise HTTPException(404, "Track is not available.")
+        if not is_inside(track.path, config.library):
+            raise HTTPException(400, "Track is outside the configured library.")
+        cover = read_cover(track.path)
+        if cover is None:
+            raise HTTPException(404, "No cover art is available for this track.")
+        data, mime = cover
+        return Response(content=data, media_type=mime, headers={"Cache-Control": "private, max-age=3600"})
 
     @app.get("/api/trash")
     def trash_page(

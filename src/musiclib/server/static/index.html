@@ -129,6 +129,9 @@ button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 }
 .match-card strong { font-size: 13px; line-height: 1.3; }
 .match-card em { font-style: normal; color: var(--dim); font-size: 12px; }
+button.match-card { width: 100%; color: inherit; font: inherit; text-align: left; }
+.album-hero { display: grid; grid-template-columns: 140px 1fr; gap: 16px; align-items: center; margin-bottom: 12px; }
+.album-hero .cover, .album-hero .cover-ph { width: 140px; }
 .metadata-field { display: grid; grid-template-columns: minmax(100px, .7fr) 1fr 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .metadata-field:last-child { border-bottom: 0; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
@@ -164,7 +167,7 @@ const TABS = [
   ["organize", "Organize"], ["art", "Cover Art"], ["missing", "Missing Music"],
   ["usenet", "Usenet"], ["settings", "Settings"],
 ];
-const state = { tab: "overview", jobs: [] };
+const state = { tab: "overview", jobs: [], libraryView: "albums" };
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmtBytes = (b) => {
@@ -524,8 +527,13 @@ const views = {
       <select id="library-format"><option value="">All formats</option></select>
       <select id="library-status"><option value="">Healthy and flagged</option><option value="suspect">Needs review</option><option value="bad">Bad files</option></select>
       <button class="action ghost" id="library-search">Search</button>
-    </div><p class="hint">Browse the catalog, search MusicBrainz and iTunes together, and review tag changes before writing them to files. Album artwork is a preview only.</p>
-    <div class="row"><button class="action ghost" id="metadata-select-page">Select this page</button>
+    </div>
+    <div class="row">
+      <button class="action ${state.libraryView === "albums" ? "" : "ghost"}" id="library-view-albums">Albums</button>
+      <button class="action ${state.libraryView === "tracks" ? "" : "ghost"}" id="library-view-tracks">Tracks</button>
+    </div>
+    <p class="hint">Albums are grouped from your scanned library. Open an album to see its tracks and tag or rename them together. Catalog artwork is a preview only until you use Cover Art.</p>
+    <div class="row" id="library-track-tools"><button class="action ghost" id="metadata-select-page">Select this page</button>
       <button class="action ghost" id="metadata-clear-selection">Clear selection</button>
       <span id="metadata-selection-count">0 tracks selected</span>
       <button class="action" id="metadata-lookup-bulk" data-operation>Look up selected tracks</button>
@@ -533,7 +541,10 @@ const views = {
     <p class="hint">Select up to 200 tracks. Per-track lookup is limited to 100 files. Album tagging writes the same album fields to every selected file after you confirm. Files are not renamed unless you choose that option.</p>
     <div id="metadata-album"></div>
     <div id="metadata-bulk"></div>
-    <div id="metadata-search"></div><div id="metadata-review"></div><div id="library-table"></div>`;
+    <div id="metadata-search"></div><div id="metadata-review"></div>
+    <div id="library-albums"></div>
+    <div id="library-album-page"></div>
+    <div id="library-table"></div>`;
     const selectedTracks = new Set();
     let pageTracks = [];
     const updateSelection = () => {
@@ -552,10 +563,96 @@ const views = {
       pageTracks.forEach(track => selectTrack(track.id, true)); updateSelection();
     };
     $("#metadata-clear-selection").onclick = () => { selectedTracks.clear(); updateSelection(); };
+    const albumCover = (url, fallback="") => {
+      if (!url) return `<div class="cover-ph" aria-hidden="true">♪</div>`;
+      return `<img class="cover" alt="" loading="lazy" src="${esc(url)}" data-fallback="${esc(fallback)}"
+        onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.replaceWith(Object.assign(document.createElement('div'),{className:'cover-ph',textContent:'♪'}));}">`;
+    };
+    const setView = view => {
+      state.libraryView = view;
+      $("#library-view-albums").className = `action ${view === "albums" ? "" : "ghost"}`;
+      $("#library-view-tracks").className = `action ${view === "tracks" ? "" : "ghost"}`;
+      $("#library-albums").style.display = view === "albums" ? "" : "none";
+      $("#library-album-page").style.display = view === "albums" ? "" : "none";
+      $("#library-table").style.display = view === "tracks" ? "" : "none";
+    };
+    const searchAlbums = async (offset = 0) => {
+      const container = $("#library-albums");
+      const pageEl = $("#library-album-page");
+      pageEl.innerHTML = "";
+      container.style.display = "";
+      const params = new URLSearchParams({
+        offset: String(offset), limit: "48",
+        query: $("#library-query").value, status: $("#library-status").value,
+        genre: $("#library-genre").value, format: $("#library-format").value,
+      });
+      try {
+        const page = await api(`/api/albums/page?${params}`);
+        if (!container.isConnected) return;
+        if (!page.items.length) {
+          container.innerHTML = `<div class="empty">No albums match this search. Scan the library if this is a new collection.</div>`;
+          return;
+        }
+        container.innerHTML = `<div class="match-grid">${page.items.map(album =>
+          `<button type="button" class="match-card" data-album-artist="${esc(album.album_artist)}" data-album="${esc(album.album)}">
+            ${albumCover(album.cover_url)}
+            <strong>${esc(album.album)}</strong>
+            <em>${esc(album.album_artist)} · ${esc(album.year || "—")} · ${album.track_count} tracks${album.bad_count ? ` · ${album.bad_count} bad` : ""}</em>
+          </button>`
+        ).join("")}</div>
+        <div class="pager"><button class="action ghost prev" ${offset === 0 ? "disabled" : ""}>Previous</button>
+        <span>${page.total ? offset + 1 : 0}–${Math.min(offset + page.items.length, page.total)} of ${page.total}</span>
+        <button class="action ghost next" ${offset + page.items.length >= page.total ? "disabled" : ""}>Next</button></div>`;
+        container.querySelector(".prev").onclick = () => searchAlbums(Math.max(0, offset - 48));
+        container.querySelector(".next").onclick = () => searchAlbums(offset + 48);
+        container.querySelectorAll("[data-album]").forEach(button => {
+          button.onclick = () => openAlbum(button.dataset.albumArtist, button.dataset.album);
+        });
+      } catch (e) { container.textContent = e.message; toast(e.message, true); }
+    };
+    const openAlbum = async (albumArtist, album) => {
+      const params = new URLSearchParams({
+        album_artist: albumArtist, album, status: $("#library-status").value,
+      });
+      try {
+        const detail = await api(`/api/albums/detail?${params}`);
+        if (!el.isConnected) return;
+        $("#library-albums").style.display = "none";
+        const pageEl = $("#library-album-page");
+        pageTracks = detail.tracks;
+        selectedTracks.clear();
+        detail.tracks.slice(0, 200).forEach(track => selectedTracks.add(track.id));
+        updateSelection();
+        pageEl.innerHTML = `<div class="card">
+          <button class="action ghost" data-back>Back to albums</button>
+          <div class="album-hero">${albumCover(detail.cover_url)}
+            <div><h3>${esc(detail.album)}</h3>
+            <p>${esc(detail.album_artist)} · ${esc(detail.year || "—")} · ${detail.track_count} tracks${detail.bad_count ? ` · ${detail.bad_count} bad` : ""}</p>
+            <button class="action" data-tag-album data-operation>Tag this album</button></div>
+          </div>
+          <div class="table-scroll"><table><thead><tr><th>Select</th><th>#</th><th>Title</th><th>Artist</th><th>Status</th></tr></thead>
+          <tbody>${detail.tracks.map(track =>
+            `<tr><td><input type="checkbox" data-select-track="${track.id}" aria-label="Select ${esc(track.title || track.path)}"></td>
+            <td>${esc(track.track_no || "—")}</td><td>${esc(track.title)}</td><td>${esc(track.artist)}</td>
+            <td>${esc(track.status)}</td></tr>`
+          ).join("")}</tbody></table></div></div>`;
+        pageEl.querySelector("[data-back]").onclick = () => { pageEl.innerHTML = ""; searchAlbums(); };
+        pageEl.querySelector("[data-tag-album]").onclick = () => $("#metadata-album-bulk").click();
+        pageEl.querySelectorAll("[data-select-track]").forEach(input => input.onchange = () => {
+          selectTrack(Number(input.dataset.selectTrack), input.checked); updateSelection();
+        });
+        updateSelection();
+        await refreshActivity();
+      } catch (e) { toast(e.message, true); }
+    };
     const [genreRows, formatRows] = await Promise.all([api("/api/genres"), api("/api/formats")]);
     $("#library-genre").insertAdjacentHTML("beforeend", genreRows.map(g => `<option>${esc(g)}</option>`).join(""));
     $("#library-format").insertAdjacentHTML("beforeend", formatRows.map(f => `<option>${esc(f)}</option>`).join(""));
+    $("#library-view-albums").onclick = () => { setView("albums"); $("#library-search").click(); };
+    $("#library-view-tracks").onclick = () => { setView("tracks"); $("#library-search").click(); };
+    setView(state.libraryView);
     $("#library-search").onclick = () => {
+      if (state.libraryView === "albums") return searchAlbums(0);
       const filters = {
         query: $("#library-query").value, genre: $("#library-genre").value,
         format: $("#library-format").value, status: $("#library-status").value, limit: 50,

@@ -123,10 +123,15 @@ musiclib serve               # http://127.0.0.1:8000
 ```
 
 Tabs: Overview (stats widgets, scan, issues), Duplicates (review and re-pick keepers),
-Bad Files (doctor, including selected-file trash with per-file errors), Library (browse tracks and review tag suggestions
+Bad Files (doctor, including selected-file trash with per-file errors), Library (album grid from the scanned catalog, album pages, and track search; tag suggestions
 field by field; nothing is selected or written until you choose fields and confirm),
 Organize (rename preview/apply), Cover Art, Missing Music (MusicBrainz gaps), Usenet
 (indexer search + SABnzbd queue).
+
+Library opens on an **Albums** grid grouped from scanned tags (artist, year, track
+count, and cover when a MusicBrainz ID or embedded art exists). Open an album to
+see its tracks, already selected so you can **Tag this album**. Switch to **Tracks**
+for the file table and per-track lookup.
 
 In Library, choose **Lookup**, enter or correct the title and/or artist, then
 search. MusicBrainz and iTunes are queried together so simple title/artist matches
