@@ -5,64 +5,97 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>musiclib</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script id="appearance-init">
+(() => {
+  try {
+    const saved = window.localStorage.getItem("musiclib.theme");
+    if (saved === "dark" || saved === "light") document.documentElement.dataset.theme = saved;
+  } catch (error) {
+    console.warn("Musiclib could not read the saved appearance preference.", error);
+  }
+})();
+</script>
 <style>
 :root {
-  --bg: #100d16; --panel: rgba(28, 22, 40, .88); --panel2: #251f35; --border: #3a314c;
-  --text: #f4eefc; --dim: #b3a6c7; --accent: #ff8a4c; --accent2: #7cf0c4;
-  --green: #7cf0c4; --red: #ff6b8a; --yellow: #ffd166;
+  color-scheme: light;
+  --bg: #f3f7f6; --panel: #ffffff; --panel2: #edf4f2; --border: #d3e1dd;
+  --text: #18342f; --dim: #526b65; --accent: #0b7267; --accent2: #b84d24;
+  --on-accent: #ffffff; --accent-soft: #d9efea; --cover-bg: #e3efeb; --control-border: #7a928a;
+  --green: #07635b; --red: #b42342; --yellow: #855000;
+  --ok-bg: #e5f4ed; --bad-bg: #fff0f2; --warn-bg: #fff2d6;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
-  --shadow: 0 18px 40px rgba(0,0,0,.28);
-  --radius: 16px;
+  --shadow: 0 4px 16px rgba(19,54,45,.045);
+  --radius: 14px;
+}
+:root[data-theme=dark] {
+  color-scheme: dark;
+  --bg: #101e24; --panel: #172931; --panel2: #20353e; --border: #36515b;
+  --text: #edf5f5; --dim: #afc4c6; --accent: #79d8c9; --accent2: #f8b18d;
+  --on-accent: #073b36; --accent-soft: #244b47; --cover-bg: #213d40; --control-border: #68898f;
+  --green: #89dec1; --red: #ff9aab; --yellow: #f9ce79;
+  --ok-bg: #1c4239; --bad-bg: #482c37; --warn-bg: #43371e;
+  --shadow: 0 4px 16px rgba(0,0,0,.12);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  background:
-    radial-gradient(1200px 500px at -10% -20%, rgba(255,138,76,.18), transparent 55%),
-    radial-gradient(900px 400px at 110% 0%, rgba(124,240,196,.12), transparent 50%),
-    var(--bg);
+  background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 "Segoe UI", "Avenir Next", sans-serif;
+  font: 15px/1.55 "Segoe UI", "Avenir Next", sans-serif;
   min-height: 100vh;
 }
-header { padding: 22px 24px 14px; }
-.brand { display: flex; gap: 10px; align-items: center; }
-.brand img { width: 34px; height: 34px; filter: drop-shadow(0 6px 12px rgba(255,138,76,.35)); }
-h1 { font-size: 22px; font-weight: 700; letter-spacing: -.03em; }
+body, .card, .activity, table, .player { transition: background-color .18s ease, color .18s ease, border-color .18s ease; }
+button, input, select, summary { font: inherit; }
+button, input, select { accent-color: var(--accent); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+header { padding: 28px 28px 14px; max-width: 1340px; margin: auto; }
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.brand { display: flex; gap: 12px; align-items: center; }
+.brand img { width: 42px; height: 42px; }
+h1 { font-size: 27px; font-weight: 750; letter-spacing: -.04em; line-height: 1.1; }
 h1 span { color: var(--accent); }
 .sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
-.chips { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 16px; }
+.chips { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin-top: 24px; border-bottom: 1px solid var(--border); }
 .chip {
-  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px 14px; min-width: 0; box-shadow: var(--shadow);
-  animation: rise .5s ease both;
+  padding: 0 20px 18px; min-width: 0;
+  border-left: 1px solid var(--border);
 }
-.chip:nth-child(2) { animation-delay: .04s; } .chip:nth-child(3) { animation-delay: .08s; }
-.chip:nth-child(4) { animation-delay: .12s; } .chip:nth-child(5) { animation-delay: .16s; }
-.chip b { display: block; font-size: 20px; font-family: var(--mono); }
-.chip small { color: var(--dim); text-transform: uppercase; font-size: 10px; letter-spacing: .6px; }
-nav { display: flex; gap: 4px; padding: 8px 24px 14px; flex-wrap: wrap; }
+.chip:first-child { border-left: 0; padding-left: 0; }
+.chip b { display: block; font-size: 28px; font-weight: 650; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
+.chip small { color: var(--dim); font-size: 12px; }
+.library-details { margin-top: 8px; }
+.library-details .chips { margin-top: 10px; border-bottom: 0; }
+.library-details .chip b { font-size: 19px; }
+nav { display: flex; gap: 4px; padding: 8px 28px 18px; flex-wrap: wrap; max-width: 1340px; margin: auto; }
 nav button {
   background: transparent; border: 1px solid transparent; color: var(--dim);
-  padding: 8px 14px; border-radius: 999px; cursor: pointer; font-size: 13px; transition: .2s ease;
+  padding: 10px 13px; border-radius: 9px; cursor: pointer; font-size: 13px;
+  transition: background-color .16s ease, color .16s ease, transform .16s ease;
 }
-nav button:hover { color: var(--text); background: rgba(255,255,255,.04); }
-nav button.active { color: #1a1220; background: var(--accent); border-color: transparent; font-weight: 600; }
-main { padding: 8px 24px 32px; max-width: 1240px; margin: 0 auto; }
-section { display: none; animation: rise .35s ease; }
+nav button:hover { color: var(--text); background: var(--panel2); }
+nav button.active { color: var(--on-accent); background: var(--accent); font-weight: 650; }
+main { padding: 12px 28px 40px; max-width: 1340px; margin: 0 auto; }
+section { display: none; }
 section.active { display: block; }
+.page-heading { margin: 0 0 24px; animation: rise .25s ease both; }
+.page-heading h2 { font-size: 26px; font-weight: 700; letter-spacing: -.035em; line-height: 1.25; }
+.page-heading p { color: var(--dim); margin-top: 5px; font-size: 14px; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 button.action {
-  background: linear-gradient(180deg, #ff9a63, var(--accent)); color: #1a1220; border: none;
-  padding: 9px 16px; border-radius: 999px; cursor: pointer; font-size: 13px; font-weight: 650;
-  box-shadow: 0 8px 18px rgba(255,138,76,.25); transition: transform .15s ease, filter .15s ease;
+  background: var(--accent); color: var(--on-accent); border: 1px solid transparent;
+  padding: 10px 16px; border-radius: 9px; cursor: pointer; font-size: 13px; font-weight: 650;
+  transition: transform .16s ease, box-shadow .16s ease, background-color .16s ease;
 }
-button.action:hover { filter: brightness(1.08); transform: translateY(-1px); }
-button.action.danger { background: var(--red); color: #fff; box-shadow: none; }
+button.action:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+button.action:active { transform: translateY(0); }
+button.action.danger { background: var(--bad-bg); color: var(--red); border-color: var(--red); box-shadow: none; }
 button.action.ghost { background: var(--panel); border: 1px solid var(--border); color: var(--text); box-shadow: none; }
-input[type=text], input[type=search], input[type=number] {
-  background: var(--panel); border: 1px solid var(--border); color: var(--text);
-  padding: 9px 12px; border-radius: 12px; font-size: 13px; min-width: 320px;
+button.action.ghost:hover { background: var(--panel2); }
+#theme-toggle[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+input[type=text], input[type=search], input[type=number], input[type=password] {
+  background: var(--panel); border: 1px solid var(--control-border); color: var(--text);
+  padding: 10px 12px; border-radius: 9px; font-size: 14px; min-width: 280px;
 }
+input::placeholder { color: var(--dim); opacity: 1; }
 table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--panel2); }
 td { padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
@@ -70,24 +103,24 @@ tr:last-child td { border-bottom: none; }
 td.mono { font-family: var(--mono); font-size: 12px; }
 td.path { font-family: var(--mono); font-size: 11.5px; color: var(--dim); word-break: break-all; }
 .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; }
-.tag.ok { background: rgba(124,240,196,.15); color: var(--green); }
-.tag.bad { background: rgba(255,107,138,.15); color: var(--red); }
-.tag.warn { background: rgba(255,209,102,.15); color: var(--yellow); }
-.tag.dim { background: rgba(179,166,199,.15); color: var(--dim); }
+.tag.ok { background: var(--ok-bg); color: var(--green); }
+.tag.bad { background: var(--bad-bg); color: var(--red); }
+.tag.warn { background: var(--warn-bg); color: var(--yellow); }
+.tag.dim { background: var(--panel2); color: var(--dim); }
 .card {
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px; margin-bottom: 14px; box-shadow: var(--shadow);
+  padding: 20px; margin-bottom: 18px;
 }
 .card h3 { font-size: 15px; margin-bottom: 6px; }
 .card p { color: var(--dim); font-size: 13px; }
 .empty { color: var(--dim); padding: 30px; text-align: center; }
-#toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel2); border: 1px solid var(--border); padding: 12px 18px; border-radius: 12px; display: none; max-width: 420px; z-index: 99; }
+#toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel); border: 1px solid var(--border); padding: 12px 18px; border-radius: 12px; display: none; max-width: min(420px, calc(100vw - 32px)); z-index: 99; box-shadow: var(--shadow); animation: rise .2s ease both; }
 #toast.err { border-color: var(--red); }
 .group { border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
 .group .head { background: var(--panel2); padding: 8px 12px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
 .group table { border: none; border-radius: 0; }
 label.check { color: var(--dim); font-size: 13px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
-select { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 12px; }
+select { background: var(--panel); border: 1px solid var(--control-border); color: var(--text); padding: 10px 12px; border-radius: 9px; }
 .hint { color: var(--dim); font-size: 12px; }
 .keep-flag { color: var(--green); font-weight: 600; }
 button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
@@ -98,18 +131,21 @@ details > summary { cursor: pointer; color: var(--dim); padding: 6px 0; }
 .action-menu > summary { padding: 8px 12px; border: 1px solid var(--border); border-radius: 12px; color: var(--text); }
 .action-menu .menu-items { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; }
 .activity {
-  margin: 0 24px 16px; padding: 14px 16px; border: 1px solid var(--border);
-  border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow);
+  margin: 0 auto 16px; padding: 14px 18px; border: 1px solid var(--border);
+  width: calc(100% - 56px); max-width: 1284px;
+  border-radius: var(--radius); background: var(--panel);
 }
 .activity progress { width: 100%; height: 10px; accent-color: var(--accent); }
 .activity .path { overflow-wrap: anywhere; color: var(--dim); }
 .activity-heading, .job-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .activity-heading h2 { font-size: 15px; }
+.activity-heading h2::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--border); margin-right: 8px; }
+.activity[data-running=true] .activity-heading h2::before { background: var(--accent); }
 .activity-heading { justify-content: space-between; }
 .job-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(100px, 180px) auto; gap: 12px; align-items: center; padding: 8px 0; }
 .job-row p { overflow-wrap: anywhere; }
 .activity-details { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; }
-.workspace { border: 1px solid var(--accent); border-radius: var(--radius); padding: 16px; margin: 14px 0; scroll-margin-top: 16px; }
+.workspace { border: 1px solid var(--accent); border-top-width: 3px; border-radius: var(--radius); padding: 20px; margin: 20px 0; scroll-margin-top: 16px; background: var(--panel); animation: rise .22s ease both; }
 .workspace .card { box-shadow: none; }
 .workspace table { min-width: 640px; }
 .workspace td.path { min-width: 180px; }
@@ -120,38 +156,46 @@ details > summary { cursor: pointer; color: var(--dim); padding: 6px 0; }
 .selection-actions { border-left: 2px solid var(--accent); padding-left: 12px; }
 .table-scroll { overflow-x: auto; margin-bottom: 12px; }
 .pager { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
-.widgets { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 8px 0 16px; }
+.widgets { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin: 8px 0 24px; }
 .widget {
   text-align: left; cursor: pointer; border: 1px solid var(--border); background: var(--panel);
-  border-radius: var(--radius); padding: 16px; color: var(--text); box-shadow: var(--shadow);
-  transition: transform .18s ease, border-color .18s ease;
+  border-radius: var(--radius); padding: 20px; color: var(--text);
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+  animation: rise .3s ease backwards;
 }
-.widget:hover { transform: translateY(-3px); border-color: var(--accent); }
-.widget .icon { font-size: 22px; margin-bottom: 8px; }
-.widget b { display: block; font-size: 22px; font-family: var(--mono); }
+.widget:hover { transform: translateY(-3px); border-color: var(--accent); box-shadow: var(--shadow); }
+.widget .icon { font-size: 20px; margin-bottom: 14px; color: var(--accent); }
+.widget b { display: block; font-size: 30px; font-weight: 650; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
 .widget span { color: var(--dim); font-size: 12px; }
 .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 10px; }
 .step { background: var(--panel2); border-radius: 12px; padding: 10px 12px; font-size: 12px; color: var(--dim); }
 .step b { display: block; color: var(--text); margin-bottom: 2px; }
-.match-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin: 12px 0; }
+.match-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(185px, 1fr)); gap: 18px; margin: 18px 0; }
 .match-card {
   display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--border);
-  border-radius: 14px; background: var(--panel2); cursor: pointer; position: relative;
+  border-radius: 14px; background: var(--panel); cursor: pointer; position: relative;
   transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
 }
 .match-card:hover { transform: translateY(-3px); }
 .match-card:has(input:checked), .match-card.selected {
-  border-color: var(--accent); box-shadow: 0 0 0 2px rgba(255,138,76,.35);
+  border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .match-card input { position: absolute; opacity: 0; }
-.album-tile { min-width: 0; }
+.album-tile { min-width: 0; animation: rise .3s ease both; }
+.album-tile:nth-child(2), .widget:nth-child(2) { animation-delay: .035s; }
+.album-tile:nth-child(3), .widget:nth-child(3) { animation-delay: .07s; }
+.album-tile:nth-child(4), .widget:nth-child(4) { animation-delay: .105s; }
+.album-tile:nth-child(5), .widget:nth-child(5) { animation-delay: .14s; }
+.album-tile:nth-child(6) { animation-delay: .175s; }
 .album-tile > label { display: flex; gap: 8px; align-items: center; padding: 6px 2px; }
 .album-tile:has(input:checked) .match-card { border-color: var(--accent); }
-.match-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.match-card:focus-visible, .match-card:focus-within { outline: 2px solid var(--accent); outline-offset: 3px; }
 .cover, .cover-ph {
-  width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; background: #1a1524;
+  width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; background: var(--cover-bg);
   display: grid; place-items: center; color: var(--accent); font-size: 28px;
 }
+.cover-ph { position: relative; }
+.cover-ph::before { content: ""; position: absolute; width: 62%; height: 62%; border: 1px solid var(--border); border-radius: 50%; box-shadow: 0 0 0 12px var(--panel2); }
 .match-card strong { font-size: 13px; line-height: 1.3; }
 .match-card em { font-style: normal; color: var(--dim); font-size: 12px; }
 button.match-card { width: 100%; color: inherit; font: inherit; text-align: left; }
@@ -162,7 +206,7 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .player {
   position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 90;
   max-width: 1200px; margin: auto; padding: 14px 18px; border: 1px solid var(--accent);
-  border-radius: var(--radius); background: var(--panel2); box-shadow: var(--shadow);
+  border-radius: var(--radius); background: var(--panel); box-shadow: 0 8px 40px rgba(0,0,0,.16); animation: rise .2s ease both;
 }
 .player[hidden] { display: none; }
 .player .row { margin-bottom: 6px; }
@@ -173,12 +217,34 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 body.player-open { padding-bottom: 250px; }
 body.player-open #toast { bottom: 260px; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (hover: none) {
+  button.action:hover, .widget:hover, .match-card:hover { transform: none; }
+}
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  button.action:hover, .widget:hover, .match-card:hover { transform: none; }
 }
 @media (max-width: 600px) {
+  header { padding: 20px 16px 10px; }
+  nav { padding: 6px 12px 14px; gap: 4px; }
+  nav button { padding: 10px 11px; }
+  .brand img { width: 36px; height: 36px; }
+  h1 { font-size: 24px; }
+  .chips { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 16px; margin-top: 20px; }
+  .chip { padding: 0 12px 14px; }
+  .chip:nth-child(odd) { border-left: 0; padding-left: 0; }
+  .chip b { font-size: 25px; }
+  .activity { width: calc(100% - 24px); padding: 12px; }
   main { padding: 12px; }
-  input[type=text], input[type=search], input[type=number] { min-width: 0; max-width: 100%; }
+  .page-heading h2 { font-size: 23px; }
+  input[type=text], input[type=search], input[type=number], input[type=password] { min-width: 0; max-width: 100%; font-size: 16px; }
+  select { max-width: 100%; }
+  .match-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .match-card { padding: 8px; }
+  .widgets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .widget { padding: 14px; }
+  .album-hero { grid-template-columns: 90px minmax(0, 1fr); gap: 12px; align-items: start; }
+  .album-hero .cover, .album-hero .cover-ph { width: 90px; }
   .metadata-field { grid-template-columns: 1fr; }
   .job-row { grid-template-columns: minmax(0, 1fr) auto; }
   .job-row progress { grid-column: 1 / -1; grid-row: 2; }
@@ -190,11 +256,14 @@ body.player-open #toast { bottom: 260px; }
 </head>
 <body>
 <header>
-  <div class="brand"><img src="/favicon.svg" alt=""><h1>music<span>lib</span></h1></div>
-  <div class="sub" id="dbpath">dashboard</div>
+  <div class="topbar"><div class="brand"><img src="/favicon.svg" alt=""><div><h1>music<span>lib</span></h1>
+    <div class="sub" id="dbpath">Your music library workspace</div></div></div>
+    <button class="action ghost" id="theme-toggle" type="button" aria-pressed="false">Dark mode</button>
+  </div>
   <div class="chips" id="chips"></div>
+  <details class="library-details"><summary>More library details</summary><div class="chips" id="detail-chips"></div></details>
 </header>
-<nav id="nav"></nav>
+<nav id="nav" aria-label="Main navigation"></nav>
 <aside class="activity" aria-label="Library activity">
   <div class="activity-heading"><h2>Activity</h2><span id="activity-lock" class="hint"></span></div>
   <div id="activity-current">Loading activity...</div>
@@ -225,7 +294,7 @@ body.player-open #toast { bottom: 260px; }
   </div>
   <p id="player-status" class="hint" role="status" aria-live="polite"></p>
 </aside>
-<div id="toast"></div>
+<div id="toast" role="status"></div>
 <script>
 const TABS = [
   ["overview", "Overview"], ["dupes", "Duplicates"], ["doctor", "Bad Files"],
@@ -233,6 +302,18 @@ const TABS = [
   ["organize", "Organize"], ["art", "Cover Art"], ["missing", "Missing Music"],
   ["usenet", "Usenet"], ["settings", "Settings"],
 ];
+const pageDescriptions = {
+  overview: "Your collection at a glance. Choose what to work on next.",
+  dupes: "Compare copies and keep the version you want.",
+  doctor: "Review audio issues before removing files.",
+  library: "Browse, listen and make reviewed changes to your music.",
+  recovery: "Review and restore files from the musiclib trash.",
+  organize: "Preview a cleaner folder structure before moving files.",
+  art: "Find missing artwork for your albums.",
+  missing: "Compare your albums with catalog track listings.",
+  usenet: "Search for missing music and manage downloads.",
+  settings: "Configure your library and connected services.",
+};
 const state = { tab: "overview", jobs: [], libraryView: "albums", libraryBatch: 50 };
 const activeJob = job => ["queued", "running", "stopping"].includes(job.status);
 const jobNames = {
@@ -353,6 +434,24 @@ function toast(msg, err) {
   const t = $("#toast");
   t.textContent = msg; t.className = err ? "err" : ""; t.style.display = "block";
   clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 4000);
+}
+function updateThemeToggle() {
+  $("#theme-toggle").setAttribute("aria-pressed", String(document.documentElement.dataset.theme === "dark"));
+}
+function toggleTheme() {
+  const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = theme;
+  updateThemeToggle();
+  try {
+    window.localStorage.setItem("musiclib.theme", theme);
+  } catch (error) {
+    console.warn("Musiclib could not save the appearance preference.", error);
+    toast("Appearance changed for this visit. Your browser could not save the preference.", true);
+  }
+}
+function revealReview(element) {
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  element.scrollIntoView({behavior: reduced ? "auto" : "smooth", block: "start"});
 }
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -638,6 +737,7 @@ function resultRow(item) {
     <pre class="path" style="white-space:pre-wrap">${esc(JSON.stringify(item, null, 2))}</pre></details></td></tr>`;
 }
 function renderCurrentJobs(activeJobs) {
+  $(".activity").dataset.running = String(activeJobs.length > 0);
   const container = $("#activity-current");
   const signature = activeJobs.map(job => job.id).join(",");
   if (container.dataset.jobs !== signature) {
@@ -723,10 +823,14 @@ async function loadStats() {
   const chips = [
     [s.tracks.toLocaleString(), "tracks"], [s.albums.toLocaleString(), "albums"],
     [fmtBytes(s.bytes), "size"], [fmtDur(s.duration_seconds), "duration"],
+  ];
+  const details = [
     [s.dupe_groups, "dupe groups"], [s.issues, "issues"],
     [s.albums_missing_art, "missing art"], [s.albums_missing_tracks, "incomplete albums"],
   ];
-  $("#chips").innerHTML = chips.map(([v, l]) => `<div class="chip"><b>${esc(v)}</b><small>${l}</small></div>`).join("");
+  const renderChips = items => items.map(([v, l]) => `<div class="chip"><b>${esc(v)}</b><small>${l}</small></div>`).join("");
+  $("#chips").innerHTML = renderChips(chips);
+  $("#detail-chips").innerHTML = renderChips(details);
   return s;
 }
 
@@ -1066,14 +1170,14 @@ const views = {
       const token = workspace.begin(kind, title);
       if (token !== null) {
         state.libraryReview = {kind};
-        $("#library-workspace").scrollIntoView({behavior: "smooth", block: "start"});
+        revealReview($("#library-workspace"));
         $("#library-workspace [data-workspace-title]").focus({preventScroll: true});
       }
       return token;
     };
     const savedReview = state.libraryReview;
     const rememberReview = (kind, jobId) => { state.libraryReview = {kind, jobId}; };
-    const scrollReview = () => $("#library-workspace").scrollIntoView({behavior: "smooth", block: "start"});
+    const scrollReview = () => revealReview($("#library-workspace"));
     const showOutcome = (panel, status, title) => {
       status.className = "card";
       status.insertAdjacentHTML("afterbegin", `<h3>${esc(title)}</h3>`);
@@ -2414,7 +2518,7 @@ const views = {
         }
       };
       await refreshActivity();
-      panel.scrollIntoView({behavior: "smooth", block: "start"});
+      revealReview(panel);
     };
     $("#restore-select-page").onclick = () => {
       pageItems.filter(item => !item.restored_at && item.moved_to).forEach(item => selectEntry(item.id, true));
@@ -2664,14 +2768,16 @@ async function render() {
   try { await loadStats(); } catch (e) { toast(e.message, true); }
   const nav = $("#nav");
   nav.innerHTML = TABS.map(([id, label]) =>
-    `<button class="${state.tab === id ? "active" : ""}" data-tab="${id}">${label}</button>`).join("");
+    `<button class="${state.tab === id ? "active" : ""}" ${state.tab === id ? 'aria-current="page"' : ""} data-tab="${id}">${label}</button>`).join("");
   nav.querySelectorAll("[data-tab]").forEach(b => {
     b.onclick = () => { state.tab = b.dataset.tab; render(); };
   });
   const main = $("#main");
   main.innerHTML = TABS.map(([id]) => `<section id="tab-${id}" class="${state.tab === id ? "active" : ""}"></section>`).join("");
   const el = $(`#tab-${state.tab}`);
+  const tab = state.tab;
   try { await views[state.tab](el); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  el.insertAdjacentHTML("afterbegin", `<div class="page-heading"><h2>${esc(TABS.find(([id]) => id === tab)[1])}</h2><p>${esc(pageDescriptions[tab])}</p></div>`);
   applyJobLocks(el);
 }
 async function watchActivity() {
@@ -2679,6 +2785,8 @@ async function watchActivity() {
   setTimeout(watchActivity, 1500);
 }
 async function startDashboard() {
+  updateThemeToggle();
+  $("#theme-toggle").onclick = toggleTheme;
   $("#activity-details").ontoggle = () => { if ($("#activity-details").open) refreshActivity(); };
   new MutationObserver(() => applyJobLocks($("#main"))).observe($("#main"), {childList: true, subtree: true});
   await refreshActivity();

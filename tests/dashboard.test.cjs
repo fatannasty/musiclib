@@ -4,7 +4,9 @@ const {join} = require("node:path");
 const {test} = require("node:test");
 const vm = require("node:vm");
 
-const source = readFileSync(join(__dirname, "../src/musiclib/server/static/index.html"), "utf8")
+const html = readFileSync(join(__dirname, "../src/musiclib/server/static/index.html"), "utf8");
+const appearance = html.match(/<script id="appearance-init">([\s\S]*?)<\/script>/)[1];
+const source = html
   .match(/<script>([\s\S]*?)<\/script>/)[1].replace(/\nstartDashboard\(\);\s*$/, "");
 
 class Element {
@@ -25,9 +27,11 @@ class Element {
   replaceChildren() { this.children = []; }
 }
 
-function dashboard() {
+function dashboard({storage, reducedMotion = false} = {}) {
   const nodes = new Map();
+  const saved = new Map(), warnings = [], notices = [];
   const document = {
+    documentElement: new Element(),
     addEventListener() {},
     querySelector(selector) {
       if (!nodes.has(selector)) nodes.set(selector, new Element());
@@ -36,13 +40,58 @@ function dashboard() {
     querySelectorAll() { return []; },
   };
   const context = vm.createContext({
-    document, window: {addEventListener() {}}, console, setTimeout, clearTimeout,
+    document, window: {
+      addEventListener() {},
+      matchMedia: () => ({matches: reducedMotion}),
+      localStorage: storage || {getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value)},
+    },
+    console: {...console, warn: (...args) => warnings.push(args)}, setTimeout, clearTimeout,
     confirm: () => true,
   });
+  vm.runInContext(appearance, context);
   vm.runInContext(source, context);
-  context.toast = () => {};
-  return {context, nodes, document, run: script => vm.runInContext(script, context)};
+  context.toast = (...args) => notices.push(args);
+  return {context, nodes, document, saved, warnings, notices, run: script => vm.runInContext(script, context)};
 }
+
+test("appearance starts light, saves toggles, and restores dark mode before dashboard rendering", () => {
+  const {context, document, saved} = dashboard();
+  context.updateThemeToggle();
+  const button = document.querySelector("#theme-toggle");
+  assert.equal(button.attributes.get("aria-pressed"), "false");
+  context.toggleTheme();
+  assert.equal(document.documentElement.dataset.theme, "dark");
+  assert.equal(button.attributes.get("aria-pressed"), "true");
+  assert.equal(saved.get("musiclib.theme"), "dark");
+  const restored = dashboard({storage: {getItem: key => saved.get(key)}});
+  assert.equal(restored.document.documentElement.dataset.theme, "dark");
+  context.toggleTheme();
+  assert.equal(button.attributes.get("aria-pressed"), "false");
+  assert.equal(saved.get("musiclib.theme"), "light");
+});
+
+test("blocked browser storage leaves theme controls usable and reports the unsaved preference", () => {
+  const storage = {
+    getItem() { throw new Error("Storage blocked"); },
+    setItem() { throw new Error("Storage blocked"); },
+  };
+  const {context, document, warnings, notices} = dashboard({storage});
+  assert.equal(warnings.length, 1);
+  assert.doesNotThrow(() => context.toggleTheme());
+  assert.equal(document.documentElement.dataset.theme, "dark");
+  assert.equal(warnings.length, 2);
+  assert.match(notices[0][0], /could not save/);
+  assert.equal(notices[0][1], true);
+});
+
+test("review scrolling is immediate when reduced motion is requested", () => {
+  for (const reducedMotion of [true, false]) {
+    const {context} = dashboard({reducedMotion});
+    let behavior;
+    context.revealReview({scrollIntoView: options => { behavior = options.behavior; }});
+    assert.equal(behavior, reducedMotion ? "auto" : "smooth");
+  }
+});
 
 function reviewRoot() {
   const root = new Element();

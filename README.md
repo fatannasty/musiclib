@@ -54,6 +54,14 @@ Files placed directly in the library root are organized into
 `Singles/<Genre>/Artist - Title.ext`; files without a genre use `Unknown Genre`.
 Set `organize.root_singles = false` in the config to disable this rule.
 
+The dashboard opens with a bright, light appearance. Use **Dark mode** in the
+header to switch themes; your choice is saved in this browser, not on the server.
+If browser storage is blocked, the switch still works for the current page and
+an unsaved-preference notice appears. The header keeps four collection totals
+visible; expand **More library details** for duplicate, issue, and album counts.
+Short entrance and hover animations provide feedback without looping decoration.
+The dashboard respects your device's reduced-motion setting, including review scrolling.
+
 The dashboard keeps a compact Activity bar with readable task names, phase,
 file counts, elapsed time, and **Stop job**. Expand **Details, history and results**
 for current paths, stop behavior, saved jobs, and paginated results. File-level
