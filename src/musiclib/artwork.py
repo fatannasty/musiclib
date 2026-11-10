@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,20 +21,86 @@ FOLDER_IMAGE_CANDIDATES = [
     "folder.jpg", "folder.png", "cover.jpg", "cover.png", "front.jpg", "front.png",
 ]
 CAA_FRONT_THUMB = "https://coverartarchive.org/release/{mbid}/front-250"
+logger = logging.getLogger(__name__)
 
 
-def read_cover(path: str) -> Optional[Tuple[bytes, str]]:
+def embed_cover(path: str, data: bytes) -> None:
+    mime = image_mime(data)
+    if not mime:
+        raise ValueError("Cover must be a JPEG or PNG image.")
+    audio = mutagen.File(path, easy=False)
+    if audio is None:
+        raise ValueError("Audio format does not support embedded artwork.")
+    fmt = audio.__class__.__name__
+    if fmt in ("FLAC", "OggVorbis", "OggOpus"):
+        picture = Picture()
+        picture.type = 3
+        picture.mime = mime
+        picture.desc = "Front cover"
+        picture.data = data
+        dimensions = image_dimensions(data)
+        if dimensions:
+            picture.width, picture.height = dimensions
+        if fmt == "FLAC":
+            other_pictures = [item for item in audio.pictures if item.type != 3]
+            audio.clear_pictures()
+            audio.add_picture(picture)
+            for item in other_pictures:
+                audio.add_picture(item)
+        else:
+            others = [
+                value for value in audio.get("metadata_block_picture", [])
+                if Picture(base64.b64decode(value, validate=True)).type != 3
+            ]
+            audio["metadata_block_picture"] = [
+                base64.b64encode(picture.write()).decode("ascii"), *others,
+            ]
+    elif fmt in ("MP3", "AIFF", "WAVE"):
+        from mutagen.id3 import APIC
+
+        if audio.tags is None:
+            audio.add_tags()
+        others = [frame for frame in audio.tags.getall("APIC") if frame.type != 3]
+        audio.tags.delall("APIC")
+        for frame in others:
+            audio.tags.add(frame)
+        description = "Front cover"
+        while f"APIC:{description}" in audio.tags:
+            description += " (front)"
+        audio.tags.add(APIC(encoding=3, mime=mime, type=3, desc=description, data=data))
+    elif fmt == "MP4":
+        from mutagen.mp4 import MP4Cover
+
+        if audio.tags is None:
+            audio.add_tags()
+        imageformat = MP4Cover.FORMAT_PNG if mime == "image/png" else MP4Cover.FORMAT_JPEG
+        audio["covr"] = [MP4Cover(data, imageformat=imageformat), *audio.get("covr", [])[1:]]
+    else:
+        raise ValueError(f"Embedding artwork is not supported for {fmt} files.")
+    audio.save()
+
+
+def read_cover(path: str, include_folder: bool = True) -> Optional[Tuple[bytes, str]]:
     try:
         audio = mutagen.File(path)
     except Exception:
         audio = None
     if audio is not None:
-        for picture in getattr(audio, "pictures", None) or []:
+        pictures = list(getattr(audio, "pictures", None) or [])
+        tags = getattr(audio, "tags", None) or {}
+        if hasattr(tags, "getall"):
+            pictures.extend(tags.getall("APIC"))
+        for value in tags.get("metadata_block_picture", []):
+            try:
+                pictures.append(Picture(base64.b64decode(value, validate=True)))
+            except (ValueError, TypeError, mutagen.MutagenError):
+                logger.warning("Cannot read an embedded artwork block in %s", path)
+        pictures.sort(key=lambda picture: getattr(picture, "type", None) != 3)
+        for picture in pictures:
             data = getattr(picture, "data", None)
             if data:
                 mime = getattr(picture, "mime", None) or image_mime(data) or "image/jpeg"
                 return data, mime
-        tags = getattr(audio, "tags", None) or {}
         try:
             items = list(tags.values()) if hasattr(tags, "values") else []
         except Exception:
@@ -49,6 +116,8 @@ def read_cover(path: str) -> Optional[Tuple[bytes, str]]:
                 mime = getattr(frame, "mime", None) or image_mime(data)
                 if mime:
                     return data, mime
+    if not include_folder:
+        return None
     parent = Path(path).parent
     for name in FOLDER_IMAGE_CANDIDATES:
         candidate = parent / name
@@ -204,53 +273,9 @@ class Artwork:
         )
 
     def _embed(self, path: str, data: bytes) -> bool:
-        mime = image_mime(data) or "image/jpeg"
         try:
-            audio = mutagen.File(path, easy=False)
-            if audio is None:
-                return False
-            fmt = audio.__class__.__name__
-            if fmt in ("FLAC", "OggVorbis", "OggOpus"):
-                picture = Picture()
-                picture.type = 3
-                picture.mime = mime
-                picture.desc = "Cover"
-                picture.data = data
-                if fmt == "FLAC":
-                    audio.clear_pictures()
-                    audio.add_picture(picture)
-                else:
-                    audio["metadata_block_picture"] = [
-                        base64.b64encode(picture.write()).decode("ascii")
-                    ]
-                audio.save()
-                return True
-            if fmt in ("MP3", "AIFF", "WAVE"):
-                from mutagen.id3 import APIC, ID3
-
-                if audio.tags is None:
-                    audio.tags = ID3()
-                audio.tags.add(
-                    APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data)
-                )
-                audio.save()
-                return True
-            if fmt == "MP4":
-                from mutagen.mp4 import MP4, MP4Cover
-
-                mp4 = MP4(path)
-                imageformat = (
-                    MP4Cover.FORMAT_PNG if mime == "image/png" else MP4Cover.FORMAT_JPEG
-                )
-                mp4["covr"] = [MP4Cover(data, imageformat=imageformat)]
-                mp4.save()
-                return True
-            if fmt == "ASF":
-                from mutagen.asf import ASFPicture
-
-                audio["WM/Picture"] = [ASFPicture(data=data, mime=mime, type=3)]
-                audio.save()
-                return True
-            return False
-        except Exception:
+            embed_cover(path, data)
+            return True
+        except (ValueError, OSError, mutagen.MutagenError) as exc:
+            logger.warning("Cannot embed artwork in %s: %s", path, exc)
             return False

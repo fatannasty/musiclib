@@ -243,6 +243,7 @@ async function showJobResults(job) {
     "metadata-lookup": ["reviews", "errors"], "metadata-apply": ["applied", "errors"],
     "issues-trash": ["failures"], "album-apply": ["applied", "errors", "rename_errors"],
     "rename-preview": ["moves", "skipped_files"], "rename-reviewed": ["moves", "errors", "skipped_files"],
+    "artwork-preview": ["tracks", "warnings"], "artwork-reviewed": ["applied", "errors"],
   }[job.kind] || [];
   container.querySelector(".sections").innerHTML = sections.map(([key, value]) => `<span class="tag dim">${esc(key)}: ${value}</span>`).join("") +
     lists.map(key => `<button class="action ghost" data-section="${key}">${esc(key)}</button>`).join("");
@@ -264,6 +265,15 @@ async function showJobResults(job) {
     button.textContent = "Review rename preview";
     button.onclick = () => {
       state.renamePreviewJob = job.id; state.libraryView = "albums"; state.tab = "library"; render();
+    };
+    container.querySelector(".sections").append(button);
+  }
+  if (job.kind === "artwork-preview") {
+    const button = document.createElement("button");
+    button.className = "action ghost";
+    button.textContent = "Review artwork preview";
+    button.onclick = () => {
+      state.artworkPreviewJob = job.id; state.libraryView = "albums"; state.tab = "library"; render();
     };
     container.querySelector(".sections").append(button);
   }
@@ -548,7 +558,7 @@ const views = {
       <button class="action ${state.libraryView === "albums" ? "" : "ghost"}" id="library-view-albums">Albums</button>
       <button class="action ${state.libraryView === "tracks" ? "" : "ghost"}" id="library-view-tracks">Tracks</button>
     </div>
-    <p class="hint">Albums are grouped from your scanned library. Open an album to see its tracks and tag or rename them together. Catalog artwork is a preview only until you use Cover Art.</p>
+    <p class="hint">Albums are grouped from your scanned library. Open an album to edit tags, upload artwork, or organize its tracks. Catalog images are previews; use Change artwork to upload a cover or Cover Art for automatic downloads.</p>
     <div class="row" id="library-track-tools"><button class="action ghost" id="metadata-select-page">Select this page</button>
       <button class="action ghost" id="metadata-clear-selection">Clear selection</button>
       <span id="metadata-selection-count">0 tracks selected</span>
@@ -558,6 +568,7 @@ const views = {
     <div id="metadata-album"></div>
     <div id="manual-album-result" role="status"></div>
     <div id="album-rename-review"></div>
+    <div id="album-artwork-review"></div>
     <div id="metadata-bulk"></div>
     <div id="metadata-search"></div><div id="metadata-review"></div>
     <div id="library-albums"></div>
@@ -647,11 +658,13 @@ const views = {
             <div><h3>${esc(detail.album)}</h3>
             <p>${esc(detail.album_artist)} · ${esc(detail.year || "—")} · ${detail.track_count} tracks${detail.bad_count ? ` · ${detail.bad_count} bad` : ""}</p>
             <button class="action" data-edit-album>Edit album tags</button>
+            <button class="action ghost" data-artwork-album data-operation>Change artwork</button>
             <button class="action ghost" data-rename-album data-operation>Preview organization</button>
             <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button></div>
           </div>
           ${detail.track_count > 200 ? '<p class="hint">Only the first 200 tracks are selected. Edit larger albums in batches.</p>' : ''}
           <div data-manual-editor></div>
+          <div data-artwork-editor></div>
           <div class="table-scroll"><table><thead><tr><th>Select</th><th>#</th><th>Title</th><th>Artist</th><th>Status</th></tr></thead>
           <tbody>${detail.tracks.map(track =>
             `<tr><td><input type="checkbox" data-select-track="${track.id}" aria-label="Select ${esc(track.title || track.path)}"></td>
@@ -676,12 +689,131 @@ const views = {
           if (!tracks.length) { toast("Select tracks to edit first.", true); return; }
           renderAlbumEditor(pageEl.querySelector("[data-manual-editor]"), tracks);
         };
+        pageEl.querySelector("[data-artwork-album]").onclick = () => {
+          const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
+          if (!tracks.length) { toast("Select tracks for artwork first.", true); return; }
+          renderArtworkUpload(pageEl.querySelector("[data-artwork-editor]"), tracks);
+        };
         pageEl.querySelectorAll("[data-select-track]").forEach(input => input.onchange = () => {
           selectTrack(Number(input.dataset.selectTrack), input.checked); updateSelection();
         });
         updateSelection();
         await refreshActivity();
       } catch (e) { toast(e.message, true); }
+    };
+    const renderArtworkUpload = (panel, tracks) => {
+      panel.innerHTML = `<form class="card"><h3>Artwork for ${tracks.length} selected tracks</h3>
+        <p>These tracks are fixed for this preview. Choose a JPEG or PNG image up to 8 MiB and 25 million pixels.
+        Previewing does not modify music files. The reviewed cover replaces only the main embedded cover;
+        other pictures, text tags, filenames, and folder images stay unchanged.</p>
+        <label>Cover image <input type="file" accept="image/jpeg,image/png" data-artwork-file></label>
+        <button type="submit" class="action" data-operation>Preview artwork</button>
+        <button type="button" class="action ghost" data-artwork-upload-close>Close</button>
+        <p role="status" data-artwork-upload-status></p></form>`;
+      const input = panel.querySelector("[data-artwork-file]");
+      const status = panel.querySelector("[data-artwork-upload-status]");
+      const submit = panel.querySelector('[type="submit"]');
+      panel.querySelector("[data-artwork-upload-close]").onclick = () => { panel.innerHTML = ""; };
+      input.onchange = () => {
+        state.artworkPreviewJob = null; $("#album-artwork-review").innerHTML = "";
+        status.textContent = input.files.length ? "Image selected. Preview artwork before applying." : "";
+      };
+      let uploading = false;
+      panel.querySelector("form").onsubmit = async event => {
+        event.preventDefault();
+        if (uploading) return;
+        const file = input.files[0];
+        if (!file || !file.size || file.size > 8 * 1024 * 1024) {
+          status.textContent = "Choose a JPEG or PNG image no larger than 8 MiB."; return;
+        }
+        uploading = true; input.disabled = true; submit.disabled = true;
+        status.textContent = "Preparing an artwork preview. No music files are being changed.";
+        try {
+          const image_base64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(",")[1]);
+            reader.onerror = () => reject(new Error("Cannot read the selected image."));
+            reader.readAsDataURL(file);
+          });
+          const { job_id } = await post("/api/artwork/preview", {
+            track_ids: tracks.map(track => track.id), image_base64, filename: file.name,
+          });
+          state.artworkPreviewJob = job_id;
+          await refreshActivity();
+          await pollJob(job_id, "Artwork preview");
+          if (!panel.isConnected) return;
+          status.textContent = "Preview ready. Review the image and file list before applying.";
+          await loadArtworkReview(job_id);
+        } catch (e) { status.textContent = e.message; toast(e.message, true); }
+        finally { uploading = false; input.disabled = false; submit.disabled = false; }
+      };
+      panel.scrollIntoView({behavior: "smooth", block: "start"});
+    };
+    const loadArtworkReview = async jobId => {
+      const [job, targets, warnings] = await Promise.all([
+        api(`/api/jobs/${jobId}`),
+        api(`/api/jobs/${jobId}/results/tracks?limit=200`),
+        api(`/api/jobs/${jobId}/results/warnings?limit=200`),
+      ]);
+      const preview = job.summary;
+      const review = await api(`/api/artwork/reviews/${preview.review_id}`);
+      if (!el.isConnected) return;
+      const panel = el.querySelector("#album-artwork-review");
+      const current = targets.items.find(track => track.has_embedded_art && track.status === "ready");
+      panel.innerHTML = `<div class="card"><h3>Review album artwork</h3>
+        <p>${preview.ready} ready · ${preview.blocked} blocked. Only these files can be changed by this preview.</p>
+        <div class="match-grid"><div class="match-card"><strong>Current embedded cover (one example)</strong>
+          ${current ? albumCover(`/api/tracks/${current.track_id}/cover?v=${encodeURIComponent(current.file_hash)}`) :
+            '<p>No embedded artwork found in the ready tracks.</p>'}
+          <p>Selected tracks may have different existing covers.</p></div>
+          <div class="match-card"><strong>New cover: ${esc(preview.filename)}</strong>
+          <img class="cover" style="object-fit:contain" src="${esc(preview.cover_url)}" alt="New album cover">
+          <p>${preview.width} × ${preview.height} · ${fmtBytes(preview.bytes)} · ${esc(preview.mime)}</p></div></div>
+        ${warnings.items.map(message => `<p role="alert">${esc(message)}</p>`).join("")}
+        <p>Only the main embedded cover is replaced. Other pictures, text tags, filenames,
+        and folder images stay unchanged. Moved or changed files are skipped.</p>
+        <div class="table-scroll"><table><thead><tr><th>File</th><th>Existing embedded art</th><th>Status</th><th>Reason</th></tr></thead>
+        <tbody>${targets.items.map(track => `<tr><td class="path">${esc(track.path || track.track_id)}</td>
+          <td>${track.has_embedded_art ? "Yes" : "No"}</td><td>${esc(track.status)}</td><td>${esc(track.reason)}</td></tr>`).join("")}</tbody></table></div>
+        ${preview.ready && review.status === "review" ?
+          '<button class="action" data-artwork-confirm data-operation>Apply reviewed artwork</button>' :
+          review.status !== "review" ? "<p>This preview was already attempted. Create a fresh preview to retry.</p>" : ""}
+        <button class="action ghost" data-artwork-close>Close preview</button>
+        <div role="status" data-artwork-status></div></div>`;
+      panel.querySelector("[data-artwork-close]").onclick = () => {
+        state.artworkPreviewJob = null; panel.innerHTML = "";
+      };
+      const apply = panel.querySelector("[data-artwork-confirm]");
+      let applying = false;
+      if (apply) apply.onclick = async () => {
+        if (applying || !confirm(`Replace the main embedded cover in ${preview.ready} reviewed file(s)? Other tags and filenames stay unchanged. Changed files will be skipped.`)) return;
+        applying = true; apply.disabled = true;
+        const close = panel.querySelector("[data-artwork-close]");
+        close.disabled = true;
+        const status = panel.querySelector("[data-artwork-status]");
+        let accepted = false;
+        try {
+          const { job_id } = await post("/api/artwork/apply-reviewed", {preview_job_id: jobId});
+          accepted = true;
+          status.textContent = "Embedding artwork. Progress and saved results are in Activity.";
+          await refreshActivity();
+          const result = await pollJob(job_id, "Album artwork");
+          const failures = await api(`/api/jobs/${job_id}/results/errors?limit=200`);
+          if (!panel.isConnected) return;
+          status.innerHTML = `<p>${result.summary.applied} files updated; ${failures.total} failed.
+            Results are saved in Activity. Create a fresh preview before retrying.</p>` +
+            failures.items.map(item => `<p role="alert">${esc(item.path || item.track_id)}: ${esc(item.error)}</p>`).join("");
+          await $("#library-search").onclick(); await loadStats();
+        } catch (e) { status.textContent = e.message; toast(e.message, true); }
+        finally {
+          applying = false;
+          close.disabled = false;
+          if (accepted) { state.artworkPreviewJob = null; apply.remove(); }
+          else apply.disabled = false;
+        }
+      };
+      await refreshActivity();
+      panel.scrollIntoView({behavior: "smooth", block: "start"});
     };
     const loadRenameReview = async jobId => {
       const [job, moves, skipped] = await Promise.all([
@@ -950,7 +1082,8 @@ const views = {
             return `<label class="metadata-field"><span><input type="checkbox" data-metadata-field="${key}"> ${labels[key]}</span>
               <span>Current: ${esc(current)}</span><span>Suggested: ${esc(suggested)}${differs ? " (change)" : ""}</span></label>`;
           }).join("")}</div>
-          <p class="hint">No fields are selected by default. Choose each change to write, then confirm before applying. Artwork is not written unless you later use Cover Art.</p>
+          <p class="hint">No fields are selected by default. Choose each change to write, then confirm before applying.
+          Tag editing does not save artwork. Use Change artwork on an album page or Cover Art to write covers.</p>
           ${onSelection ? "" : '<button class="action" data-metadata-apply data-operation>Apply selected tags</button>'}
           <button class="action ghost" data-metadata-cancel>${onSelection ? "Skip track" : "Close"}</button></div>`;
         panel.querySelectorAll('input[type="radio"]').forEach(radio => radio.onchange = () => {
@@ -1160,6 +1293,10 @@ const views = {
     if (state.renamePreviewJob) {
       const job = await api(`/api/jobs/${state.renamePreviewJob}`);
       if (job.status === "done") await loadRenameReview(job.id);
+    }
+    if (state.artworkPreviewJob) {
+      const job = await api(`/api/jobs/${state.artworkPreviewJob}`);
+      if (job.status === "done") await loadArtworkReview(job.id);
     }
     if (state.metadataLookupJob) {
       const job = await api(`/api/jobs/${state.metadataLookupJob}`);

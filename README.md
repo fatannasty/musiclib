@@ -147,6 +147,27 @@ Manual edits use saved reviews: files moved or changed since preview are skipped
 and per-file permission errors do not stop the remaining files. Results are saved
 in Activity. After saving, the album grid refreshes to reflect the new tags.
 
+On an album page, **Change artwork** lets you upload a JPEG or PNG cover for up
+to 200 selected tracks. Images must be no larger than 8 MiB or 25 million pixels;
+damaged or animated images are rejected. **Preview artwork** shows the uploaded
+image, dimensions, an example of current embedded art, and the exact ready or
+blocked files. Previewing saves the image in the app database for review but does
+not modify music files. Selecting another image invalidates the displayed preview.
+
+Choose **Apply reviewed artwork** and confirm to replace the embedded front/main
+cover in only those ready files. Additional pictures, text tags, filenames, and
+folder images stay unchanged. Files are edited through a temporary copy, and the
+saved cover is verified before replacing the original. Changed or moved files are
+skipped; per-file failures do not stop the rest. Existing file-health findings are
+preserved. Supported formats are MP3, FLAC,
+M4A/MP4 (including ALAC), Ogg Vorbis, Opus, WAV, and AIFF.
+
+Artwork previews and apply results are saved in Activity. Use **View results →
+Review artwork preview** to reopen a preview after refreshing. An apply attempt
+consumes its preview; create a fresh preview to retry failed files. Embedded art
+takes priority over catalog artwork on album cards, and updated covers refresh
+without requiring a manual browser-cache clear.
+
 For safe album organization, select up to 200 tracks on an album page and choose
 **Preview organization**. The saved preview lists current and exact proposed paths,
 using the album and multidisc templates in Settings (even for loose root files).
@@ -169,8 +190,9 @@ In Library, choose **Lookup**, enter or correct the title and/or artist, then
 search. MusicBrainz and iTunes are queried together, and matching albums show Cover Art Archive
 or iTunes artwork previews. This works even when a file has no title or artist
 tags. Search terms do not modify file tags; only explicitly selected suggestions
-are written after confirmation. Artwork previews are not embedded until you use
-Cover Art. Lookup failures display the provider error so
+are written after confirmation. Tag editing does not embed artwork; use
+**Change artwork** to upload a cover or **Cover Art** for automatic downloads.
+Lookup failures display the provider error so
 network or service problems can be distinguished from an empty search. Interactive
 requests use four-second connection/read timeouts without a long automatic retry
 sequence. If one provider fails, available matches are shown with a warning instead

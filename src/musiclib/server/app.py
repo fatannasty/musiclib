@@ -3,13 +3,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from mutagen import MutagenError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..artwork import CAA_FRONT_THUMB, Artwork, read_cover
+from ..artwork_review import MAX_IMAGE_BASE64, ArtworkReview
 from ..brainz import Brainz
 from ..config import Config
 from ..db import Database
@@ -124,8 +126,14 @@ class RenamePreviewBody(BaseModel):
     track_ids: List[int]
 
 
-class RenameReviewedApplyBody(BaseModel):
+class ReviewedApplyBody(BaseModel):
     preview_job_id: str
+
+
+class ArtworkPreviewBody(BaseModel):
+    track_ids: List[int]
+    image_base64: str = Field(max_length=MAX_IMAGE_BASE64)
+    filename: str = Field(default="Uploaded cover", max_length=255)
 
 
 class SabAddBody(BaseModel):
@@ -555,9 +563,10 @@ def create_app(config: Config) -> FastAPI:
         for row in page["items"]:
             mbid = row.get("mbid_release")
             cover_id = row.get("cover_track_id")
-            cover_url = CAA_FRONT_THUMB.format(mbid=mbid) if mbid else None
-            if not cover_url and cover_id:
-                cover_url = f"/api/tracks/{cover_id}/cover"
+            cover_url = (
+                f"/api/tracks/{cover_id}/cover?{urlencode({'v': row.get('cover_hash') or ''})}"
+                if cover_id else CAA_FRONT_THUMB.format(mbid=mbid) if mbid else None
+            )
             items.append({
                 "album_artist": row["album_artist"], "album": row["album"],
                 "year": row["year"], "genre": row["genre"],
@@ -576,9 +585,13 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(404, "Album was not found in the library.")
         tracks = [dict(row) for row in rows]
         mbid = next((track["mbid_release"] for track in tracks if track.get("mbid_release")), None)
-        cover_id = next((track["id"] for track in tracks if track.get("has_embedded_art")), None)
-        cover_url = CAA_FRONT_THUMB.format(mbid=mbid) if mbid else (
-            f"/api/tracks/{cover_id}/cover" if cover_id else None
+        cover_track = min(
+            (track for track in tracks if track.get("has_embedded_art")),
+            key=lambda track: track["path"], default=None,
+        )
+        cover_url = (
+            f"/api/tracks/{cover_track['id']}/cover?{urlencode({'v': cover_track.get('file_hash') or ''})}"
+            if cover_track else CAA_FRONT_THUMB.format(mbid=mbid) if mbid else None
         )
         first = tracks[0]
         return {
@@ -680,7 +693,7 @@ def create_app(config: Config) -> FastAPI:
         )}
 
     @app.post("/api/rename/apply-reviewed")
-    def rename_apply_reviewed(body: RenameReviewedApplyBody) -> Dict[str, str]:
+    def rename_apply_reviewed(body: ReviewedApplyBody) -> Dict[str, str]:
         preview_job = jobs.get(body.preview_job_id)
         if not preview_job or preview_job["kind"] != "rename-preview":
             raise HTTPException(400, "Choose a saved selected-track rename preview.")
@@ -718,6 +731,52 @@ def create_app(config: Config) -> FastAPI:
                 }
             )
         return result
+
+    @app.post("/api/artwork/preview")
+    def artwork_preview(body: ArtworkPreviewBody) -> Dict[str, str]:
+        if not 1 <= len(body.track_ids) <= 200 or len(set(body.track_ids)) != len(body.track_ids):
+            raise HTTPException(400, "Select between 1 and 200 distinct tracks.")
+        return {"job_id": jobs.start(
+            "artwork-preview",
+            lambda job: ArtworkReview(config, db).preview(
+                body.track_ids, body.image_base64, body.filename, progress=jobs.update,
+            ),
+        )}
+
+    @app.get("/api/artwork/reviews/{review_id}/cover")
+    def reviewed_cover(review_id: str) -> Response:
+        try:
+            data, mime = ArtworkReview(config, db).cover(review_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return Response(
+            content=data, media_type=mime,
+            headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.get("/api/artwork/reviews/{review_id}")
+    def artwork_review_status(review_id: str) -> Dict[str, str]:
+        try:
+            return {"status": ArtworkReview(config, db).status(review_id)}
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/artwork/apply-reviewed")
+    def artwork_apply_reviewed(body: ReviewedApplyBody) -> Dict[str, str]:
+        preview_job = jobs.get(body.preview_job_id)
+        if not preview_job or preview_job["kind"] != "artwork-preview":
+            raise HTTPException(400, "Choose a saved artwork preview.")
+        if preview_job["status"] != "done":
+            raise HTTPException(400, "The artwork preview has not completed successfully.")
+        preview = jobs.result(body.preview_job_id)
+        if not preview["ready"]:
+            raise HTTPException(400, "This preview has no files ready for artwork.")
+        if ArtworkReview(config, db).status(preview["review_id"]) != "review":
+            raise HTTPException(400, "This artwork preview was already used. Create a fresh preview.")
+        return {"job_id": jobs.start(
+            "artwork-reviewed",
+            lambda job: ArtworkReview(config, db).apply(preview["review_id"], progress=jobs.update),
+        )}
 
     @app.post("/api/art")
     @jobs.operation

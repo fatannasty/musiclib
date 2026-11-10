@@ -44,7 +44,9 @@ def test_album_page_groups_tracks_and_unknowns(lib_env):
 
 def test_track_cover_serves_embedded_art(lib_env):
     env = lib_env
-    make_flac(env.library / "cover.flac", tags={"title": "Art", "album": "Covered"}, art=JPEG_600x400)
+    make_flac(env.library / "cover.flac", tags={
+        "title": "Art", "album": "Covered", "MUSICBRAINZ_ALBUMID": "catalog-release",
+    }, art=JPEG_600x400)
     make_mp3(env.library / "plain.mp3", tags={"title": "Plain", "album": "Bare"})
     Scanner(env.config, env.db).scan()
     tracks = {track.title: track for track in env.db.all_tracks()}
@@ -52,7 +54,11 @@ def test_track_cover_serves_embedded_art(lib_env):
         page = client.get("/api/albums/page").json()
         covered = next(item for item in page["items"] if item["album"] == "Covered")
         assert covered["has_art"] is True
-        assert covered["cover_url"].endswith(f"/api/tracks/{tracks['Art'].id}/cover")
+        assert covered["cover_url"] == f"/api/tracks/{tracks['Art'].id}/cover?v={tracks['Art'].file_hash}"
+        detail = client.get("/api/albums/detail", params={
+            "album_artist": "Unknown Artist", "album": "Covered",
+        }).json()
+        assert detail["cover_url"] == covered["cover_url"]
         response = client.get(covered["cover_url"])
         assert response.status_code == 200
         assert response.content[:3] == b"\xff\xd8\xff"

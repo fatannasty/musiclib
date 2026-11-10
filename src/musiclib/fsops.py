@@ -2,9 +2,25 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional, TypeVar
+
+T = TypeVar("T")
+
+
+def atomic_edit(path: Path, edit: Callable[[Path], T]) -> T:
+    fd, name = tempfile.mkstemp(prefix=f".{path.stem}.musiclib-", suffix=path.suffix, dir=path.parent)
+    os.close(fd)
+    temporary = Path(name)
+    try:
+        shutil.copy2(path, temporary)
+        result = edit(temporary)
+        os.replace(temporary, path)
+        return result
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def unique_path(path: Path) -> Path:
