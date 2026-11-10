@@ -19,7 +19,7 @@ from ..doctor import Doctor
 from ..duplicates import DuplicateFinder
 from ..fingerprint import compute_all, fpcalc_available
 from ..fsops import is_inside
-from ..metadata_review import ALBUM_FIELDS, EDITABLE_FIELDS, MetadataReview
+from ..metadata_review import ALBUM_FIELDS, EDITABLE_FIELDS, TRACK_FIELDS, MetadataReview
 from ..rename import Renamer
 from ..scanner import Scanner
 from ..usenet import Sabnzbd, SabnzbdError, search_all
@@ -118,6 +118,12 @@ class AlbumApplyBody(BaseModel):
 
 class AlbumEditBody(BaseModel):
     track_ids: List[int]
+    fields: List[str]
+    values: Dict[str, Any]
+
+
+class TrackEditBody(BaseModel):
+    track_id: int
     fields: List[str]
     values: Dict[str, Any]
 
@@ -485,6 +491,22 @@ def create_app(config: Config) -> FastAPI:
         if any(set(review.fields) - set(ALBUM_FIELDS) for review in body.reviews):
             raise HTTPException(400, "Only album fields can be applied by the album editor.")
         return start_reviewed_apply(body, limit=200)
+
+    @app.post("/api/metadata/track-edit/preview")
+    @jobs.operation
+    def track_edit_preview(body: TrackEditBody) -> Dict[str, Any]:
+        try:
+            return MetadataReview(config, db).preview_track_edit(
+                body.track_id, body.fields, body.values,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/metadata/track-edit/apply")
+    def track_edit_apply(body: MetadataApplyBody) -> Dict[str, str]:
+        if set(body.fields) - set(TRACK_FIELDS):
+            raise HTTPException(400, "Only track fields can be applied by the track editor.")
+        return start_reviewed_apply(MetadataBulkApplyBody(reviews=[body]), limit=1)
 
     @app.post("/api/metadata/album-suggest")
     @jobs.lookup_operation

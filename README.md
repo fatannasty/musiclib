@@ -147,6 +147,19 @@ Manual edits use saved reviews: files moved or changed since preview are skipped
 and per-file permission errors do not stop the remaining files. Results are saved
 in Activity. After saving, the album grid refreshes to reflect the new tags.
 
+For individual corrections, choose **Edit track** beside a track on an album page.
+This edits only that file, regardless of the album checkboxes. Opt in to title,
+track artist, track number, or disc number changes, then **Preview changes** to see
+the current and proposed values. Track and disc numbers must be whole numbers
+from 1 to 9999; existing totals (such as the `12` in `3/12`) are retained and shown
+in the preview. Unchecked tags, other tracks, artwork, and filenames stay unchanged.
+Blank values cannot clear tags. **Confirm and save tags** requires confirmation;
+changing the form invalidates its preview. No catalog lookup or automatic numbering
+is performed. Files changed or moved since preview are refused, including changes
+detected while preparing the temporary edit. File-health findings remain intact;
+only missing-tag warnings are refreshed after a tag correction. Use **Preview
+organization** separately if you want filenames to reflect corrected titles/numbers.
+
 On an album page, **Change artwork** lets you upload a JPEG or PNG cover for up
 to 200 selected tracks. Images must be no larger than 8 MiB or 25 million pixels;
 damaged or animated images are rejected. **Preview artwork** shows the uploaded

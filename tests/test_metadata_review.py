@@ -5,13 +5,13 @@ from pathlib import Path
 import httpx
 import musicbrainzngs
 import pytest
-from conftest import make_mp3
+from conftest import JPEG_600x400, make_flac, make_mp3
 from fastapi.testclient import TestClient
 from test_jobs_api import wait_job
 
 import musiclib.metadata_review as review_module
 from musiclib.metadata_review import MetadataReview, lookup_track, search_itunes
-from musiclib.models import Track
+from musiclib.models import Issue, Track
 from musiclib.scanner import Scanner
 from musiclib.server.app import create_app
 
@@ -774,10 +774,10 @@ def test_manual_album_edit_skips_changed_and_unwritable_files(lib_env, monkeypat
         file.write(b"changed externally")
     from musiclib.metadata_review import write_audio_tags
 
-    def permission_error(path, values):
+    def permission_error(path, values, **kwargs):
         if str(path) == tracks[1].path:
             raise PermissionError("Read-only music folder")
-        return write_audio_tags(path, values)
+        return write_audio_tags(path, values, **kwargs)
 
     monkeypatch.setattr("musiclib.metadata_review.write_audio_tags", permission_error)
     with TestClient(create_app(env.config)) as client:
@@ -820,6 +820,207 @@ def test_manual_album_edit_missing_files_and_batch_limit(lib_env):
         assert response.status_code == 200
         assert wait_job(client, response.json()["job_id"])["summary"]["errors"] == 200
         assert client.post("/api/metadata/apply-bulk", json=batch).status_code == 400
+
+
+@pytest.mark.parametrize("extension", ["mp3", "flac"])
+def test_manual_track_edit_is_reviewed_and_preserves_other_data(lib_env, monkeypatch, extension):
+    import mutagen
+
+    from musiclib.artwork import embed_cover, read_cover
+
+    env = lib_env
+    path = env.library / f"track.{extension}"
+    if extension == "mp3":
+        make_mp3(path, tags={"title": "Original", "artist": "Performer", "album": "Album"})
+    else:
+        make_flac(path, tags={"TITLE": "Original", "ARTIST": "Performer", "ALBUM": "Album"})
+    audio = mutagen.File(path, easy=True)
+    audio["tracknumber"] = ["1/12"]
+    audio["discnumber"] = ["1/2"]
+    audio["genre"] = ["Jazz"]
+    audio.save()
+    embed_cover(path, JPEG_600x400)
+    sibling = env.library / "untouched.mp3"
+    make_mp3(sibling, tags={"title": "Sibling", "artist": "Performer", "album": "Album"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.find_track_by_path(str(path))
+    track.issues = [Issue("decode_error", "Existing decoder finding", "bad")]
+    track.status = "bad"
+    env.db.upsert_track(track)
+    before, sibling_before = path.read_bytes(), sibling.read_bytes()
+    tags_before = dict(mutagen.File(path, easy=True))
+    cover_before = read_cover(str(path), include_folder=False)
+
+    def no_network(*args, **kwargs):
+        pytest.fail("Manual track editing must not query a metadata provider")
+
+    monkeypatch.setattr(review_module, "search_recordings", no_network)
+    monkeypatch.setattr(review_module, "search_releases", no_network)
+    monkeypatch.setattr(review_module.httpx, "get", no_network)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/track-edit/preview", json={
+            "track_id": track.id, "fields": ["title", "track_no", "disc_no"],
+            "values": {"title": " Corrected title ", "track_no": " 003 ", "disc_no": 2,
+                       "artist": "Unchecked artist"},
+        })
+        assert response.status_code == 200
+        preview = response.json()
+        assert preview["errors"] == []
+        review = preview["reviews"][0]
+        assert review["track"]["title"] == "Original"
+        assert (review["track"]["track_total"], review["track"]["disc_total"]) == (12, 2)
+        assert review["candidates"][0]["fields"] == {
+            "title": "Corrected title", "track_no": 3, "disc_no": 2,
+        }
+        assert path.read_bytes() == before
+        assert sibling.read_bytes() == sibling_before
+        body = {"review_id": review["review_id"], "candidate_index": 0, "fields": preview["fields"]}
+        rejected = client.post("/api/metadata/track-edit/apply", json={**body, "fields": ["album"]})
+        assert rejected.status_code == 400
+        assert path.read_bytes() == before
+        response = client.post("/api/metadata/track-edit/apply", json=body)
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+        assert wait_job(client, job_id)["summary"] == {"applied": 1, "errors": 0}
+        retry = client.post("/api/metadata/track-edit/apply", json=body)
+        assert wait_job(client, retry.json()["job_id"])["summary"] == {"applied": 0, "errors": 1}
+    updated = env.db.get_track(track.id)
+    assert (updated.title, updated.track_no, updated.disc_no) == ("Corrected title", 3, 2)
+    assert (updated.track_total, updated.disc_total) == (12, 2)
+    assert updated.path == str(path)
+    assert updated.file_hash != track.file_hash
+    assert updated.status == "bad"
+    assert updated.issues == track.issues
+    tags_after = dict(mutagen.File(path, easy=True))
+    assert tags_after.pop("title") == ["Corrected title"]
+    assert tags_after.pop("tracknumber") == ["3/12"]
+    assert tags_after.pop("discnumber") == ["2/2"]
+    for key in ("title", "tracknumber", "discnumber"):
+        tags_before.pop(key)
+    assert tags_after == tags_before
+    assert read_cover(str(path), include_folder=False) == cover_before
+    assert sibling.read_bytes() == sibling_before
+
+
+@pytest.mark.parametrize(("fields", "values"), [
+    ([], {}),
+    (["title", "title"], {"title": "Duplicate"}),
+    (["album"], {"album": "Wrong scope"}),
+    (["title"], {"title": " "}),
+    (["title"], {"title": "x" * 1001}),
+    (["track_no"], {"track_no": 0}),
+    (["track_no"], {"track_no": 10000}),
+    (["disc_no"], {"disc_no": True}),
+    (["disc_no"], {"disc_no": "1.5"}),
+    (["track_no"], {"track_no": "3/12"}),
+])
+def test_manual_track_edit_rejects_invalid_preview(lib_env, fields, values):
+    with TestClient(create_app(lib_env.config)) as client:
+        response = client.post("/api/metadata/track-edit/preview", json={
+            "track_id": 1, "fields": fields, "values": values,
+        })
+        assert response.status_code == 400
+        assert lib_env.db.query_one("SELECT COUNT(*) AS n FROM metadata_reviews")["n"] == 0
+
+
+def test_manual_track_edit_numbers_without_totals_and_missing_tag_refresh(lib_env):
+    import mutagen
+
+    env = lib_env
+    path = env.library / "untitled.mp3"
+    make_mp3(path, tags={"artist": "Artist", "album": "Album"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.all_tracks()[0]
+    track.issues.append(Issue("too_short", "Existing duration warning", "warn"))
+    env.db.upsert_track(track)
+    with TestClient(create_app(env.config)) as client:
+        preview = client.post("/api/metadata/track-edit/preview", json={
+            "track_id": track.id, "fields": ["title", "artist", "track_no", "disc_no"],
+            "values": {"title": "Named", "artist": "New performer", "track_no": 9999, "disc_no": 1},
+        }).json()
+        response = client.post("/api/metadata/track-edit/apply", json={
+            "review_id": preview["reviews"][0]["review_id"],
+            "candidate_index": 0, "fields": preview["fields"],
+        })
+        assert wait_job(client, response.json()["job_id"])["summary"] == {"applied": 1, "errors": 0}
+    updated = env.db.get_track(track.id)
+    assert (updated.title, updated.artist, updated.track_no, updated.disc_no) == (
+        "Named", "New performer", 9999, 1,
+    )
+    assert (updated.track_total, updated.disc_total) == (None, None)
+    assert updated.status == "suspect"
+    assert updated.issues == [Issue("too_short", "Existing duration warning", "warn")]
+    assert mutagen.File(path, easy=True)["tracknumber"] == ["9999"]
+    assert mutagen.File(path, easy=True)["discnumber"] == ["1"]
+
+
+@pytest.mark.parametrize("change", ["changed", "moved", "symlink"])
+def test_manual_track_edit_refuses_changed_sources(lib_env, change):
+    env = lib_env
+    path = env.library / "original.mp3"
+    make_mp3(path, tags={"title": "Original", "album": "Album"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.all_tracks()[0]
+    preview = MetadataReview(env.config, env.db).preview_track_edit(
+        track.id, ["title"], {"title": "Corrected"},
+    )
+    source = path
+    if change == "changed":
+        path.write_bytes(path.read_bytes() + b"external change")
+    else:
+        source = path.rename(env.library / "moved.mp3")
+        if change == "moved":
+            env.db.update_track_columns(track.id, path=str(source))
+        else:
+            path.symlink_to(source)
+    before = source.read_bytes()
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/track-edit/apply", json={
+            "review_id": preview["reviews"][0]["review_id"], "candidate_index": 0, "fields": ["title"],
+        })
+        job_id = response.json()["job_id"]
+        assert wait_job(client, job_id)["summary"] == {"applied": 0, "errors": 1}
+        error = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"][0]["error"]
+        assert ("Symbolic links" if change == "symlink" else "changed") in error
+    assert source.read_bytes() == before
+    assert env.db.get_track(track.id).title == "Original"
+    if change == "symlink":
+        assert path.is_symlink()
+        blocked = MetadataReview(env.config, env.db).preview_track_edit(
+            track.id, ["title"], {"title": "Another correction"},
+        )
+        assert blocked["reviews"] == []
+        assert "Symbolic links" in blocked["errors"][0]["error"]
+
+
+def test_manual_track_edit_preserves_external_change_during_save(lib_env, monkeypatch):
+    env = lib_env
+    path = env.library / "changing.mp3"
+    make_mp3(path, tags={"title": "Original", "album": "Album"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.all_tracks()[0]
+    reviewer = MetadataReview(env.config, env.db)
+    preview = reviewer.preview_track_edit(track.id, ["title"], {"title": "Correction"})
+    externally_changed = path.read_bytes() + b"external change during save"
+    scan = review_module.scan_worker
+
+    def change_original(temporary):
+        result = scan(temporary)
+        path.write_bytes(externally_changed)
+        return result
+
+    monkeypatch.setattr(review_module, "scan_worker", change_original)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/track-edit/apply", json={
+            "review_id": preview["reviews"][0]["review_id"], "candidate_index": 0, "fields": ["title"],
+        })
+        job_id = response.json()["job_id"]
+        assert wait_job(client, job_id)["summary"] == {"applied": 0, "errors": 1}
+        errors = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"]
+        assert "changed while saving" in errors[0]["error"]
+    assert path.read_bytes() == externally_changed
+    assert env.db.get_track(track.id).title == "Original"
+    assert list(env.library.glob(".*.musiclib-*")) == []
 
 
 def test_itunes_results_are_used_when_musicbrainz_fails(monkeypatch):

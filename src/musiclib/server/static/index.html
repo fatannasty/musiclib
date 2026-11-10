@@ -665,11 +665,12 @@ const views = {
           ${detail.track_count > 200 ? '<p class="hint">Only the first 200 tracks are selected. Edit larger albums in batches.</p>' : ''}
           <div data-manual-editor></div>
           <div data-artwork-editor></div>
-          <div class="table-scroll"><table><thead><tr><th>Select</th><th>#</th><th>Title</th><th>Artist</th><th>Status</th></tr></thead>
+          <div class="table-scroll"><table><thead><tr><th>Select</th><th>Disc</th><th>Track</th><th>Title</th><th>Artist</th><th>Status</th><th>Edit</th></tr></thead>
           <tbody>${detail.tracks.map(track =>
             `<tr><td><input type="checkbox" data-select-track="${track.id}" aria-label="Select ${esc(track.title || track.path)}"></td>
-            <td>${esc(track.track_no || "—")}</td><td>${esc(track.title)}</td><td>${esc(track.artist)}</td>
-            <td>${esc(track.status)}</td></tr>`
+            <td>${esc(track.disc_no || "—")}</td><td>${esc(track.track_no || "—")}</td>
+            <td>${esc(track.title)}</td><td>${esc(track.artist)}</td><td>${esc(track.status)}</td>
+            <td><button class="action ghost" data-edit-track="${track.id}">Edit track</button></td></tr>`
           ).join("")}</tbody></table></div></div>`;
         pageEl.querySelector("[data-back]").onclick = () => { pageEl.innerHTML = ""; searchAlbums(); };
         pageEl.querySelector("[data-tag-album]").onclick = () => $("#metadata-album-bulk").click();
@@ -687,8 +688,12 @@ const views = {
         pageEl.querySelector("[data-edit-album]").onclick = () => {
           const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
           if (!tracks.length) { toast("Select tracks to edit first.", true); return; }
-          renderAlbumEditor(pageEl.querySelector("[data-manual-editor]"), tracks);
+          renderManualEditor(pageEl.querySelector("[data-manual-editor]"), tracks);
         };
+        pageEl.querySelectorAll("[data-edit-track]").forEach(button => button.onclick = () => {
+          const track = detail.tracks.find(item => item.id === Number(button.dataset.editTrack));
+          renderManualEditor(pageEl.querySelector("[data-manual-editor]"), [track], true);
+        });
         pageEl.querySelector("[data-artwork-album]").onclick = () => {
           const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
           if (!tracks.length) { toast("Select tracks for artwork first.", true); return; }
@@ -868,8 +873,10 @@ const views = {
       await refreshActivity();
       panel.scrollIntoView({behavior: "smooth", block: "start"});
     };
-    const renderAlbumEditor = (panel, tracks) => {
-      const labels = {
+    const renderManualEditor = (panel, tracks, isTrack = false) => {
+      const labels = isTrack ? {
+        title: "Title", artist: "Track artist", track_no: "Track number", disc_no: "Disc number",
+      } : {
         album: "Album", album_artist: "Album artist", year: "Year", genre: "Genre",
         artist: "Track artist (replaces each selected artist)", mbid_release: "MusicBrainz release ID",
       };
@@ -878,16 +885,20 @@ const views = {
         return values.every(value => value === values[0]) ? values[0] : "";
       };
       $("#manual-album-result").innerHTML = "";
-      panel.innerHTML = `<form class="card"><h3>Edit tags on ${tracks.length} selected tracks</h3>
-        <p>These tracks are fixed for this edit. Choose fields to change, then preview.
-        Unchecked fields, titles, and track numbers stay unchanged. Blank values cannot clear tags.
-        Mixed values are shown as empty. No catalog lookup or file rename is performed.</p>
+      const endpoint = isTrack ? "track-edit" : "album-edit";
+      const unchanged = isTrack ?
+        "Only this track is edited, regardless of the album checkboxes. Unchecked tags, existing track/disc totals, and artwork stay unchanged." :
+        "These tracks are fixed for this edit. Unchecked fields, titles, and track numbers stay unchanged. Mixed values are shown as empty.";
+      panel.innerHTML = `<form class="card"><h3>${isTrack ? "Edit track tags" : `Edit tags on ${tracks.length} selected tracks`}</h3>
+        ${isTrack ? `<p class="path">${esc(tracks[0].path)}</p>` : ""}
+        <p>${unchanged} Choose fields to change, then preview. Blank values cannot clear tags.
+        No catalog lookup or file rename is performed.</p>
         <fieldset data-edit-fields style="border:0">
         ${Object.entries(labels).map(([key, label]) => `<div class="row">
           <label class="check"><input type="checkbox" data-edit-field="${key}"> Change ${esc(label)}</label>
-          <input type="${key === "year" ? "number" : "text"}" name="${key}"
-            aria-label="${esc(label)}" value="${esc(common(key))}" maxlength="1000"
-            ${key === "year" ? 'min="1" max="9999" step="1"' : ""}>
+          <input type="${["year", "track_no", "disc_no"].includes(key) ? "number" : "text"}" name="${key}"
+            aria-label="${esc(label)}" value="${esc(common(key))}" maxlength="1000" disabled
+            ${["year", "track_no", "disc_no"].includes(key) ? 'min="1" max="9999" step="1"' : ""}>
         </div>`).join("")}</fieldset>
         <button type="submit" class="action">Preview changes</button>
         <button type="button" class="action ghost" data-edit-cancel>Cancel</button>
@@ -899,6 +910,9 @@ const views = {
       const fieldset = form.querySelector("[data-edit-fields]");
       const cancel = form.querySelector("[data-edit-cancel]");
       let busy = false;
+      form.querySelectorAll("[data-edit-field]").forEach(input => input.onchange = () => {
+        form.elements.namedItem(input.dataset.editField).disabled = !input.checked;
+      });
       form.oninput = () => { previewEl.innerHTML = ""; status.textContent = ""; };
       cancel.onclick = () => { if (!busy) panel.innerHTML = ""; };
       form.onsubmit = async event => {
@@ -918,40 +932,47 @@ const views = {
         previewEl.innerHTML = "";
         status.textContent = "Preparing review. Files have not been changed.";
         try {
-          const preview = await post("/api/metadata/album-edit/preview", {
-            track_ids: tracks.map(track => track.id), fields, values,
+          const preview = await post(`/api/metadata/${endpoint}/preview`, {
+            ...(isTrack ? {track_id: tracks[0].id} : {track_ids: tracks.map(track => track.id)}),
+            fields, values,
           });
           if (!form.isConnected) return;
           status.textContent = `${preview.reviews.length} files ready; ${preview.errors.length} unavailable. No tags written.`;
           const failures = items => items.map(item =>
             `<p role="alert">${esc(item.path || item.review_id || item.track_id)}: ${esc(item.error)}</p>`).join("");
+          const numberWithTotal = (review, key, value) => {
+            const totalKey = {track_no: "track_total", disc_no: "disc_total"}[key];
+            const total = review.track[totalKey];
+            return total ? `${value ?? "—"}/${total}` : (value ?? "—");
+          };
           previewEl.innerHTML = failures(preview.errors) +
             `<div class="table-scroll"><table><thead><tr><th>File</th><th>Field</th><th>Current</th><th>New</th></tr></thead>
             <tbody>${preview.reviews.map(review => fields.map(key =>
               `<tr><td class="path">${esc(review.track.path)}</td><td>${esc(labels[key])}</td>
-              <td>${esc(review.track[key] ?? "—")}</td><td>${esc(review.candidates[0].fields[key])}</td></tr>`
+              <td>${esc(numberWithTotal(review, key, review.track[key]))}</td>
+              <td>${esc(numberWithTotal(review, key, review.candidates[0].fields[key]))}</td></tr>`
             ).join("")).join("")}</tbody></table></div>` +
             (preview.reviews.length ? '<button type="button" class="action" data-edit-apply data-operation>Confirm and save tags</button>' : "");
           const apply = previewEl.querySelector("[data-edit-apply]");
           if (apply) apply.onclick = async () => {
-            if (busy || !confirm(`Save ${fields.length} selected field(s) on ${preview.reviews.length} files? Titles, track numbers, and unchecked fields stay unchanged. Files will not be renamed.`)) return;
+            if (busy || !confirm(`Save ${fields.length} selected field(s) on ${preview.reviews.length} files? ${unchanged} Files will not be renamed.`)) return;
             busy = true;
             apply.disabled = true; fieldset.disabled = true; submit.disabled = true; cancel.disabled = true;
             status.textContent = "Saving reviewed tags. Results will be saved in Activity.";
             try {
-              const { job_id } = await post("/api/metadata/album-edit/apply", {
-                reviews: preview.reviews.map(review => ({
-                  review_id: review.review_id, candidate_index: 0, fields,
-                })),
-              });
+              const reviews = preview.reviews.map(review => ({
+                review_id: review.review_id, candidate_index: 0, fields,
+              }));
+              const { job_id } = await post(`/api/metadata/${endpoint}/apply`,
+                isTrack ? reviews[0] : {reviews});
               await refreshActivity();
-              await pollJob(job_id, "Manual album edit");
+              await pollJob(job_id, isTrack ? "Manual track edit" : "Manual album edit");
               const [applied, errors] = await Promise.all([
                 api(`/api/jobs/${job_id}/results/applied?limit=200`),
                 api(`/api/jobs/${job_id}/results/errors?limit=200`),
               ]);
               if (!el.isConnected) return;
-              $("#manual-album-result").innerHTML = `<div class="card"><h3>Album edit results</h3>
+              $("#manual-album-result").innerHTML = `<div class="card"><h3>${isTrack ? "Track" : "Album"} edit results</h3>
                 <p>${applied.total} files updated; ${errors.total} failed; ${preview.errors.length} unavailable at preview.
                 Files changed since preview are skipped. Details remain in Activity.</p>
                 ${failures(preview.errors)}${failures(errors.items)}</div>`;
