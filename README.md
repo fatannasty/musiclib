@@ -166,13 +166,21 @@ Review rename preview** on a `rename-preview` job to reopen a saved preview afte
 refreshing. Create a fresh preview to retry failed files.
 
 In Library, choose **Lookup**, enter or correct the title and/or artist, then
-search. MusicBrainz and iTunes are queried together so simple title/artist matches
-return faster when one catalog is slow, and matching albums show Cover Art Archive
+search. MusicBrainz and iTunes are queried together, and matching albums show Cover Art Archive
 or iTunes artwork previews. This works even when a file has no title or artist
 tags. Search terms do not modify file tags; only explicitly selected suggestions
 are written after confirmation. Artwork previews are not embedded until you use
 Cover Art. Lookup failures display the provider error so
-network or service problems can be distinguished from an empty search.
+network or service problems can be distinguished from an empty search. Interactive
+requests use four-second connection/read timeouts without a long automatic retry
+sequence. If one provider fails, available matches are shown with a warning instead
+of hiding the failure. MusicBrainz requests remain rate limited.
+
+Catalog searches run separately from library changes: you can edit tags, scan,
+trash, or organize files while a lookup is running. Only one catalog search or
+bulk lookup runs at a time; a second search asks you to wait rather than creating
+an unbounded queue. Writes and moves still run one at a time. Activity shows both
+background jobs when a bulk lookup and a library operation overlap.
 
 For bulk tagging, select up to 100 Library tracks across pages and choose **Look up
 selected tracks**. Review the album cards for each file and select the individual
@@ -186,7 +194,9 @@ as one album**. Suggestions prefer albums already in your library, then MusicBra
 and iTunes. Only album-level fields (album, album artist, artist, year, genre,
 release ID) can be written to every selected file. Nothing is selected or written
 until you choose fields and confirm. Optionally rename just those files with the
-current Organize templates after tags are saved.
+current Organize templates after tags are saved. Files moved or changed while
+album suggestions were loading are skipped at apply time; run a fresh search
+before applying to those files.
 
 On Bad Files, **Trash selected** moves the files you check even if a check has not
 just finished. Permission or lock errors are reported per file and do not abort the

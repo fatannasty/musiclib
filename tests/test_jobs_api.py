@@ -3,6 +3,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from musiclib.doctor import Doctor
@@ -75,6 +76,69 @@ def test_failure_is_visible_and_releases_library_lock(lib_env, monkeypatch):
         assert job["status"] == "error"
         assert "share unavailable" in job["error"]
         assert client.post("/api/tasks/rename", json={}).status_code == 200
+
+
+def test_search_and_write_lanes_are_independent_and_bounded(lib_env):
+    registry = JobRegistry(lib_env.db)
+    searching, writing = threading.Event(), threading.Event()
+    check_guard, checked, finish = threading.Event(), threading.Event(), threading.Event()
+
+    @registry.operation
+    def guarded_write():
+        pytest.fail("A search job must not bypass an active write lock")
+
+    def search(job):
+        searching.set()
+        assert check_guard.wait(5)
+        with pytest.raises(HTTPException) as error:
+            guarded_write()
+        assert error.value.status_code == 409
+        checked.set()
+        assert finish.wait(5)
+        return {}
+
+    def write(job):
+        writing.set()
+        assert finish.wait(5)
+        return {}
+
+    try:
+        search_id = registry.start("metadata-lookup", search, read_only=True)
+        write_id = registry.start("scan", write)
+        assert searching.wait(5) and writing.wait(5)
+        active = [job for job in registry.list() if job["status"] == "running"]
+        assert len(active) == 2
+        assert registry.get(search_id)["read_only"] is True
+        assert registry.get(write_id)["read_only"] is False
+        for read_only in (True, False):
+            with pytest.raises(HTTPException) as error:
+                registry.start("extra", lambda job: {}, read_only=read_only)
+            assert error.value.status_code == 409
+        check_guard.set()
+        assert checked.wait(5)
+    finally:
+        check_guard.set()
+        finish.set()
+        registry.close()
+    assert registry.get(search_id)["status"] == "done"
+    assert registry.get(write_id)["status"] == "done"
+    assert registry.lookup_operation(lambda: "search available")() == "search available"
+    assert registry.operation(lambda: "write available")() == "write available"
+
+
+@pytest.mark.parametrize("read_only", [True, False])
+def test_worker_start_failure_releases_its_lane(lib_env, monkeypatch, read_only):
+    registry = JobRegistry(lib_env.db)
+
+    def fail_start(self):
+        raise RuntimeError("Cannot create worker")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    with pytest.raises(RuntimeError, match="Cannot create worker"):
+        registry.start("test", lambda job: {}, read_only=read_only)
+    assert registry.list()[0]["status"] == "error"
+    guard = registry.lookup_operation if read_only else registry.operation
+    assert guard(lambda: "available")() == "available"
 
 
 def test_issue_and_job_result_pages_do_not_truncate(lib_env, monkeypatch):

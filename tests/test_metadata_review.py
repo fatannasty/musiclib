@@ -1,4 +1,5 @@
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -8,6 +9,7 @@ from conftest import make_mp3
 from fastapi.testclient import TestClient
 from test_jobs_api import wait_job
 
+import musiclib.metadata_review as review_module
 from musiclib.metadata_review import MetadataReview, lookup_track, search_itunes
 from musiclib.models import Track
 from musiclib.scanner import Scanner
@@ -15,10 +17,13 @@ from musiclib.server.app import create_app
 
 
 @pytest.fixture(autouse=True)
-def _quiet_itunes(monkeypatch):
-    def offline(*args, **kwargs):
-        raise httpx.TimeoutException("itunes disabled in tests")
-    monkeypatch.setattr("musiclib.metadata_review.httpx.get", offline)
+def _empty_itunes(monkeypatch):
+    monkeypatch.setattr(
+        "musiclib.metadata_review.httpx.get",
+        lambda *args, **kwargs: httpx.Response(
+            200, json={"results": []}, request=httpx.Request("GET", args[0])
+        ),
+    )
 
 
 def _musicbrainz_result():
@@ -44,7 +49,7 @@ def _musicbrainz_result():
 def test_lookup_provides_source_and_confidence(monkeypatch):
 
     monkeypatch.setattr(
-        "musiclib.metadata_review.musicbrainzngs.search_recordings",
+        "musiclib.metadata_review.search_recordings",
         lambda **kwargs: _musicbrainz_result(),
     )
     results = lookup_track(Track(title="Correct Song", artist="Correct Artist"))
@@ -58,7 +63,7 @@ def test_lookup_provides_source_and_confidence(monkeypatch):
 
 def test_lookup_rejects_malformed_musicbrainz_response(monkeypatch):
     monkeypatch.setattr(
-        "musiclib.metadata_review.musicbrainzngs.search_recordings", lambda **kwargs: None
+        "musiclib.metadata_review.search_recordings", lambda **kwargs: None
     )
     try:
         lookup_track(Track(title="Song", artist="Artist"))
@@ -75,7 +80,7 @@ def test_lookup_ignores_malformed_optional_release_fields(monkeypatch):
     recording["release-list"][0]["artist-credit"] = [{"artist": None}]
     recording["release-list"][0]["medium-list"] = [None, "unexpected"]
     monkeypatch.setattr(
-        "musiclib.metadata_review.musicbrainzngs.search_recordings",
+        "musiclib.metadata_review.search_recordings",
         lambda **kwargs: response,
     )
     results = lookup_track(Track(title="Correct Song", artist="Original Artist"))
@@ -91,7 +96,7 @@ def test_lookup_api_and_apply_only_explicitly_selected_tags(lib_env, monkeypatch
     Scanner(env.config, env.db).scan()
     track = env.db.all_tracks()[0]
     monkeypatch.setattr(
-        "musiclib.metadata_review.musicbrainzngs.search_recordings",
+        "musiclib.metadata_review.search_recordings",
         lambda **kwargs: _musicbrainz_result(),
     )
     with TestClient(create_app(env.config)) as client:
@@ -128,7 +133,7 @@ def test_review_refuses_file_changed_after_lookup(lib_env, monkeypatch):
     Scanner(env.config, env.db).scan()
     track = env.db.all_tracks()[0]
     monkeypatch.setattr(
-        "musiclib.metadata_review.musicbrainzngs.search_recordings",
+        "musiclib.metadata_review.search_recordings",
         lambda **kwargs: _musicbrainz_result(),
     )
     review = MetadataReview(env.config, env.db).propose(track.id)
@@ -149,7 +154,7 @@ def test_review_rejects_bad_candidate_or_field_without_changing_file(lib_env, mo
     Scanner(env.config, env.db).scan()
     track = env.db.all_tracks()[0]
     monkeypatch.setattr(
-        "musiclib.metadata_review.musicbrainzngs.search_recordings",
+        "musiclib.metadata_review.search_recordings",
         lambda **kwargs: _musicbrainz_result(),
     )
     review = MetadataReview(env.config, env.db).propose(track.id)
@@ -176,7 +181,7 @@ def test_first_lookup_configures_client(lib_env, monkeypatch):
         assert env.config.brainz["contact"] in musicbrainzngs.musicbrainz._useragent
         return _musicbrainz_result()
 
-    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    monkeypatch.setattr(review_module, "search_recordings", search)
     with TestClient(create_app(env.config)) as client:
         response = client.post("/api/metadata/lookup", json={"track_id": env.db.all_tracks()[0].id})
         assert response.status_code == 200
@@ -198,7 +203,7 @@ def test_manual_lookup_for_untagged_file_preserves_tags(lib_env, monkeypatch, ti
         calls.append(kwargs)
         return _musicbrainz_result()
 
-    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    monkeypatch.setattr(review_module, "search_recordings", search)
     with TestClient(create_app(env.config)) as client:
         response = client.post("/api/metadata/lookup", json={
             "track_id": track.id, "title": f" {title} ", "artist": f" {artist} ",
@@ -226,7 +231,7 @@ def test_manual_lookup_can_override_existing_tags(lib_env, monkeypatch):
         calls.append(kwargs)
         return {"recording-list": []}
 
-    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    monkeypatch.setattr(review_module, "search_recordings", search)
     MetadataReview(env.config, env.db).propose(
         env.db.all_tracks()[0].id, title="Correct Song", artist=""
     )
@@ -241,7 +246,7 @@ def test_empty_manual_search_is_actionable_without_provider_call(lib_env, monkey
     def search(**kwargs):
         pytest.fail("Empty search must not call MusicBrainz")
 
-    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    monkeypatch.setattr(review_module, "search_recordings", search)
     with TestClient(create_app(env.config)) as client:
         response = client.post("/api/metadata/lookup", json={
             "track_id": env.db.all_tracks()[0].id, "title": " ", "artist": " ",
@@ -264,7 +269,7 @@ def test_provider_failure_has_actionable_api_error(lib_env, monkeypatch, error):
     def search(**kwargs):
         raise error
 
-    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    monkeypatch.setattr(review_module, "search_recordings", search)
     with TestClient(create_app(env.config)) as client:
         response = client.post("/api/metadata/lookup", json={"track_id": env.db.all_tracks()[0].id})
         assert response.status_code == 502
@@ -284,7 +289,7 @@ def test_bulk_lookup_preserves_files_and_saves_matches_empty_results_and_errors(
     def search(**kwargs):
         return {"recording-list": []} if kwargs["recording"] == "No match" else _musicbrainz_result()
 
-    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    monkeypatch.setattr(review_module, "search_recordings", search)
     with TestClient(create_app(env.config)) as client:
         response = client.post("/api/metadata/lookup-bulk", json={
             "track_ids": [track.id for track in tracks],
@@ -314,7 +319,7 @@ def test_bulk_apply_only_selected_fields_and_reports_stale_files(lib_env, monkey
     Scanner(env.config, env.db).scan()
     tracks = env.db.all_tracks()
     monkeypatch.setattr(
-        musicbrainzngs, "search_recordings", lambda **kwargs: _musicbrainz_result()
+        review_module, "search_recordings", lambda **kwargs: _musicbrainz_result()
     )
     reviews = [MetadataReview(env.config, env.db).propose(track.id) for track in tracks]
     with open(tracks[1].path, "ab") as audio_file:
@@ -370,7 +375,7 @@ def test_bulk_apply_rejects_invalid_batches_before_starting(lib_env, reviews):
         assert client.get("/api/jobs").json() == []
 
 
-def test_bulk_provider_failure_continues_and_holds_library_lock(lib_env, monkeypatch):
+def test_bulk_provider_failure_continues_without_holding_library_lock(lib_env, monkeypatch):
     env = lib_env
     for title in ("Failure", "Success"):
         make_mp3(env.library / f"{title}.mp3", tags={"title": title})
@@ -384,7 +389,7 @@ def test_bulk_provider_failure_continues_and_holds_library_lock(lib_env, monkeyp
         assert finish.wait(5)
         return _musicbrainz_result()
 
-    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    monkeypatch.setattr(review_module, "search_recordings", search)
     with TestClient(create_app(env.config)) as client:
         try:
             response = client.post("/api/metadata/lookup-bulk", json={
@@ -393,15 +398,128 @@ def test_bulk_provider_failure_continues_and_holds_library_lock(lib_env, monkeyp
             assert response.status_code == 200
             job_id = response.json()["job_id"]
             assert entered.wait(5)
+            assert client.get(f"/api/jobs/{job_id}").json()["read_only"] is True
             assert client.post("/api/metadata/lookup", json={"track_id": 1}).status_code == 409
-            assert client.post("/api/metadata/apply-bulk", json={"reviews": [{
+            assert client.post("/api/metadata/lookup-bulk", json={"track_ids": [1]}).status_code == 409
+            assert client.post("/api/metadata/album-suggest", json={"track_ids": [1]}).status_code == 409
+            apply_response = client.post("/api/metadata/apply-bulk", json={"reviews": [{
                 "review_id": 1, "candidate_index": 0, "fields": ["title"],
-            }]}).status_code == 409
+            }]})
+            assert apply_response.status_code == 200
+            assert wait_job(client, apply_response.json()["job_id"])["status"] == "done"
         finally:
             finish.set()
         assert wait_job(client, job_id)["summary"] == {"reviews": 1, "errors": 1}
         error = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"][0]
         assert "provider unavailable" in error["error"]
+
+
+@pytest.mark.parametrize("album_search", [False, True])
+def test_write_during_search_is_allowed_but_stale_results_cannot_overwrite_it(
+    lib_env, monkeypatch, album_search,
+):
+    env = lib_env
+    path = env.library / "song.mp3"
+    make_mp3(path, tags={"title": "Song", "artist": "Artist", "album": "Original Album"})
+    Scanner(env.config, env.db).scan()
+    track = env.db.all_tracks()[0]
+    entered, finish = threading.Event(), threading.Event()
+
+    def delayed_search(**kwargs):
+        entered.set()
+        assert finish.wait(5)
+        result = _musicbrainz_result()
+        return (
+            {"release-list": result["recording-list"][0]["release-list"]}
+            if album_search else result
+        )
+
+    monkeypatch.setattr(
+        review_module, "search_releases" if album_search else "search_recordings", delayed_search
+    )
+    with TestClient(create_app(env.config)) as client:
+        preview = client.post("/api/metadata/album-edit/preview", json={
+            "track_ids": [track.id], "fields": ["album"], "values": {"album": "Fresh edit"},
+        }).json()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            lookup = pool.submit(
+                client.post,
+                "/api/metadata/album-suggest" if album_search else "/api/metadata/lookup",
+                json={"track_ids": [track.id]} if album_search else {"track_id": track.id},
+            )
+            try:
+                assert entered.wait(5)
+                applied = client.post("/api/metadata/album-edit/apply", json={"reviews": [{
+                    "review_id": preview["reviews"][0]["review_id"],
+                    "candidate_index": 0, "fields": ["album"],
+                }]})
+                assert applied.status_code == 200
+                assert wait_job(client, applied.json()["job_id"])["summary"]["applied"] == 1
+                assert env.db.get_track(track.id).album == "Fresh edit"
+            finally:
+                finish.set()
+            response = lookup.result(timeout=5)
+        assert response.status_code == 200
+        payload = response.json()
+        before = path.read_bytes()
+        if album_search:
+            snapshot = payload["tracks"][0]
+            assert snapshot["file_hash"] == track.file_hash
+            result = client.post("/api/metadata/album-apply", json={
+                "track_ids": [track.id], "fields": ["album"], "values": {"album": "Stale album"},
+                "snapshots": {track.id: {
+                    "path": snapshot["path"], "file_hash": snapshot["file_hash"],
+                }},
+            })
+            assert result.status_code == 200
+            job_id = result.json()["job_id"]
+            assert wait_job(client, job_id)["summary"]["applied"] == 0
+            errors = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"]
+            assert "changed since album search" in errors[0]["error"]
+        else:
+            result = client.post("/api/metadata/apply", json={
+                "review_id": payload["review_id"], "candidate_index": 0, "fields": ["album"],
+            })
+            assert result.status_code == 400
+            assert "changed since lookup" in result.json()["detail"]
+        assert path.read_bytes() == before
+        assert env.db.get_track(track.id).album == "Fresh edit"
+
+
+@pytest.mark.parametrize("local_match", [True, False])
+def test_album_provider_failures_are_visible_with_or_without_library_matches(
+    lib_env, monkeypatch, local_match,
+):
+    env = lib_env
+    make_mp3(env.library / "song.mp3", tags={
+        "title": "Song", "artist": "Artist", "album": "Album" if local_match else "",
+    })
+    Scanner(env.config, env.db).scan()
+    track = env.db.all_tracks()[0]
+
+    def fail(**kwargs):
+        raise musicbrainzngs.NetworkError("provider unavailable")
+
+    def timeout(*args, **kwargs):
+        raise httpx.ReadTimeout("iTunes timed out")
+
+    monkeypatch.setattr(review_module, "search_releases", fail)
+    monkeypatch.setattr(review_module.httpx, "get", timeout)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/album-suggest", json={
+            "track_ids": [track.id], "artist": "Artist" if local_match else "Unknown",
+            "album": "Album" if local_match else "Unknown",
+        })
+    assert response.status_code == (200 if local_match else 502)
+    if local_match:
+        assert response.json()["suggestions"][0]["source"] == "Your library"
+        warnings = response.json()["warnings"]
+        assert len(warnings) == 2
+        assert "provider unavailable" in warnings[0]
+        assert "iTunes timed out" in warnings[1]
+    else:
+        assert "provider unavailable" in response.json()["detail"]
+        assert "iTunes timed out" in response.json()["detail"]
 
 
 def _itunes_song(**overrides):
@@ -422,7 +540,7 @@ def _itunes_song(**overrides):
 
 def test_itunes_cover_merges_with_musicbrainz_match(monkeypatch):
     monkeypatch.setattr(
-        "musiclib.metadata_review.musicbrainzngs.search_recordings",
+        "musiclib.metadata_review.search_recordings",
         lambda **kwargs: _musicbrainz_result(),
     )
     monkeypatch.setattr(
@@ -463,7 +581,7 @@ def test_album_suggestions_rank_existing_library_albums(lib_env, monkeypatch):
     })
     Scanner(env.config, env.db).scan()
     monkeypatch.setattr(
-        "musiclib.metadata_review.musicbrainzngs.search_releases",
+        "musiclib.metadata_review.search_releases",
         lambda **kwargs: {"release-list": [{
             "id": "release-2", "title": "Night Songs Deluxe", "ext:score": "80",
             "date": "2001-05-01", "artist-credit": [{"artist": {"name": "Known Artist"}}],
@@ -492,7 +610,7 @@ def test_album_apply_writes_only_chosen_fields(lib_env, monkeypatch):
         })
     Scanner(env.config, env.db).scan()
     tracks = env.db.all_tracks()
-    monkeypatch.setattr("musiclib.metadata_review.musicbrainzngs.search_releases", lambda **kwargs: {"release-list": []})
+    monkeypatch.setattr("musiclib.metadata_review.search_releases", lambda **kwargs: {"release-list": []})
     with TestClient(create_app(env.config)) as client:
         rejected = client.post("/api/metadata/album-apply", json={
             "track_ids": [track.id for track in tracks], "fields": [], "values": {},
@@ -503,6 +621,10 @@ def test_album_apply_writes_only_chosen_fields(lib_env, monkeypatch):
             "track_ids": [track.id for track in tracks],
             "fields": ["album", "year"],
             "values": {"album": "New Album", "year": 1999, "artist": "Should Ignore"},
+            "snapshots": {
+                track.id: {"path": track.path, "file_hash": track.file_hash}
+                for track in tracks
+            },
         })
         job = wait_job(client, response.json()["job_id"])
         assert job["status"] == "done"
@@ -514,6 +636,49 @@ def test_album_apply_writes_only_chosen_fields(lib_env, monkeypatch):
         assert updated.year == 1999
         assert updated.title == track.title
         assert updated.artist == "Old Artist"
+
+
+@pytest.mark.parametrize("change", ["moved", "modified-on-disk"])
+def test_album_apply_skips_stale_snapshots_without_stopping_other_files(lib_env, change):
+    env = lib_env
+    for index in range(2):
+        make_mp3(env.library / f"song-{index}.mp3", tags={
+            "title": f"Song {index}", "artist": "Artist", "album": "Original",
+        })
+    Scanner(env.config, env.db).scan()
+    tracks = env.db.all_tracks()
+    snapshots = {
+        track.id: {"path": track.path, "file_hash": track.file_hash} for track in tracks
+    }
+    changed = tracks[0]
+    changed_path = Path(changed.path)
+    if change == "moved":
+        moved = env.library / "moved.mp3"
+        changed_path.rename(moved)
+        env.db.update_track_columns(changed.id, path=str(moved))
+        changed_path = moved
+    else:
+        with changed_path.open("ab") as file:
+            file.write(b"changed")
+    before = changed_path.read_bytes()
+    with TestClient(create_app(env.config)) as client:
+        body = {
+            "track_ids": [track.id for track in tracks], "fields": ["album"],
+            "values": {"album": "Updated"}, "snapshots": snapshots,
+        }
+        rejected = client.post("/api/metadata/album-apply", json={**body, "snapshots": {}})
+        assert rejected.status_code == 400
+        assert client.get("/api/jobs").json() == []
+        response = client.post("/api/metadata/album-apply", json=body)
+        job_id = response.json()["job_id"]
+        summary = wait_job(client, job_id)["summary"]
+        assert summary["applied"] == summary["errors"] == 1
+        errors = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"]
+        assert errors[0]["track_id"] == changed.id
+        assert "changed since album search" in errors[0]["error"]
+    assert changed_path.read_bytes() == before
+    assert env.db.get_track(changed.id).album == "Original"
+    assert env.db.get_track(tracks[1].id).album == "Updated"
 
 
 def test_manual_album_edit_preview_and_apply_preserve_unselected_tags(lib_env, monkeypatch):
@@ -530,8 +695,8 @@ def test_manual_album_edit_preview_and_apply_preserve_unselected_tags(lib_env, m
     def no_network(*args, **kwargs):
         pytest.fail("Manual editing must not query a metadata provider")
 
-    monkeypatch.setattr(musicbrainzngs, "search_recordings", no_network)
-    monkeypatch.setattr(musicbrainzngs, "search_releases", no_network)
+    monkeypatch.setattr(review_module, "search_recordings", no_network)
+    monkeypatch.setattr(review_module, "search_releases", no_network)
     monkeypatch.setattr("musiclib.metadata_review.httpx.get", no_network)
     with TestClient(create_app(env.config)) as client:
         response = client.post("/api/metadata/album-edit/preview", json={
@@ -661,7 +826,7 @@ def test_itunes_results_are_used_when_musicbrainz_fails(monkeypatch):
     def fail(**kwargs):
         raise musicbrainzngs.NetworkError("connection timed out")
 
-    monkeypatch.setattr("musiclib.metadata_review.musicbrainzngs.search_recordings", fail)
+    monkeypatch.setattr("musiclib.metadata_review.search_recordings", fail)
     monkeypatch.setattr(
         "musiclib.metadata_review.search_itunes",
         lambda *args, **kwargs: [{
@@ -673,12 +838,14 @@ def test_itunes_results_are_used_when_musicbrainz_fails(monkeypatch):
             },
         }],
     )
-    results = lookup_track(Track(title="Correct Song", artist="Correct Artist"))
+    warnings = []
+    results = lookup_track(Track(title="Correct Song", artist="Correct Artist"), warnings=warnings)
     assert results[0]["source"] == "iTunes"
     assert results[0]["fields"]["title"] == "Correct Song"
+    assert "connection timed out" in warnings[0]
 
 
-def test_search_itunes_parses_artwork_and_ignores_bad_payloads(monkeypatch):
+def test_search_itunes_parses_artwork_and_reports_network_failure(monkeypatch):
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -698,4 +865,5 @@ def test_search_itunes_parses_artwork_and_ignores_bad_payloads(monkeypatch):
         raise httpx.TimeoutException("slow")
 
     monkeypatch.setattr("musiclib.metadata_review.httpx.get", boom)
-    assert search_itunes("Song", "Artist", Track(title="Song")) == []
+    with pytest.raises(RuntimeError, match="iTunes lookup failed: slow"):
+        search_itunes("Song", "Artist", Track(title="Song"))

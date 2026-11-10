@@ -17,11 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 class JobRegistry:
-    """Persist activity and allow only one library operation at a time."""
+    """Persist activity, with separate serialized lanes for searches and writes."""
 
     def __init__(self, db: Database) -> None:
         self.db = db
         self._lease = threading.Lock()
+        self._lookup_lease = threading.Lock()
         self._local = threading.local()
         self._threads: list = []
         db.execute(
@@ -45,18 +46,27 @@ class JobRegistry:
         )
 
     def operation(self, fn):
+        return self._guard(fn, read_only=False)
+
+    def lookup_operation(self, fn):
+        return self._guard(fn, read_only=True)
+
+    def _guard(self, fn, read_only: bool):
+        lease = self._lookup_lease if read_only else self._lease
+        ownership = "lookup_owned" if read_only else "owned"
+
         @wraps(fn)
         def guarded(*args, **kwargs):
-            if getattr(self._local, "owned", False):
+            if getattr(self._local, ownership, False):
                 return fn(*args, **kwargs)
-            if not self._lease.acquire(blocking=False):
-                raise HTTPException(409, "A library operation is already running. See Activity.")
-            self._local.owned = True
+            if not lease.acquire(blocking=False):
+                raise self._busy(read_only)
+            setattr(self._local, ownership, True)
             try:
                 return fn(*args, **kwargs)
             finally:
-                self._local.owned = False
-                self._lease.release()
+                setattr(self._local, ownership, False)
+                lease.release()
         hints = get_type_hints(fn)
         signature = inspect.signature(fn)
         guarded.__signature__ = signature.replace(
@@ -68,23 +78,33 @@ class JobRegistry:
         )
         return guarded
 
-    def start(self, kind: str, fn) -> str:
-        if not self._lease.acquire(blocking=False):
-            raise HTTPException(409, "A library operation is already running. See Activity.")
+    @staticmethod
+    def _busy(read_only: bool) -> HTTPException:
+        message = (
+            "A catalog search is already running. Wait for it to finish; bulk progress is in Activity."
+            if read_only else "A library operation is already running. See Activity."
+        )
+        return HTTPException(409, message)
+
+    def start(self, kind: str, fn, *, read_only: bool = False) -> str:
+        lease = self._lookup_lease if read_only else self._lease
+        ownership = "lookup_owned" if read_only else "owned"
+        if not lease.acquire(blocking=False):
+            raise self._busy(read_only)
         job = {
             "id": uuid.uuid4().hex[:12], "kind": kind, "status": "queued",
             "started": time.time(), "finished": None, "phase": "Preparing",
             "completed": 0, "total": None, "current": "", "error": None,
-            "summary": None,
+            "summary": None, "read_only": read_only,
         }
         try:
             self._save(job)
         except Exception:
-            self._lease.release()
+            lease.release()
             raise
 
         def runner() -> None:
-            self._local.owned = True
+            setattr(self._local, ownership, True)
             self._local.job = job
             try:
                 job["status"] = "running"
@@ -103,13 +123,21 @@ class JobRegistry:
                 job.update(status="error", finished=time.time(), error=str(exc))
                 self._save(job)
             finally:
-                self._local.owned = False
+                setattr(self._local, ownership, False)
                 self._local.job = None
-                self._lease.release()
+                lease.release()
 
         thread = threading.Thread(target=runner, daemon=True)
+        try:
+            thread.start()
+        except Exception as exc:
+            job.update(status="error", finished=time.time(), error=str(exc))
+            try:
+                self._save(job)
+            finally:
+                lease.release()
+            raise
         self._threads.append(thread)
-        thread.start()
         return job["id"]
 
     def progress(

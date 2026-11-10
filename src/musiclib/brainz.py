@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
+import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from xml.etree.ElementTree import ParseError
 
+import httpx
 import musicbrainzngs
 
 from .config import Config
@@ -12,13 +18,69 @@ from .duplicates import normalize
 from .models import Album
 
 OFFICIAL_STATUSES = {"Official", None, ""}
+_request_lock = threading.Lock()
+_last_request: Optional[float] = None
+_user_agent = "musiclib/0.1"
 
 
 def configure_musicbrainz(config: Config) -> None:
+    global _user_agent
+    contact = config.brainz.get("contact", "musiclib@example.com")
+    _user_agent = f"musiclib/0.1 ({contact})"
     musicbrainzngs.set_useragent(
-        "musiclib", "0.1", config.brainz.get("contact", "musiclib@example.com")
+        "musiclib", "0.1", contact
     )
     musicbrainzngs.set_rate_limit(True)
+
+
+@contextmanager
+def musicbrainz_request(timeout: Optional[float] = None):
+    global _last_request
+    acquired = _request_lock.acquire() if timeout is None else _request_lock.acquire(timeout=timeout)
+    if not acquired:
+        raise musicbrainzngs.NetworkError("MusicBrainz is busy. Please retry the search.")
+    try:
+        if _last_request is not None:
+            time.sleep(max(0.0, 1.0 - (time.monotonic() - _last_request)))
+        _last_request = time.monotonic()
+        yield
+    finally:
+        _request_lock.release()
+
+
+def _search_catalog(entity: str, limit: int, terms: Dict[str, str]) -> Dict[str, Any]:
+    # Preserve musicbrainzngs' non-strict field search without accepting Lucene operators.
+    parts = []
+    for name, value in terms.items():
+        if value:
+            escaped = re.sub(r'([+\-&|!(){}\[\]^"~*?:/\\])', r"\\\1", value)
+            parts.append(f"{name}:({escaped.lower()})")
+    query = " ".join(parts)
+    if not query:
+        raise ValueError("At least one search term is required.")
+    try:
+        with musicbrainz_request(timeout=4.0):
+            response = httpx.get(
+                f"https://musicbrainz.org/ws/2/{entity}/",
+                params={"query": query, "limit": limit, "fmt": "xml"},
+                headers={"User-Agent": _user_agent},
+                timeout=4.0,
+            )
+            response.raise_for_status()
+        payload = musicbrainzngs.mbxml.parse_message(response.content)
+        if not isinstance(payload.get(f"{entity}-list"), list):
+            raise musicbrainzngs.ResponseError("MusicBrainz returned an unexpected catalog response.")
+        return payload
+    except (httpx.HTTPError, OSError, ParseError) as exc:
+        raise musicbrainzngs.NetworkError(f"Catalog request failed: {exc}") from exc
+
+
+def search_recordings(limit: int = 6, **terms: str) -> Dict[str, Any]:
+    return _search_catalog("recording", limit, terms)
+
+
+def search_releases(limit: int = 6, **terms: str) -> Dict[str, Any]:
+    return _search_catalog("release", limit, terms)
 
 
 @dataclass
@@ -47,9 +109,10 @@ class Brainz:
         self, album_artist: str, album: str
     ) -> Optional[Tuple[str, int, int]]:
         try:
-            result = musicbrainzngs.search_releases(
-                artist=album_artist, release=album, limit=10
-            )
+            with musicbrainz_request():
+                result = musicbrainzngs.search_releases(
+                    artist=album_artist, release=album, limit=10
+                )
         except musicbrainzngs.WebServiceError:
             return None
         releases = result.get("release-list", [])
@@ -69,9 +132,10 @@ class Brainz:
 
     def tracklist(self, mbid: str) -> List[ExpectedTrack]:
         try:
-            result = musicbrainzngs.get_release_by_id(
-                mbid, includes=["recordings", "media"]
-            )
+            with musicbrainz_request():
+                result = musicbrainzngs.get_release_by_id(
+                    mbid, includes=["recordings", "media"]
+                )
         except musicbrainzngs.WebServiceError:
             return []
         release = result.get("release", {})
