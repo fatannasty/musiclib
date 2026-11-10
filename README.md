@@ -134,6 +134,19 @@ tags. Search terms do not modify file tags; only explicitly selected suggestions
 are written after confirmation. Lookup failures display the provider error so
 network or service problems can be distinguished from an empty search.
 
+For bulk tagging, select up to 100 Library tracks across pages and choose **Look up
+selected tracks**. Review the candidate for each file and select the individual
+fields to write, then choose **Apply reviewed tags** and confirm the batch.
+No fields are selected automatically; changing a candidate clears that track's
+field selection. Files without search terms are reported separately and can be
+looked up individually. Tagging does not rename or move files.
+
+Bulk lookups and writes run in Activity with per-file progress and saved results.
+Use **View results → Review suggestions** on a completed `metadata-lookup` job to
+reopen its suggestions after navigating away or refreshing. Files are applied
+individually: failed or changed files are reported without undoing successful
+updates, and files changed since lookup must be scanned and looked up again.
+
 ### LAN access
 
 Run the dashboard on all interfaces so any device on your network can use it:
