@@ -289,7 +289,9 @@ class Scanner:
         self.rebuild_albums(root)
         return report
 
-    def _store_result(self, result: Dict, report: ScanReport, row_exists: bool) -> None:
+    def _store_result(
+        self, result: Dict, report: ScanReport, row_exists: bool, preserve_health: bool = False,
+    ) -> None:
         path = result["path"]
         track = self.db.find_track_by_path(path)
         if result.get("error"):
@@ -333,11 +335,16 @@ class Scanner:
         if track.file_hash != result["file_hash"]:
             track.fingerprint = None
         track.file_hash = result["file_hash"]
-        issues: List[Issue] = []
+        issues: List[Issue] = (
+            [issue for issue in track.issues if issue.kind != "missing_tags"]
+            if preserve_health else []
+        )
         if not result["title"] or not result["album"]:
             issues.append(Issue("missing_tags", "missing album or title tag", "warn"))
         track.issues = issues
-        track.status = "suspect" if issues else "ok"
+        track.status = "bad" if any(issue.severity == "bad" for issue in issues) else (
+            "suspect" if issues else "ok"
+        )
         self.db.upsert_track(track)
 
     def rebuild_albums(self, root: Optional[str] = None) -> None:

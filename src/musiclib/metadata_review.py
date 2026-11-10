@@ -29,6 +29,7 @@ EDITABLE_FIELDS = (
     "track_no", "disc_no", "genre", "mbid_track", "mbid_release",
 )
 ALBUM_FIELDS = ("album", "album_artist", "artist", "year", "genre", "mbid_release")
+TRACK_FIELDS = ("title", "artist", "track_no", "disc_no")
 TAG_KEYS = {
     "title": "title",
     "artist": "artist",
@@ -269,8 +270,12 @@ def lookup_track(
     return _merge_candidates(musicbrainz_hits, itunes_hits)
 
 
-def write_audio_tags(path: Path, tags_to_write: Dict[str, Any]) -> Dict[str, Any]:
+def write_audio_tags(
+    path: Path, tags_to_write: Dict[str, Any], expected_hash: Optional[str] = None,
+) -> Dict[str, Any]:
     def edit(temporary: Path) -> Dict[str, Any]:
+        if expected_hash is not None and file_hash(str(temporary)) != expected_hash:
+            raise ValueError("File changed since preview. Create a fresh review.")
         audio = mutagen.File(temporary, easy=True)
         if audio is None:
             raise ValueError("Audio format does not support editable metadata.")
@@ -282,6 +287,8 @@ def write_audio_tags(path: Path, tags_to_write: Dict[str, Any]) -> Dict[str, Any
         result = scan_worker(str(temporary))
         if result.get("error"):
             raise ValueError(f"Updated file could not be read: {result['error']}")
+        if expected_hash is not None and file_hash(str(path)) != expected_hash:
+            raise ValueError("File changed while saving tags. Create a fresh review.")
         result["path"] = str(path)
         return result
 
@@ -425,7 +432,8 @@ class MetadataReview:
                 "id": track.id, "path": track.path, "title": track.title,
                 "artist": track.artist, "album_artist": track.album_artist,
                 "album": track.album, "year": track.year, "track_no": track.track_no,
-                "disc_no": track.disc_no, "genre": track.genre,
+                "track_total": track.track_total, "disc_no": track.disc_no,
+                "disc_total": track.disc_total, "genre": track.genre,
                 "mbid_track": track.mbid_track, "mbid_release": track.mbid_release,
             },
             "candidates": candidates,
@@ -434,17 +442,30 @@ class MetadataReview:
     def preview_album_edit(
         self, track_ids: List[int], fields: List[str], values: Dict[str, Any],
     ) -> Dict[str, Any]:
-        if not fields or set(fields) - set(ALBUM_FIELDS) or len(set(fields)) != len(fields):
-            raise ValueError("Select one or more distinct album fields to edit.")
+        return self._preview_edit(track_ids, fields, values, ALBUM_FIELDS)
+
+    def preview_track_edit(
+        self, track_id: int, fields: List[str], values: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self._preview_edit([track_id], fields, values, TRACK_FIELDS)
+
+    def _preview_edit(
+        self, track_ids: List[int], fields: List[str], values: Dict[str, Any],
+        allowed_fields: Tuple[str, ...],
+    ) -> Dict[str, Any]:
+        if not fields or set(fields) - set(allowed_fields) or len(set(fields)) != len(fields):
+            raise ValueError("Select one or more distinct fields supported by this editor.")
         selected: Dict[str, Any] = {}
         for field in fields:
             value = values.get(field)
-            if field == "year":
+            if field in ("year", "track_no", "disc_no"):
+                label = {"year": "Year", "track_no": "Track number", "disc_no": "Disc number"}[field]
+                message = f"{label} must be a whole number between 1 and 9999."
                 if isinstance(value, bool) or not isinstance(value, (str, int)):
-                    raise ValueError("Year must be a whole number between 1 and 9999.")
+                    raise ValueError(message)
                 text = str(value).strip()
                 if not text.isascii() or not text.isdigit() or not 1 <= int(text) <= 9999:
-                    raise ValueError("Year must be a whole number between 1 and 9999.")
+                    raise ValueError(message)
                 selected[field] = int(text)
             else:
                 if not isinstance(value, str) or not value.strip() or len(value) > 1000:
@@ -453,6 +474,12 @@ class MetadataReview:
         tracks = self._tracks_for_album(track_ids)
         reviews, errors = [], []
         for track in tracks:
+            if Path(track.path).is_symlink():
+                errors.append({
+                    "track_id": track.id, "path": track.path,
+                    "error": "Symbolic links cannot be edited. Select the original file.",
+                })
+                continue
             if not os.path.isfile(track.path) or not track.file_hash:
                 errors.append({
                     "track_id": track.id, "path": track.path,
@@ -477,6 +504,8 @@ class MetadataReview:
             raise ValueError("Track changed or is no longer available; run a new lookup.")
         if not is_inside(track.path, self.config.library):
             raise ValueError("Track is outside the configured library.")
+        if Path(track.path).is_symlink():
+            raise ValueError("Symbolic links cannot be edited. Select the original file.")
         current_hash = track.file_hash or ""
         if not os.path.isfile(track.path):
             raise ValueError("Track file is missing from disk.")
@@ -493,8 +522,15 @@ class MetadataReview:
         }
         if not tags_to_write:
             raise ValueError("The selected candidate has no values for the chosen fields.")
-        result = write_audio_tags(Path(track.path), tags_to_write)
-        Scanner(self.config, self.db)._store_result(result, ScanReport(), row_exists=True)
+        if candidate.get("source") == "Manual edit":
+            for field, total in (("track_no", track.track_total), ("disc_no", track.disc_total)):
+                key = TAG_KEYS[field]
+                if key in tags_to_write and total:
+                    tags_to_write[key] = f"{tags_to_write[key]}/{total}"
+        result = write_audio_tags(Path(track.path), tags_to_write, expected_hash=row["file_hash"])
+        Scanner(self.config, self.db)._store_result(
+            result, ScanReport(), row_exists=True, preserve_health=True,
+        )
         self.db.execute(
             "UPDATE metadata_reviews SET status='applied', applied_at=? WHERE id=?",
             (datetime.now(timezone.utc).isoformat(), review_id),
