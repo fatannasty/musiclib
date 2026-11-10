@@ -245,6 +245,7 @@ async function showJobResults(job) {
     "rename-preview": ["moves", "skipped_files"], "rename-reviewed": ["moves", "errors", "skipped_files"],
     "artwork-preview": ["tracks", "warnings"], "artwork-reviewed": ["applied", "errors"],
     "trash-preview": ["tracks"], "trash-reviewed": ["trashed", "errors"],
+    "restore-preview": ["entries"], "restore-reviewed": ["restored", "errors"],
   }[job.kind] || [];
   container.querySelector(".sections").innerHTML = sections.map(([key, value]) => `<span class="tag dim">${esc(key)}: ${value}</span>`).join("") +
     lists.map(key => `<button class="action ghost" data-section="${key}">${esc(key)}</button>`).join("");
@@ -284,6 +285,15 @@ async function showJobResults(job) {
     button.textContent = "Review trash preview";
     button.onclick = () => {
       state.trashPreviewJob = job.id; state.libraryView = "albums"; state.tab = "library"; render();
+    };
+    container.querySelector(".sections").append(button);
+  }
+  if (job.kind === "restore-preview") {
+    const button = document.createElement("button");
+    button.className = "action ghost";
+    button.textContent = "Review restore preview";
+    button.onclick = () => {
+      state.restorePreviewJob = job.id; state.tab = "recovery"; render();
     };
     container.querySelector(".sections").append(button);
   }
@@ -1459,24 +1469,132 @@ const views = {
   async recovery(el) {
     el.innerHTML = `<p class="hint">Restore trashed files to their original locations. If a location is occupied, the restore is refused rather than overwriting anything.</p>
       <label class="check"><input type="checkbox" id="show-restored"> include previously restored entries</label>
-      <div id="trash-table"></div>`;
+      <div class="row"><button class="action ghost" id="restore-select-page">Select this page</button>
+      <button class="action ghost" id="restore-clear">Clear selection</button>
+      <span id="restore-count">0 entries selected</span>
+      <button class="action" id="restore-preview-selected" data-operation>Preview restore selected</button></div>
+      <p class="hint">Select up to 200 recoverable entries across pages. Preview fixes the exact file list;
+      nothing moves until you review the paths and confirm. Existing files are never overwritten.</p>
+      <div id="restore-review"></div><div id="trash-table"></div>`;
+    const selected = new Set();
+    let pageItems = [];
+    const selectEntry = (id, checked) => {
+      if (checked && selected.size >= 200 && !selected.has(id)) {
+        toast("Select at most 200 trash entries.", true);
+      } else if (checked) selected.add(id);
+      else selected.delete(id);
+    };
+    const updateSelection = () => {
+      el.querySelector("#restore-count").textContent = `${selected.size} entries selected`;
+      el.querySelectorAll("[data-select-restore]").forEach(input => {
+        input.checked = selected.has(Number(input.dataset.selectRestore));
+      });
+    };
     const draw = () => pagedTable($("#trash-table"),
       offset => api(`/api/trash?offset=${offset}&include_restored=${$("#show-restored").checked}`),
-      ["Deleted", "Reason", "Original path", "Restore"],
-      item => `<tr><td>${esc(item.deleted_at)}</td><td>${esc(item.reason)}</td><td class="path">${esc(item.path)}</td>
-        <td>${item.restored_at ? `Restored ${esc(item.restored_at)}` : `<button class="action ghost" data-restore="${item.id}">Restore</button>`}</td></tr>`,
-      items => items.forEach(item => {
-        const button = el.querySelector(`[data-restore="${item.id}"]`);
-        if (button) button.onclick = async () => {
-          if (!confirm(`Restore this file to its original path?\n${item.path}`)) return;
-          try {
-            const result = await post("/api/trash/restore", {deletion_id:item.id});
-            toast(`Restored ${result.restored}`); await draw(); await loadStats();
-          } catch (e) { toast(e.message, true); }
-        };
-      }));
+      ["Select", "Deleted", "Reason", "Original path", "Restore"],
+      item => `<tr><td>${!item.restored_at && item.moved_to ?
+        `<input type="checkbox" data-select-restore="${item.id}" aria-label="Select ${esc(item.path)}">` : ""}</td>
+        <td>${esc(item.deleted_at)}</td><td>${esc(item.reason)}</td><td class="path">${esc(item.path)}</td>
+        <td>${item.restored_at ? `Restored ${esc(item.restored_at)}` : item.moved_to ?
+          `<button class="action ghost" data-restore="${item.id}" data-operation>Restore</button>` : "Not recoverable"}</td></tr>`,
+      items => {
+        pageItems = items;
+        items.forEach(item => {
+          if (item.restored_at || !item.moved_to) selected.delete(item.id);
+          const button = el.querySelector(`[data-restore="${item.id}"]`);
+          if (button) button.onclick = async () => {
+            if (!confirm(`Restore this file to its original path?\n${item.path}`)) return;
+            try {
+              const result = await post("/api/trash/restore", {deletion_id:item.id});
+              selected.delete(item.id);
+              toast(`Restored ${result.restored}`); await draw(); await loadStats();
+            } catch (e) { toast(e.message, true); }
+          };
+        });
+        el.querySelectorAll("[data-select-restore]").forEach(input => input.onchange = () => {
+          selectEntry(Number(input.dataset.selectRestore), input.checked); updateSelection();
+        });
+        updateSelection();
+      });
+    const loadRestoreReview = async jobId => {
+      const [job, entries] = await Promise.all([
+        api(`/api/jobs/${jobId}`),
+        api(`/api/jobs/${jobId}/results/entries?limit=200`),
+      ]);
+      const preview = job.summary;
+      const review = await api(`/api/trash/restore-reviews/${preview.review_id}`);
+      if (!el.isConnected) return;
+      const panel = el.querySelector("#restore-review");
+      panel.innerHTML = `<div class="card"><h3>Review selected restores</h3>
+        <p>${preview.ready} ready (${fmtBytes(preview.bytes)}) · ${preview.blocked} blocked.
+        No files have been moved. Only the saved ready list below is used, regardless of the current checkboxes.</p>
+        <p>Restore to the exact original paths shown. Occupied paths are never overwritten or renamed
+        with a suffix. Changed or missing trash files are skipped. Blocked entries stay in Recovery.</p>
+        <div class="table-scroll"><table><thead><tr><th>Trash file</th><th>Original path</th><th>Size</th><th>Status</th><th>Reason</th></tr></thead>
+        <tbody>${entries.items.map(entry => `<tr><td class="path">${esc(entry.moved_to || entry.deletion_id)}</td>
+          <td class="path">${esc(entry.target || entry.path || "—")}</td><td>${fmtBytes(entry.size)}</td>
+          <td>${esc(entry.status)}</td><td>${esc(entry.reason)}</td></tr>`).join("")}</tbody></table></div>
+        ${preview.ready && review.status === "review" ?
+          '<button class="action" data-restore-confirm data-operation>Restore reviewed files</button>' :
+          review.status !== "review" ? "<p>This preview was already attempted. Create a fresh preview to retry.</p>" : ""}
+        <button class="action ghost" data-restore-close>Close preview</button>
+        <div role="status" data-restore-status></div></div>`;
+      panel.querySelector("[data-restore-close]").onclick = () => {
+        state.restorePreviewJob = null; panel.innerHTML = "";
+      };
+      const apply = panel.querySelector("[data-restore-confirm]");
+      let applying = false;
+      if (apply) apply.onclick = async () => {
+        if (applying || !confirm(`Restore exactly ${preview.ready} reviewed file(s) to their original paths? Occupied paths and changed trash files will be skipped. Other entries stay in trash.`)) return;
+        applying = true; apply.disabled = true;
+        const close = panel.querySelector("[data-restore-close]");
+        const status = panel.querySelector("[data-restore-status]");
+        close.disabled = true;
+        let accepted = false;
+        try {
+          const { job_id } = await post("/api/trash/restore-reviewed", {preview_job_id: jobId});
+          accepted = true;
+          status.textContent = "Restoring reviewed files. Progress and saved results are in Activity.";
+          await refreshActivity();
+          const result = await pollJob(job_id, "Reviewed recovery");
+          const failures = await api(`/api/jobs/${job_id}/results/errors?limit=200`);
+          if (!panel.isConnected) return;
+          status.innerHTML = `<p>${result.summary.restored} files restored; ${failures.total} errors.
+            Run Scan to refresh restored file metadata. Results remain in Activity; create a fresh preview to retry.</p>` +
+            failures.items.map(item => `<p role="alert">${esc(item.path || item.deletion_id)}: ${esc(item.error)}</p>`).join("");
+          selected.clear(); await draw(); await loadStats();
+        } catch (e) { status.textContent = e.message; toast(e.message, true); }
+        finally {
+          applying = false; close.disabled = false;
+          if (accepted) { state.restorePreviewJob = null; apply.remove(); }
+          else apply.disabled = false;
+        }
+      };
+      await refreshActivity();
+      panel.scrollIntoView({behavior: "smooth", block: "start"});
+    };
+    $("#restore-select-page").onclick = () => {
+      pageItems.filter(item => !item.restored_at && item.moved_to).forEach(item => selectEntry(item.id, true));
+      updateSelection();
+    };
+    $("#restore-clear").onclick = () => { selected.clear(); updateSelection(); };
+    $("#restore-preview-selected").onclick = async () => {
+      if (!selected.size) { toast("Select trash entries to restore first.", true); return; }
+      try {
+        const { job_id } = await post("/api/trash/restore-preview", {deletion_ids: [...selected]});
+        state.restorePreviewJob = job_id;
+        await refreshActivity();
+        await pollJob(job_id, "Selected recovery preview");
+        if (el.isConnected) await loadRestoreReview(job_id);
+      } catch (e) { toast(e.message, true); }
+    };
     $("#show-restored").onchange = draw;
     await draw();
+    if (state.restorePreviewJob) {
+      const job = await api(`/api/jobs/${state.restorePreviewJob}`);
+      if (job.status === "done") await loadRestoreReview(job.id);
+    }
   },
 
   async organize(el) {

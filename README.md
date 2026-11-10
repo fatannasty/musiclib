@@ -239,6 +239,27 @@ which refuses occupied original paths and supports copying across filesystems
 when hard links are unavailable. A file restored later cannot be trashed again
 using an already-used preview.
 
+In **Recovery**, select up to 200 recoverable entries across pages and choose
+**Preview restore selected**. The saved preview lists exact trash files, original
+paths, sizes, and ready/blocked reasons without moving files or creating folders.
+Choose **Restore reviewed files** and confirm to restore only the saved ready list;
+changing checkboxes does not retarget an existing preview.
+
+Occupied paths (including case-only conflicts), duplicate original destinations
+within a batch, missing/changed trash files, symbolic links, and unsafe paths are
+blocked or skipped. Files are never overwritten or restored under an unexpected
+suffix. File bytes, tags, and artwork remain unchanged, and other trash entries
+stay untouched. NAS permission failures are reported per file without stopping
+the rest; copies across filesystems are verified before the trash source is
+removed. Permission checks at preview are advisory.
+
+Preview and apply results remain in Activity. Use **View results → Review restore
+preview** to reopen a saved preview after refresh. An apply attempt consumes it;
+create a fresh preview to retry failures. Existing single-file **Restore** remains
+available. Restored tracks are flagged for review; run **Scan** to refresh their
+metadata. A catalog/history failure after a successful move reports the restored
+path explicitly instead of moving it back or overwriting anything.
+
 In Library, choose **Lookup**, enter or correct the title and/or artist, then
 search. MusicBrainz and iTunes are queried together, and matching albums show Cover Art Archive
 or iTunes artwork previews. This works even when a file has no title or artist

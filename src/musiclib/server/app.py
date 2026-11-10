@@ -21,6 +21,7 @@ from ..fingerprint import compute_all, fpcalc_available
 from ..fsops import is_inside, move_no_replace
 from ..metadata_review import ALBUM_FIELDS, EDITABLE_FIELDS, TRACK_FIELDS, MetadataReview
 from ..rename import Renamer
+from ..restore_review import RestoreReview
 from ..scanner import Scanner
 from ..trash_review import TrashReview
 from ..usenet import Sabnzbd, SabnzbdError, search_all
@@ -71,6 +72,10 @@ class TrackSearchBody(BaseModel):
 
 class RestoreBody(BaseModel):
     deletion_id: int
+
+
+class RestorePreviewBody(BaseModel):
+    deletion_ids: List[int]
 
 
 class MetadataLookupBody(BaseModel):
@@ -705,6 +710,42 @@ def create_app(config: Config) -> FastAPI:
                 500, f"file restored to {target}, but database history update failed: {exc}"
             ) from exc
         return {"restored": target}
+
+    @app.post("/api/trash/restore-preview")
+    def restore_preview(body: RestorePreviewBody) -> Dict[str, str]:
+        if not 1 <= len(body.deletion_ids) <= 200 or len(set(body.deletion_ids)) != len(body.deletion_ids):
+            raise HTTPException(400, "Select between 1 and 200 distinct trash entries.")
+        return {"job_id": jobs.start(
+            "restore-preview",
+            lambda job: RestoreReview(config, db).preview(body.deletion_ids, progress=jobs.update),
+        )}
+
+    @app.get("/api/trash/restore-reviews/{review_id}")
+    def restore_review_status(review_id: str) -> Dict[str, str]:
+        try:
+            return {"status": RestoreReview(config, db).status(review_id)}
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/trash/restore-reviewed")
+    def restore_reviewed(body: ReviewedApplyBody) -> Dict[str, str]:
+        preview_job = jobs.get(body.preview_job_id)
+        if not preview_job or preview_job["kind"] != "restore-preview":
+            raise HTTPException(400, "Choose a saved restore preview.")
+        if preview_job["status"] != "done":
+            raise HTTPException(400, "The restore preview has not completed successfully.")
+        preview = jobs.result(body.preview_job_id)
+        if not preview["ready"]:
+            raise HTTPException(400, "This preview has no files ready to restore.")
+        try:
+            if RestoreReview(config, db).status(preview["review_id"]) != "review":
+                raise ValueError("This restore preview was already used. Create a fresh preview.")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"job_id": jobs.start(
+            "restore-reviewed",
+            lambda job: RestoreReview(config, db).apply(preview["review_id"], progress=jobs.update),
+        )}
 
     @app.post("/api/trash/preview-selected")
     def trash_preview_selected(body: TrashPreviewBody) -> Dict[str, str]:
