@@ -382,12 +382,15 @@ class Database:
     def record_deletion(
         self, path: str, size: int, file_hash: Optional[str], reason: str,
         moved_to: Optional[str],
-    ) -> None:
-        self.execute(
+    ) -> int:
+        cursor = self.execute(
             "INSERT INTO deletions (path, size, file_hash, reason, moved_to, deleted_at) "
             "VALUES (?,?,?,?,?,?)",
             (path, size, file_hash, reason, moved_to, utcnow()),
         )
+        if cursor.lastrowid is None:
+            raise sqlite3.DatabaseError("Recovery history did not return a deletion ID.")
+        return cursor.lastrowid
 
     def deletions_page(
         self, offset: int = 0, limit: int = 50, include_restored: bool = False

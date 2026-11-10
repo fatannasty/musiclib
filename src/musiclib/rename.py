@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import errno
 import os
 import re
 import shutil
@@ -12,7 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import Config
 from .db import Database
-from .fsops import case_insensitive_exists, is_inside, remove_empty_dirs
+from .fsops import case_insensitive_exists, is_inside, move_no_replace, remove_empty_dirs
 from .models import Track
 from .scanner import file_hash
 
@@ -277,27 +276,7 @@ class Renamer:
         return ""
 
     def _move_no_replace(self, source: str, target: str) -> None:
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        created = False
-        try:
-            try:
-                os.link(source, target, follow_symlinks=False)
-                created = True
-            except OSError as exc:
-                if exc.errno not in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP, errno.EMLINK):
-                    raise
-                # NAS mounts may forbid links even when copying and removing files is allowed.
-                with open(source, "rb") as src, open(target, "xb") as dest:
-                    created = True
-                    shutil.copyfileobj(src, dest)
-                    dest.flush()
-                    os.fsync(dest.fileno())
-                shutil.copystat(source, target)
-            os.unlink(source)
-        except OSError:
-            if created:
-                os.unlink(target)
-            raise
+        move_no_replace(source, target)
 
     def apply(self, report: Optional[RenameReport] = None) -> RenameReport:
         report = report or self.plan()

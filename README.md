@@ -199,6 +199,31 @@ untouched. Preview and apply results remain in Activity; use **View results →
 Review rename preview** on a `rename-preview` job to reopen a saved preview after
 refreshing. Create a fresh preview to retry failed files.
 
+To remove unwanted album tracks, select up to 200 on an album page and choose
+**Trash selected**. This creates a saved preview showing exact source/trash paths,
+sizes, and ready/blocked reasons without moving music files or creating folders.
+Only the saved ready list is used; changing the album checkboxes does not retarget
+an existing preview. Choose **Move reviewed files to trash** and confirm to move
+those files, never permanently delete them. Unselected tracks, tags, embedded art,
+folder images, and empty source folders stay unchanged.
+
+Trash copies use separate per-preview folders under the configured trash directory,
+with no overwriting. The destination bytes and original source are checked before
+removal, and Recovery history is saved before the source is removed. Missing,
+outside-library, already-trashed, or symbolic-link sources are blocked. Bad files
+can be selected even when they have no scan hash; the preview hashes their current
+bytes. Files moved or changed since preview are skipped; permission failures do
+not stop the remaining files. NAS permission checks at preview are advisory.
+If a catalog update fails after a move, the file remains in Recovery and the
+reported error asks you to run Scan.
+
+Preview/apply results remain in Activity. Use **View results → Review trash
+preview** to reopen a preview after refreshing. An apply attempt consumes it;
+create a fresh preview to retry failures. Restore moved files from **Recovery**,
+which refuses occupied original paths and supports copying across filesystems
+when hard links are unavailable. A file restored later cannot be trashed again
+using an already-used preview.
+
 In Library, choose **Lookup**, enter or correct the title and/or artist, then
 search. MusicBrainz and iTunes are queried together, and matching albums show Cover Art Archive
 or iTunes artwork previews. This works even when a file has no title or artist

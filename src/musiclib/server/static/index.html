@@ -244,6 +244,7 @@ async function showJobResults(job) {
     "issues-trash": ["failures"], "album-apply": ["applied", "errors", "rename_errors"],
     "rename-preview": ["moves", "skipped_files"], "rename-reviewed": ["moves", "errors", "skipped_files"],
     "artwork-preview": ["tracks", "warnings"], "artwork-reviewed": ["applied", "errors"],
+    "trash-preview": ["tracks"], "trash-reviewed": ["trashed", "errors"],
   }[job.kind] || [];
   container.querySelector(".sections").innerHTML = sections.map(([key, value]) => `<span class="tag dim">${esc(key)}: ${value}</span>`).join("") +
     lists.map(key => `<button class="action ghost" data-section="${key}">${esc(key)}</button>`).join("");
@@ -274,6 +275,15 @@ async function showJobResults(job) {
     button.textContent = "Review artwork preview";
     button.onclick = () => {
       state.artworkPreviewJob = job.id; state.libraryView = "albums"; state.tab = "library"; render();
+    };
+    container.querySelector(".sections").append(button);
+  }
+  if (job.kind === "trash-preview") {
+    const button = document.createElement("button");
+    button.className = "action ghost";
+    button.textContent = "Review trash preview";
+    button.onclick = () => {
+      state.trashPreviewJob = job.id; state.libraryView = "albums"; state.tab = "library"; render();
     };
     container.querySelector(".sections").append(button);
   }
@@ -569,6 +579,7 @@ const views = {
     <div id="manual-album-result" role="status"></div>
     <div id="album-rename-review"></div>
     <div id="album-artwork-review"></div>
+    <div id="album-trash-review"></div>
     <div id="metadata-bulk"></div>
     <div id="metadata-search"></div><div id="metadata-review"></div>
     <div id="library-albums"></div>
@@ -660,7 +671,8 @@ const views = {
             <button class="action" data-edit-album>Edit album tags</button>
             <button class="action ghost" data-artwork-album data-operation>Change artwork</button>
             <button class="action ghost" data-rename-album data-operation>Preview organization</button>
-            <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button></div>
+            <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button>
+            <button class="action danger" data-trash-album data-operation>Trash selected</button></div>
           </div>
           ${detail.track_count > 200 ? '<p class="hint">Only the first 200 tracks are selected. Edit larger albums in batches.</p>' : ''}
           <div data-manual-editor></div>
@@ -673,6 +685,17 @@ const views = {
             <td><button class="action ghost" data-edit-track="${track.id}">Edit track</button></td></tr>`
           ).join("")}</tbody></table></div></div>`;
         pageEl.querySelector("[data-back]").onclick = () => { pageEl.innerHTML = ""; searchAlbums(); };
+        pageEl.querySelector("[data-trash-album]").onclick = async () => {
+          const trackIds = detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id);
+          if (!trackIds.length) { toast("Select tracks to trash first.", true); return; }
+          try {
+            const { job_id } = await post("/api/trash/preview-selected", {track_ids: trackIds});
+            state.trashPreviewJob = job_id;
+            await refreshActivity();
+            await pollJob(job_id, "Selected album trash preview");
+            if (el.isConnected) await loadTrashReview(job_id);
+          } catch (e) { toast(e.message, true); }
+        };
         pageEl.querySelector("[data-tag-album]").onclick = () => $("#metadata-album-bulk").click();
         pageEl.querySelector("[data-rename-album]").onclick = async () => {
           const trackIds = detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id);
@@ -705,6 +728,66 @@ const views = {
         updateSelection();
         await refreshActivity();
       } catch (e) { toast(e.message, true); }
+    };
+    const loadTrashReview = async jobId => {
+      const [job, targets] = await Promise.all([
+        api(`/api/jobs/${jobId}`),
+        api(`/api/jobs/${jobId}/results/tracks?limit=200`),
+      ]);
+      const preview = job.summary;
+      const review = await api(`/api/trash/reviews/${preview.review_id}`);
+      if (!el.isConnected) return;
+      const panel = el.querySelector("#album-trash-review");
+      panel.innerHTML = `<div class="card"><h3>Review selected files for trash</h3>
+        <p>${preview.ready} ready (${fmtBytes(preview.bytes)}) · ${preview.blocked} blocked.
+        No music files have been moved. Only the files listed as ready below can be trashed by this preview;
+        changing album checkboxes does not change this saved list.</p>
+        <p>These are recoverable moves, not permanent deletion. Tags, artwork, other tracks,
+        folder images, and empty folders stay untouched. Changed or moved files are skipped.
+        Use the Recovery tab to restore a file while its original path is free.</p>
+        <div class="table-scroll"><table><thead><tr><th>File</th><th>Trash destination</th><th>Size</th><th>Status</th><th>Reason</th></tr></thead>
+        <tbody>${targets.items.map(track => `<tr><td class="path">${esc(track.path || track.track_id)}</td>
+          <td class="path">${esc(track.target || "—")}</td><td>${fmtBytes(track.size)}</td>
+          <td>${esc(track.status)}</td><td>${esc(track.reason)}</td></tr>`).join("")}</tbody></table></div>
+        ${preview.ready && review.status === "review" ?
+          '<button class="action danger" data-trash-confirm data-operation>Move reviewed files to trash</button>' :
+          review.status !== "review" ? "<p>This preview was already attempted. Create a fresh preview to retry.</p>" : ""}
+        <button class="action ghost" data-trash-close>Close preview</button>
+        <div role="status" data-trash-status></div></div>`;
+      panel.querySelector("[data-trash-close]").onclick = () => {
+        state.trashPreviewJob = null; panel.innerHTML = "";
+      };
+      const apply = panel.querySelector("[data-trash-confirm]");
+      let applying = false;
+      if (apply) apply.onclick = async () => {
+        if (applying || !confirm(`Move exactly ${preview.ready} reviewed file(s) to recoverable trash? Only the saved ready list is used. Changed files will be skipped; other files stay untouched.`)) return;
+        applying = true; apply.disabled = true;
+        const close = panel.querySelector("[data-trash-close]");
+        const status = panel.querySelector("[data-trash-status]");
+        close.disabled = true;
+        let accepted = false;
+        try {
+          const { job_id } = await post("/api/trash/apply-reviewed", {preview_job_id: jobId});
+          accepted = true;
+          status.textContent = "Moving reviewed files to recoverable trash. Progress is in Activity.";
+          await refreshActivity();
+          const result = await pollJob(job_id, "Reviewed album trash");
+          const failures = await api(`/api/jobs/${job_id}/results/errors?limit=200`);
+          if (!panel.isConnected) return;
+          status.innerHTML = `<p>${result.summary.trashed} files trashed; ${failures.total} errors.
+            Restore moved files from Recovery. Results remain in Activity; create a fresh preview to retry.</p>` +
+            failures.items.map(item => `<p role="alert">${esc(item.path || item.track_id)}: ${esc(item.error)}</p>`).join("");
+          selectedTracks.clear(); updateSelection();
+          await searchAlbums(); await loadStats();
+        } catch (e) { status.textContent = e.message; toast(e.message, true); }
+        finally {
+          applying = false; close.disabled = false;
+          if (accepted) { state.trashPreviewJob = null; apply.remove(); }
+          else apply.disabled = false;
+        }
+      };
+      await refreshActivity();
+      panel.scrollIntoView({behavior: "smooth", block: "start"});
     };
     const renderArtworkUpload = (panel, tracks) => {
       panel.innerHTML = `<form class="card"><h3>Artwork for ${tracks.length} selected tracks</h3>
@@ -1318,6 +1401,10 @@ const views = {
     if (state.artworkPreviewJob) {
       const job = await api(`/api/jobs/${state.artworkPreviewJob}`);
       if (job.status === "done") await loadArtworkReview(job.id);
+    }
+    if (state.trashPreviewJob) {
+      const job = await api(`/api/jobs/${state.trashPreviewJob}`);
+      if (job.status === "done") await loadTrashReview(job.id);
     }
     if (state.metadataLookupJob) {
       const job = await api(`/api/jobs/${state.metadataLookupJob}`);
