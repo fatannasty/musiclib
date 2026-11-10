@@ -19,6 +19,49 @@ CAA_BASE = "https://coverartarchive.org"
 FOLDER_IMAGE_CANDIDATES = [
     "folder.jpg", "folder.png", "cover.jpg", "cover.png", "front.jpg", "front.png",
 ]
+CAA_FRONT_THUMB = "https://coverartarchive.org/release/{mbid}/front-250"
+
+
+def read_cover(path: str) -> Optional[Tuple[bytes, str]]:
+    try:
+        audio = mutagen.File(path)
+    except Exception:
+        audio = None
+    if audio is not None:
+        for picture in getattr(audio, "pictures", None) or []:
+            data = getattr(picture, "data", None)
+            if data:
+                mime = getattr(picture, "mime", None) or image_mime(data) or "image/jpeg"
+                return data, mime
+        tags = getattr(audio, "tags", None) or {}
+        try:
+            items = list(tags.values()) if hasattr(tags, "values") else []
+        except Exception:
+            items = []
+        for value in items:
+            frames = value if isinstance(value, list) else [value]
+            for frame in frames:
+                data = getattr(frame, "data", None)
+                if data is None and isinstance(frame, (bytes, bytearray)):
+                    data = bytes(frame)
+                if not data:
+                    continue
+                mime = getattr(frame, "mime", None) or image_mime(data)
+                if mime:
+                    return data, mime
+    parent = Path(path).parent
+    for name in FOLDER_IMAGE_CANDIDATES:
+        candidate = parent / name
+        try:
+            if not candidate.is_file():
+                continue
+            data = candidate.read_bytes()
+        except OSError:
+            continue
+        mime = image_mime(data)
+        if mime:
+            return data, mime
+    return None
 
 
 def image_dimensions(data: bytes) -> Optional[Tuple[int, int]]:

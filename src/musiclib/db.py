@@ -231,6 +231,69 @@ class Database:
         row = self.query_one("SELECT * FROM tracks WHERE path=?", (path,))
         return self._row_to_track(row) if row else None
 
+    def album_groups_page(
+        self, query: str = "", status: str = "", genre: str = "", format: str = "",
+        offset: int = 0, limit: int = 48,
+    ) -> Dict[str, Any]:
+        artist_expr = (
+            "COALESCE(NULLIF(TRIM(album_artist), ''), NULLIF(TRIM(artist), ''), 'Unknown Artist')"
+        )
+        album_expr = "COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')"
+        where = "status IN ('ok', 'suspect', 'bad')"
+        params: List[Any] = []
+        if status in ("ok", "suspect", "bad"):
+            where += " AND status=?"
+            params.append(status)
+        for column, value in (("genre", genre), ("format", format)):
+            if value:
+                where += f" AND {column}=?"
+                params.append(value)
+        if query:
+            pattern = f"%{query}%"
+            where += (
+                " AND (path LIKE ? COLLATE NOCASE OR artist LIKE ? COLLATE NOCASE "
+                "OR album_artist LIKE ? COLLATE NOCASE OR album LIKE ? COLLATE NOCASE "
+                "OR title LIKE ? COLLATE NOCASE)"
+            )
+            params.extend([pattern] * 5)
+        grouped = (
+            f"SELECT {artist_expr} AS album_artist, {album_expr} AS album, "
+            "MAX(year) AS year, MAX(genre) AS genre, COUNT(*) AS track_count, "
+            "SUM(CASE WHEN status='bad' THEN 1 ELSE 0 END) AS bad_count, "
+            "SUM(CASE WHEN has_embedded_art=1 THEN 1 ELSE 0 END) AS art_count, "
+            "MAX(mbid_release) AS mbid_release, "
+            "MIN(CASE WHEN has_embedded_art=1 THEN id END) AS cover_track_id "
+            f"FROM tracks WHERE {where} GROUP BY 1, 2"
+        )
+        total = self.query_one(f"SELECT COUNT(*) AS n FROM ({grouped})", params)["n"]
+        rows = self.query(
+            grouped + " ORDER BY album_artist COLLATE NOCASE, album COLLATE NOCASE "
+            "LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        return {"items": [dict(row) for row in rows], "total": total, "offset": offset}
+
+    def album_tracks(
+        self, album_artist: str, album: str, status: str = "",
+    ) -> List[sqlite3.Row]:
+        artist_expr = (
+            "COALESCE(NULLIF(TRIM(album_artist), ''), NULLIF(TRIM(artist), ''), 'Unknown Artist')"
+        )
+        album_expr = "COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')"
+        where = (
+            f"status IN ('ok', 'suspect', 'bad') AND {artist_expr}=? AND {album_expr}=?"
+        )
+        params: List[Any] = [album_artist, album]
+        if status in ("ok", "suspect", "bad"):
+            where += " AND status=?"
+            params.append(status)
+        return self.query(
+            "SELECT id, path, artist, album_artist, album, title, genre, format, "
+            "bitrate, year, track_no, disc_no, status, mbid_release, has_embedded_art "
+            f"FROM tracks WHERE {where} ORDER BY disc_no, track_no, path",
+            params,
+        )
+
     def all_tracks(self, status: Optional[str] = None) -> List[Track]:
         if status:
             rows = self.query("SELECT * FROM tracks WHERE status=? ORDER BY path", (status,))
