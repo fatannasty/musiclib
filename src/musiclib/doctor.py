@@ -9,7 +9,7 @@ from typing import Callable, Dict, List, Optional
 
 from .config import Config
 from .db import Database
-from .fsops import delete_file, trash_file
+from .fsops import delete_file, is_inside, trash_file
 from .models import LOSSLESS_FORMATS, Issue, Track
 
 
@@ -42,7 +42,9 @@ class DoctorReport:
     suspect: int = 0
     trashed: int = 0
     deleted: int = 0
+    failed: int = 0
     results: List[Dict] = field(default_factory=list)
+    failures: List[Dict] = field(default_factory=list)
 
 
 class Doctor:
@@ -159,22 +161,54 @@ class Doctor:
             if progress_state:
                 progress_state("Moving bad files to trash", 0, len(bad_tracks), "")
             for index, track in enumerate(bad_tracks, start=1):
-                try:
-                    if hard_delete:
-                        delete_file(track.path)
-                        self.db.record_deletion(
-                            track.path, track.size, track.file_hash, "doctor:bad", None
-                        )
-                        report.deleted += 1
-                    else:
-                        dest = trash_file(track.path, self.config.trash_dir)
-                        self.db.record_deletion(
-                            track.path, track.size, track.file_hash, "doctor:bad", dest
-                        )
-                        report.trashed += 1
-                    self.db.update_track_columns(track.id, status="deleted")
-                except FileNotFoundError:
-                    self.db.update_track_columns(track.id, status="deleted")
+                self._trash_one(track, report, hard_delete=hard_delete, reason="doctor:bad")
                 if progress_state:
                     progress_state("Moving bad files to trash", index, len(bad_tracks), track.path)
         return report
+
+    def trash_tracks(
+        self,
+        track_ids: List[int],
+        hard_delete: bool = False,
+        progress_state: Optional[Callable[[str, int, int, str], None]] = None,
+    ) -> DoctorReport:
+        if not 1 <= len(track_ids) <= 200 or len(set(track_ids)) != len(track_ids):
+            raise ValueError("Select between 1 and 200 distinct files.")
+        report = DoctorReport()
+        for index, track_id in enumerate(track_ids, start=1):
+            track = self.db.get_track(track_id)
+            if track is None or track.status == "deleted":
+                report.failed += 1
+                report.failures.append({"track_id": track_id, "error": "Track is not available."})
+            else:
+                self._trash_one(track, report, hard_delete=hard_delete, reason="doctor:selected")
+            if progress_state:
+                progress_state("Moving selected files to trash", index, len(track_ids), str(track_id))
+        return report
+
+    def _trash_one(
+        self, track: Track, report: DoctorReport, hard_delete: bool, reason: str
+    ) -> None:
+        if not is_inside(track.path, self.config.library):
+            report.failed += 1
+            report.failures.append({"track_id": track.id, "path": track.path, "error": "File is outside the library."})
+            return
+        try:
+            if hard_delete:
+                delete_file(track.path)
+                self.db.record_deletion(track.path, track.size, track.file_hash, reason, None)
+                report.deleted += 1
+            else:
+                dest = trash_file(track.path, self.config.trash_dir)
+                self.db.record_deletion(track.path, track.size, track.file_hash, reason, dest)
+                report.trashed += 1
+            self.db.update_track_columns(track.id, status="deleted")
+        except FileNotFoundError:
+            self.db.update_track_columns(track.id, status="deleted")
+            report.trashed += 1
+        except OSError as exc:
+            report.failed += 1
+            report.failures.append({
+                "track_id": track.id, "path": track.path,
+                "error": f"Could not move this file to trash: {exc}",
+            })

@@ -123,7 +123,7 @@ musiclib serve               # http://127.0.0.1:8000
 ```
 
 Tabs: Overview (stats widgets, scan, issues), Duplicates (review and re-pick keepers),
-Bad Files (doctor), Library (browse tracks and review tag suggestions
+Bad Files (doctor, including selected-file trash with per-file errors), Library (browse tracks and review tag suggestions
 field by field; nothing is selected or written until you choose fields and confirm),
 Organize (rename preview/apply), Cover Art, Missing Music (MusicBrainz gaps), Usenet
 (indexer search + SABnzbd queue).
@@ -142,7 +142,18 @@ selected tracks**. Review the album cards for each file and select the individua
 fields to write, then choose **Apply reviewed tags** and confirm the batch.
 No fields are selected automatically; changing a candidate clears that track's
 field selection. Files without search terms are reported separately and can be
-looked up individually. Tagging does not rename or move files.
+looked up individually. Per-track tagging does not rename or move files.
+
+To retag a whole album at once, select up to 200 tracks and choose **Tag selected
+as one album**. Suggestions prefer albums already in your library, then MusicBrainz
+and iTunes. Only album-level fields (album, album artist, artist, year, genre,
+release ID) can be written to every selected file. Nothing is selected or written
+until you choose fields and confirm. Optionally rename just those files with the
+current Organize templates after tags are saved.
+
+On Bad Files, **Trash selected** moves the files you check even if a check has not
+just finished. Permission or lock errors are reported per file and do not abort the
+rest of the batch. **Trash all bad files** still skips warnings.
 
 Bulk lookups and writes run in Activity with per-file progress and saved results.
 Use **View results → Review suggestions** on a completed `metadata-lookup` job to

@@ -17,7 +17,7 @@ from ..doctor import Doctor
 from ..duplicates import DuplicateFinder
 from ..fingerprint import compute_all, fpcalc_available
 from ..fsops import is_inside
-from ..metadata_review import EDITABLE_FIELDS, MetadataReview
+from ..metadata_review import ALBUM_FIELDS, EDITABLE_FIELDS, MetadataReview
 from ..rename import Renamer
 from ..scanner import Scanner
 from ..usenet import Sabnzbd, SabnzbdError, search_all
@@ -88,6 +88,24 @@ class MetadataBulkLookupBody(BaseModel):
 
 class MetadataBulkApplyBody(BaseModel):
     reviews: List[MetadataApplyBody]
+
+
+class IssuesTrashBody(BaseModel):
+    track_ids: List[int]
+    hard_delete: bool = False
+
+
+class AlbumSuggestBody(BaseModel):
+    track_ids: List[int]
+    album: Optional[str] = None
+    artist: Optional[str] = None
+
+
+class AlbumApplyBody(BaseModel):
+    track_ids: List[int]
+    fields: List[str]
+    values: Dict[str, Any]
+    rename: bool = False
 
 
 class SabAddBody(BaseModel):
@@ -176,7 +194,7 @@ def create_app(config: Config) -> FastAPI:
         return {
             "checked": report.checked, "bad": report.bad, "suspect": report.suspect,
             "trashed": report.trashed, "deleted": report.deleted,
-            "results": report.results,
+            "failed": report.failed, "results": report.results, "failures": report.failures,
         }
 
     @app.get("/api/issues")
@@ -203,6 +221,22 @@ def create_app(config: Config) -> FastAPI:
             params + [limit, offset],
         )
         return {"items": [dict(row) for row in rows], "total": count, "offset": offset}
+
+    @app.post("/api/issues/trash")
+    def issues_trash(body: IssuesTrashBody) -> Dict[str, str]:
+        if not 1 <= len(body.track_ids) <= 200 or len(set(body.track_ids)) != len(body.track_ids):
+            raise HTTPException(400, "Select between 1 and 200 distinct files.")
+
+        def run(job: Dict[str, Any]) -> Dict[str, Any]:
+            report = Doctor(config, db).trash_tracks(
+                body.track_ids, hard_delete=body.hard_delete, progress_state=jobs.update,
+            )
+            return {
+                "trashed": report.trashed, "deleted": report.deleted,
+                "failed": report.failed, "failures": report.failures,
+            }
+
+        return {"job_id": jobs.start("issues-trash", run)}
 
     def serialize_dupe_groups(groups) -> List[Dict[str, Any]]:
         return [
@@ -404,6 +438,35 @@ def create_app(config: Config) -> FastAPI:
             return {"applied": applied, "errors": errors}
 
         return {"job_id": jobs.start("metadata-apply", run)}
+
+    @app.post("/api/metadata/album-suggest")
+    @jobs.operation
+    def metadata_album_suggest(body: AlbumSuggestBody) -> Dict[str, Any]:
+        try:
+            return MetadataReview(config, db).suggest_album(
+                body.track_ids, album=body.album, artist=body.artist
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/metadata/album-apply")
+    def metadata_album_apply(body: AlbumApplyBody) -> Dict[str, str]:
+        if not 1 <= len(body.track_ids) <= 200 or len(set(body.track_ids)) != len(body.track_ids):
+            raise HTTPException(400, "Select between 1 and 200 distinct tracks.")
+        if not body.fields or set(body.fields) - set(ALBUM_FIELDS):
+            raise HTTPException(400, "Select one or more album fields to apply.")
+        if all(body.values.get(field) in (None, "") for field in body.fields):
+            raise HTTPException(400, "The selected album has no values for the chosen fields.")
+
+        def run(job: Dict[str, Any]) -> Dict[str, Any]:
+            jobs.update("Applying album tags", 0, len(body.track_ids))
+            result = MetadataReview(config, db).apply_album(
+                body.track_ids, body.fields, body.values, rename=body.rename
+            )
+            jobs.update("Applying album tags", len(body.track_ids), len(body.track_ids))
+            return result
+
+        return {"job_id": jobs.start("album-apply", run)}
 
     @app.post("/api/tracks/page")
     def tracks_page(body: TrackSearchBody) -> Dict[str, Any]:
