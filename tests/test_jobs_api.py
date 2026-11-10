@@ -17,7 +17,7 @@ def wait_job(client, job_id):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         job = client.get(f"/api/jobs/{job_id}").json()
-        if job["status"] in ("done", "error"):
+        if job["status"] in ("done", "error", "cancelled"):
             return job
         time.sleep(.01)
     pytest.fail("job did not finish")
@@ -214,3 +214,118 @@ def test_deep_check_counts_each_file_once_and_shallow_preserves_decode_error(lib
     shallow = Doctor(lib_env.config, lib_env.db).check(deep=False)
     assert shallow.bad == 1
     assert "decode_error" in shallow.results[0]["issues"]
+
+
+def test_stop_request_keeps_lane_locked_until_safe_checkpoint(lib_env, monkeypatch):
+    entered, finish = threading.Event(), threading.Event()
+
+    def scan(self, **kwargs):
+        kwargs["progress_state"](1, 3, "first file")
+        entered.set()
+        assert finish.wait(5)
+        kwargs["progress_state"](1, 3, "before second file")
+        return ScanReport(scanned=3)
+
+    monkeypatch.setattr("musiclib.server.app.Scanner.scan", scan)
+    with TestClient(create_app(lib_env.config)) as client:
+        try:
+            job_id = client.post("/api/scan", json={}).json()["job_id"]
+            assert entered.wait(5)
+            response = client.post(f"/api/jobs/{job_id}/cancel")
+            assert response.status_code == 200
+            assert response.json()["status"] == "stopping"
+            assert client.post("/api/tasks/doctor", json={}).status_code == 409
+            assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+        finally:
+            finish.set()
+        job = wait_job(client, job_id)
+        assert job["status"] == "cancelled"
+        assert job["completed"] == 1
+        assert job["summary"] == {"processed": 1, "total": 3}
+        assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 409
+        assert client.post("/api/jobs/not-found/cancel").status_code == 404
+        assert client.post("/api/tasks/rename", json={}).status_code == 200
+    with TestClient(create_app(lib_env.config)) as client:
+        assert client.get(f"/api/jobs/{job_id}").json()["status"] == "cancelled"
+
+
+def test_queued_job_can_be_stopped_before_any_work(lib_env, monkeypatch):
+    pending = []
+
+    class Worker:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def start(self):
+            pending.append(self.target)
+
+        def join(self):
+            pass
+
+    registry = JobRegistry(lib_env.db)
+    monkeypatch.setattr("musiclib.server.jobs.threading.Thread", Worker)
+    job_id = registry.start("test", lambda job: pytest.fail("Queued work must not start"))
+    assert registry.cancel(job_id)["status"] == "stopping"
+    pending[0]()
+    assert registry.get(job_id)["status"] == "cancelled"
+    assert registry.operation(lambda: "available")() == "available"
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_cancellation_only_stops_the_requested_lane(lib_env, read_only):
+    registry = JobRegistry(lib_env.db)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def run(job):
+        entered.set()
+        assert release.wait(5)
+        registry.update("Next file", 1, 2)
+        pytest.fail("No new work may start after a stop checkpoint")
+
+    try:
+        job_id = registry.start("stop-me", run, read_only=read_only)
+        assert entered.wait(5)
+        registry.cancel(job_id)
+        other_id = registry.start("other-lane", lambda job: {}, read_only=not read_only)
+    finally:
+        release.set()
+        registry.close()
+    assert registry.get(job_id)["status"] == "cancelled"
+    assert registry.get(other_id)["status"] == "done"
+
+
+def test_selected_bad_file_trash_handles_more_than_one_page_or_batch(lib_env, monkeypatch):
+    ids = []
+    for index in range(225):
+        path = lib_env.library / f"{index}.flac"
+        path.write_bytes(b"bad")
+        track = lib_env.db.upsert_track(Track(path=str(path), status="bad"))
+        ids.append(track.id)
+    monkeypatch.setattr("musiclib.doctor.trash_file", lambda path, root: path + ".trashed")
+    with TestClient(create_app(lib_env.config)) as client:
+        job_id = client.post("/api/issues/trash", json={"track_ids": ids}).json()["job_id"]
+        job = wait_job(client, job_id)
+        assert job["status"] == "done"
+        assert job["summary"]["trashed"] == 225
+        assert job["completed"] == job["total"] == 225
+
+
+def test_stopping_a_deep_check_preserves_last_known_decode_failure(lib_env, monkeypatch):
+    from concurrent.futures import CancelledError
+    path = lib_env.library / "bad.flac"
+    path.write_bytes(b"bad audio")
+    track = lib_env.db.upsert_track(Track(
+        path=str(path), status="bad", format="flac",
+        issues=[Issue("decode_error", "known corruption", "bad")],
+    ))
+    monkeypatch.setattr("musiclib.doctor.find_binary", lambda name: name)
+
+    def stop_after_metadata(phase, completed, total, current):
+        if completed:
+            raise CancelledError()
+
+    with pytest.raises(CancelledError):
+        Doctor(lib_env.config, lib_env.db).check(deep=True, progress_state=stop_after_metadata)
+    assert lib_env.db.get_track(track.id).status == "bad"
+    assert any(i.kind == "decode_error" for i in lib_env.db.get_track(track.id).issues)

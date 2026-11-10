@@ -123,6 +123,10 @@ button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
   border-color: var(--accent); box-shadow: 0 0 0 2px rgba(255,138,76,.35);
 }
 .match-card input { position: absolute; opacity: 0; }
+.album-tile { min-width: 0; }
+.album-tile > label { display: flex; gap: 8px; align-items: center; padding: 6px 2px; }
+.album-tile:has(input:checked) .match-card { border-color: var(--accent); }
+.match-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .cover, .cover-ph {
   width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; background: #1a1524;
   display: grid; place-items: center; color: var(--accent); font-size: 28px;
@@ -197,7 +201,7 @@ const TABS = [
   ["organize", "Organize"], ["art", "Cover Art"], ["missing", "Missing Music"],
   ["usenet", "Usenet"], ["settings", "Settings"],
 ];
-const state = { tab: "overview", jobs: [], libraryView: "albums" };
+const state = { tab: "overview", jobs: [], libraryView: "albums", libraryBatch: 50 };
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const albumSourceOptions = selected => [
@@ -365,6 +369,10 @@ async function pollJob(id, label) {
     const job = await api(`/api/jobs/${id}`);
     if (job.status === "done") { await refreshActivity(); toast(`${label}: done`); return job; }
     if (job.status === "error") { await refreshActivity(); throw new Error(job.error); }
+    if (job.status === "cancelled") {
+      await refreshActivity();
+      throw new Error(`${label}: stopped. Completed changes remain; refresh the library before retrying.`);
+    }
     await new Promise(r => setTimeout(r, 1500));
   }
 }
@@ -395,13 +403,38 @@ async function pagedTable(container, load, headers, row, onPage = () => {}) {
   };
   await draw();
 }
+async function collectPages(load) {
+  const items = [];
+  let total = Infinity;
+  while (items.length < total) {
+    const page = await load(items.length);
+    if (!page.items.length && items.length < page.total) {
+      throw new Error("The list changed during selection. Refresh and select again.");
+    }
+    items.push(...page.items);
+    total = page.total;
+    toast(`Loaded ${items.length} of ${total} items for selection. Nothing has been deleted.`);
+  }
+  return items;
+}
+function duplicateGroupMarkup(g, approved, scope) {
+  const keep = g.members.find(m => m.id === g.keep_id);
+  return `<div class="group" data-gid="${g.group_id}">
+    <div class="head"><label><input type="checkbox" data-approve="${g.group_id}" ${approved ? "checked" : ""}> Approve group</label>
+    <span>${esc(keep?.artist)} — ${esc(keep?.title)} · ${g.members.length} copies</span></div>
+    <div class="table-scroll"><table><thead><tr><th>Keep</th><th>Quality</th><th>Score</th><th>Path</th><th>Listen</th></tr></thead><tbody>${g.members.map(m =>
+      `<tr><td><input aria-label="Keep ${esc(m.path)}" type="radio" name="keep-${scope}-${g.group_id}" data-keep="${g.group_id}:${m.id}" ${m.id === g.keep_id ? "checked" : ""}></td>
+      <td>${esc(m.format)} ${esc(m.bitrate)} kbps</td><td>${esc(m.quality_score)}</td><td class="path">${esc(m.path)}</td><td>${playButton(m.id, m.title || m.path)}</td></tr>`
+    ).join("")}</tbody></table></div></div>`;
+}
 async function showJobResults(job) {
   const container = $("#activity-results");
   container.innerHTML = `<h3>${esc(job.kind)} results</h3><div class="row sections"></div><div class="results-page"></div>`;
   const sections = Object.entries(job.summary || {}).filter(([, value]) => typeof value === "number");
   const lists = {
     scan: [], doctor: ["results", "failures"], duplicates: ["groups"],
-    rename: ["moves", "skipped_files", "errors"], art: ["albums"], "duplicates-apply": [],
+    rename: ["moves", "skipped_files", "errors"], art: ["albums"], "duplicates-apply": ["failures"],
+    "album-duplicates-preview": ["groups", "tracks"], "album-duplicates-apply": ["failures", "remaining_ids"],
     "metadata-lookup": ["reviews", "errors"], "metadata-apply": ["applied", "errors"],
     "issues-trash": ["failures"], "album-apply": ["applied", "errors", "rename_errors"],
     "rename-preview": ["moves", "skipped_files"], "rename-reviewed": ["moves", "errors", "skipped_files"],
@@ -464,13 +497,26 @@ async function showJobResults(job) {
 async function refreshActivity() {
   try {
     state.jobs = await api("/api/jobs");
-    const activeJobs = state.jobs.filter(j => ["queued", "running"].includes(j.status));
+    const activeJobs = state.jobs.filter(j => ["queued", "running", "stopping"].includes(j.status));
     $("#activity-current").innerHTML = activeJobs.length ? activeJobs.map(active => `
       <p><b>${esc(active.kind)}: ${esc(active.phase)}</b> · ${elapsed(active)}</p>
       <p class="hint">${active.read_only ? "Catalog search — runs separately from library changes." : "Library operation — other file changes are temporarily locked."}</p>
       <progress ${active.total !== null ? `value="${active.completed}" max="${Math.max(1, active.total)}"` : ""}></progress>
       <p>${active.total !== null ? `${active.completed} / ${active.total} processed` : "Working — total not yet known"}</p>
-      <p class="path">${esc(active.current)}</p>`).join("") : "<p>No background work running.</p>";
+      <p class="path">${esc(active.current)}</p>
+      <button class="action ghost" data-stop-job="${active.id}" ${active.status === "stopping" ? "disabled" : ""}>
+        ${active.status === "stopping" ? "Stopping safely..." : "Stop job"}</button>
+      <p class="hint">Stops at the next safe checkpoint. Current file/album work, network requests,
+      decoder workers, and catalog maintenance may finish first. Completed changes are not undone.
+      Restore completed trash moves from Recovery. Stopped previews must be created again.</p>`).join("") : "<p>No background work running.</p>";
+    document.querySelectorAll("[data-stop-job]").forEach(button => button.onclick = async () => {
+      button.disabled = true;
+      try {
+        await post(`/api/jobs/${button.dataset.stopJob}/cancel`, {});
+        toast("Stop requested. Waiting for the current file or request to finish safely.");
+      } catch (e) { toast(e.message, true); }
+      await refreshActivity();
+    });
     document.querySelectorAll("[data-operation]").forEach(button => {
       button.disabled = activeJobs.some(job => !job.read_only);
     });
@@ -484,7 +530,9 @@ async function refreshActivity() {
         async offset => ({ items: state.jobs.slice(offset, offset + 50), total: state.jobs.length }),
         ["Task", "Status", "Elapsed", "Result"],
         job => `<tr><td>${esc(job.kind)}</td><td>${esc(job.status)}</td><td>${elapsed(job)}</td><td>${job.error ? esc(job.error) :
-          job.status === "done" ? `<button class="action ghost" data-result="${job.id}">View results</button>` : "In progress"}</td></tr>`,
+          job.status === "done" ? `<button class="action ghost" data-result="${job.id}">View results</button>` :
+          job.status === "cancelled" ? `Stopped at ${job.completed}${job.total == null ? "" : ` / ${job.total}`}. Completed changes remain.` :
+          "In progress"}</td></tr>`,
         () => history.querySelectorAll("[data-result]").forEach(button => {
           button.onclick = () => showJobResults(state.jobs.find(j => j.id === button.dataset.result));
         }));
@@ -559,6 +607,11 @@ const views = {
       <button class="action danger" id="btn-apply" data-operation style="display:none">Trash copies in selected groups</button>
       <label class="check"><input type="checkbox" id="opt-fingerprint"> compare audio fingerprints (slower)</label>
       <span class="hint">Select groups to approve removal, then choose the keeper. Unselected groups are untouched.</span>
+    </div><div class="row">
+      <button class="action ghost" id="dupe-select-page">Select this page</button>
+      <button class="action ghost" id="dupe-select-all">Select all groups</button>
+      <button class="action ghost" id="dupe-clear">Clear selection</button>
+      <span class="hint" id="dupe-selected" role="status">0 groups selected</span>
     </div><div id="dupe-list"><div class="empty">Click "Find duplicates" to analyze the library.</div></div>
     <div class="card"><h3>Manual duplicate review</h3>
       <p>Search your library, add files you know are copies, choose the one to keep, then move the rest to trash.</p>
@@ -568,31 +621,51 @@ const views = {
       <button class="action danger" id="manual-apply" style="display:none">Trash selected copies</button>
     </div>`;
     const reviewed = new Map();
+    let currentGroups = [];
+    const updateGroups = () => {
+      $("#dupe-selected").textContent = `${reviewed.size} groups selected; one keeper per group stays untouched`;
+      $("#btn-apply").style.display = reviewed.size ? "" : "none";
+      el.querySelectorAll("[data-approve]").forEach(input => {
+        input.checked = reviewed.has(Number(input.dataset.approve));
+      });
+    };
+    $("#dupe-select-page").onclick = () => {
+      currentGroups.forEach(g => reviewed.set(g.group_id, g)); updateGroups();
+    };
+    $("#dupe-clear").onclick = () => { reviewed.clear(); updateGroups(); };
+    $("#dupe-select-all").onclick = async () => {
+      const button = $("#dupe-select-all");
+      button.disabled = true;
+      try {
+        const groups = await collectPages(offset => api(`/api/dupes/page?offset=${offset}&limit=200`));
+        if (!el.isConnected) return;
+        groups.forEach(g => {
+          if (!reviewed.has(g.group_id)) reviewed.set(g.group_id, currentGroups.find(item => item.group_id === g.group_id) || g);
+        });
+        updateGroups();
+      } catch (e) { toast(e.message, true); }
+      finally { button.disabled = false; }
+    };
     const drawDupes = async () => {
       await pagedTable($("#dupe-list"), offset => api(`/api/dupes/page?offset=${offset}`),
         ["Duplicate groups — select only those you have reviewed"],
         group => {
           const g = reviewed.get(group.group_id) || group;
-          const keep = g.members.find(m => m.id === g.keep_id);
-          return `<tr><td><div class="group" data-gid="${g.group_id}">
-            <div class="head"><label><input type="checkbox" data-approve="${g.group_id}" ${reviewed.has(g.group_id) ? "checked" : ""}> Approve group</label>
-            <span>${esc(keep?.artist)} — ${esc(keep?.title)} · ${g.members.length} copies</span></div>
-            <table><thead><tr><th>Keep</th><th>Quality</th><th>Score</th><th>Path</th><th>Listen</th></tr></thead><tbody>${g.members.map(m =>
-              `<tr><td><input aria-label="Keep ${esc(m.path)}" type="radio" name="keep-${g.group_id}" data-keep="${g.group_id}:${m.id}" ${m.id === g.keep_id ? "checked" : ""}></td>
-              <td>${esc(m.format)} ${esc(m.bitrate)} kbps</td><td>${esc(m.quality_score)}</td><td class="path">${esc(m.path)}</td><td>${playButton(m.id, m.title || m.path)}</td></tr>`
-            ).join("")}</tbody></table></div></td></tr>`;
+          return `<tr><td>${duplicateGroupMarkup(g, reviewed.has(g.group_id), "library")}</td></tr>`;
         },
         groups => {
+          currentGroups = groups.map(g => reviewed.get(g.group_id) || g);
           el.querySelectorAll("[data-approve]").forEach(node => node.onchange = () => {
-            const g = groups.find(g => g.group_id === Number(node.dataset.approve));
+            const g = currentGroups.find(g => g.group_id === Number(node.dataset.approve));
             if (node.checked) reviewed.set(g.group_id, g); else reviewed.delete(g.group_id);
-            $("#btn-apply").style.display = reviewed.size ? "" : "none";
+            updateGroups();
           });
           el.querySelectorAll("[data-keep]").forEach(node => node.onchange = () => {
             const [gid, tid] = node.dataset.keep.split(":").map(Number);
-            const g = reviewed.get(gid) || groups.find(g => g.group_id === gid);
+            const g = reviewed.get(gid) || currentGroups.find(g => g.group_id === gid);
             g.keep_id = tid;
           });
+          updateGroups();
         });
     };
     const selected = new Map();
@@ -620,10 +693,15 @@ const views = {
     };
     $("#btn-apply").onclick = async () => {
       if (!reviewed.size || !confirm(`Trash copies in ${reviewed.size} selected groups? Keepers remain untouched.`)) return;
-      const body = { keep_ids: {}, member_ids: {}, group_ids: [...reviewed.keys()], hard_delete: false };
-      reviewed.forEach(g => { body.keep_ids[g.group_id] = g.keep_id; body.member_ids[g.group_id] = g.members.map(m => m.id); });
+      const body = { keep_ids: {}, member_ids: {}, snapshots: {}, group_ids: [...reviewed.keys()], hard_delete: false };
+      reviewed.forEach(g => {
+        body.keep_ids[g.group_id] = g.keep_id; body.member_ids[g.group_id] = g.members.map(m => m.id);
+        g.members.forEach(m => { body.snapshots[m.id] = {path: m.path, file_hash: m.file_hash || ""}; });
+      });
       const { job_id } = await post("/api/dupes/apply-job", body);
-      await refreshActivity(); await pollJob(job_id, "Remove duplicates");
+      await refreshActivity();
+      const job = await pollJob(job_id, "Remove duplicates");
+      toast(`Trashed ${job.summary.trashed} copies; ${job.summary.failed || 0} failures. Details are in Activity.`);
       if (!el.isConnected) return;
       reviewed.clear(); $("#btn-apply").style.display = "none"; await drawDupes(); await loadStats();
     };
@@ -651,6 +729,7 @@ const views = {
         track_ids: picked.map(m => m.id), keep_id: keep, hard_delete: false,
       });
       toast(`Trashed ${res.trashed}, reclaimed ${fmtBytes(res.reclaimed_bytes)}`);
+      if (res.failures?.length) toast(res.failures.map(item => `${item.path}: ${item.error}`).join(" "), true);
       selected.clear(); manualKeepId = null; $("#manual-results").innerHTML = ""; renderManual(); loadStats();
     };
     await drawDupes();
@@ -663,6 +742,11 @@ const views = {
       <button class="action danger" id="btn-trash-selected" data-operation>Trash selected</button>
       <label class="check"><input type="checkbox" id="opt-deep" checked> deep decode (ffmpeg)</label>
     </div><div class="row">
+      <button class="action ghost" id="issue-select-page">Select this page</button>
+      <button class="action ghost" id="issue-select-all">Select all matching files</button>
+      <button class="action ghost" id="issue-clear">Clear selection</button>
+      <span class="hint" id="issue-selected" role="status">0 files selected</span>
+    </div><div class="row">
       <select id="issue-severity" aria-label="Issue severity"><option value="">All severities</option><option value="bad">Bad — broken files</option><option value="warn">Warnings — review only</option></select>
       <select id="issue-kind" aria-label="Issue type"><option value="">All issue types</option><option value="decode_error">Audio corruption</option>
       <option value="unparseable">Unreadable audio</option><option value="missing_file">Missing file</option><option value="missing_tags">Missing metadata</option>
@@ -670,10 +754,27 @@ const views = {
     </div><p class="hint">Select files to trash even if a full check has not just finished. Permission errors are listed per file and do not stop the rest. Warnings are not included in Trash all bad files.</p>
     <div id="doc-summary"></div><div id="doc-out"></div>`;
     const selected = new Set();
+    let currentIssues = [];
     const updateTrashSelection = () => {
+      $("#issue-selected").textContent = `${selected.size} files selected`;
       el.querySelectorAll("[data-trash-track]").forEach(input => {
         input.checked = selected.has(Number(input.dataset.trashTrack));
       });
+    };
+    $("#issue-select-page").onclick = () => {
+      currentIssues.forEach(item => selected.add(item.track_id)); updateTrashSelection();
+    };
+    $("#issue-clear").onclick = () => { selected.clear(); updateTrashSelection(); };
+    $("#issue-select-all").onclick = async () => {
+      const button = $("#issue-select-all");
+      const severity = $("#issue-severity").value, kind = $("#issue-kind").value;
+      button.disabled = true;
+      try {
+        const issues = await collectPages(offset => api(`/api/issues/page?offset=${offset}&limit=200&severity=${encodeURIComponent(severity)}&kind=${encodeURIComponent(kind)}`));
+        if (!el.isConnected || severity !== $("#issue-severity").value || kind !== $("#issue-kind").value) return;
+        issues.forEach(item => selected.add(item.track_id)); updateTrashSelection();
+      } catch (e) { toast(e.message, true); }
+      finally { button.disabled = false; }
     };
     const showIssues = async () => {
       const severity = $("#issue-severity").value, kind = $("#issue-kind").value;
@@ -684,7 +785,8 @@ const views = {
         ["Select", "Severity", "Issue", "Details", "File", "Listen"],
         i => `<tr><td><input type="checkbox" data-trash-track="${i.track_id}" aria-label="Select ${esc(i.path)}"></td>
           <td>${esc(i.severity)}</td><td>${esc(i.kind)}</td><td>${esc(i.detail)}</td><td class="path">${esc(i.path)}</td><td>${playButton(i.track_id, i.path)}</td></tr>`,
-        () => {
+        items => {
+          currentIssues = items;
           el.querySelectorAll("[data-trash-track]").forEach(input => input.onchange = () => {
             const id = Number(input.dataset.trashTrack);
             if (input.checked) selected.add(id); else selected.delete(id);
@@ -693,8 +795,9 @@ const views = {
           updateTrashSelection();
         });
     };
-    $("#issue-severity").onchange = showIssues;
-    $("#issue-kind").onchange = showIssues;
+    const changeIssueFilter = () => { selected.clear(); updateTrashSelection(); showIssues(); };
+    $("#issue-severity").onchange = changeIssueFilter;
+    $("#issue-kind").onchange = changeIssueFilter;
     $("#btn-check").onclick = async () => {
       const job = await runTask("doctor", { deep: $("#opt-deep").checked });
       if (!el.isConnected) return;
@@ -739,26 +842,48 @@ const views = {
     <div class="row">
       <button class="action ${state.libraryView === "albums" ? "" : "ghost"}" id="library-view-albums">Albums</button>
       <button class="action ${state.libraryView === "tracks" ? "" : "ghost"}" id="library-view-tracks">Tracks</button>
+      <label>Albums per load <select id="library-batch">${[50, 100, 150, 200].map(size =>
+        `<option value="${size}" ${state.libraryBatch === size ? "selected" : ""}>${size}</option>`).join("")}</select></label>
     </div>
     <p class="hint">Albums are grouped from your scanned library. Open an album to edit tags, upload artwork, or organize its tracks. Catalog images are previews; use Change artwork to upload a cover or Cover Art for automatic downloads.</p>
     <div class="row" id="library-track-tools"><button class="action ghost" id="metadata-select-page">Select this page</button>
       <button class="action ghost" id="metadata-clear-selection">Clear selection</button>
       <span id="metadata-selection-count">0 tracks selected</span>
       <button class="action" id="metadata-lookup-bulk" data-lookup-operation>Look up selected tracks</button>
-      <button class="action" id="metadata-album-bulk" data-lookup-operation>Tag selected as one album</button></div>
+      <button class="action" id="metadata-album-bulk" data-lookup-operation>Find album matches</button>
+      <button class="action" id="metadata-merge-tracks" data-operation>Merge selected tracks into an album</button>
+      <button class="action ghost" id="metadata-dupes" data-operation>Review selected duplicates</button></div>
+    <div class="row" id="library-album-tools">
+      <button class="action ghost" id="album-select-loaded">Select loaded albums</button>
+      <button class="action ghost" id="album-clear">Clear album selection</button>
+      <span class="hint" id="album-selection-count" role="status">0 albums selected</span>
+      <button class="action" id="album-merge" data-operation>Merge selected albums</button>
+    </div>
     <p class="hint">Select up to 200 tracks. Per-track lookup is limited to 100 files. Album tagging writes the same album fields to every selected file after you confirm. Files are not renamed unless you choose that option.</p>
     <div id="metadata-album"></div>
     <div id="manual-album-result" role="status"></div>
     <div id="album-rename-review"></div>
     <div id="album-artwork-review"></div>
     <div id="album-trash-review"></div>
+    <div id="album-dupe-review"></div>
     <div id="metadata-bulk"></div>
     <div id="metadata-search"></div><div id="metadata-review"></div>
     <div id="library-albums"></div>
     <div id="library-album-page"></div>
     <div id="library-table"></div>`;
     const selectedTracks = new Set();
+    const selectedAlbums = new Map();
+    const loadedAlbums = new Map();
+    const albumKey = album => JSON.stringify([album.album_artist, album.album]);
     let pageTracks = [];
+    let albumOffset = 0, albumTotal = 0, albumGeneration = 0, albumLoading = false;
+    let albumFilters = {};
+    const updateAlbumSelection = () => {
+      $("#album-selection-count").textContent = `${selectedAlbums.size} albums selected`;
+      el.querySelectorAll("[data-select-album]").forEach(input => {
+        input.checked = selectedAlbums.has(input.dataset.selectAlbum);
+      });
+    };
     const updateSelection = () => {
       $("#metadata-selection-count").textContent = `${selectedTracks.size} tracks selected`;
       el.querySelectorAll("[data-select-track]").forEach(input => {
@@ -781,46 +906,93 @@ const views = {
         onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback='';}else{this.replaceWith(Object.assign(document.createElement('div'),{className:'cover-ph',textContent:'♪'}));}">`;
     };
     const setView = view => {
+      state.libraryObserver?.disconnect();
       state.libraryView = view;
       $("#library-view-albums").className = `action ${view === "albums" ? "" : "ghost"}`;
       $("#library-view-tracks").className = `action ${view === "tracks" ? "" : "ghost"}`;
       $("#library-albums").style.display = view === "albums" ? "" : "none";
       $("#library-album-page").style.display = view === "albums" ? "" : "none";
       $("#library-table").style.display = view === "tracks" ? "" : "none";
+      $("#library-album-tools").style.display = view === "albums" ? "" : "none";
+      $("#library-track-tools").style.display = view === "tracks" ? "" : "none";
     };
-    const searchAlbums = async (offset = 0) => {
+    const watchAlbumScroll = () => {
+      state.libraryObserver?.disconnect();
+      const sentinel = el.querySelector("[data-album-more]");
+      if (!sentinel || sentinel.hidden || !("IntersectionObserver" in window)) return;
+      state.libraryObserver = new IntersectionObserver(entries => {
+        if (!el.isConnected) { state.libraryObserver.disconnect(); return; }
+        if (entries.some(entry => entry.isIntersecting) && !albumLoading &&
+            $("#library-albums").style.display !== "none" && state.libraryView === "albums") {
+          searchAlbums(true);
+        }
+      }, {rootMargin: "0px 0px 200px 0px"});
+      state.libraryObserver.observe(sentinel);
+    };
+    const searchAlbums = async (append = false) => {
       const container = $("#library-albums");
       const pageEl = $("#library-album-page");
-      pageEl.innerHTML = "";
-      container.style.display = "";
-      const params = new URLSearchParams({
-        offset: String(offset), limit: "48",
-        query: $("#library-query").value, status: $("#library-status").value,
-        genre: $("#library-genre").value, format: $("#library-format").value,
-      });
+      if (append && (albumLoading || albumOffset >= albumTotal)) return;
+      if (!append) {
+        albumGeneration++;
+        state.libraryObserver?.disconnect();
+        albumOffset = 0; albumTotal = 0; loadedAlbums.clear();
+        pageTracks = [];
+        $("#library-track-tools").style.display = "none";
+        pageEl.innerHTML = "";
+        container.style.display = "";
+        albumFilters = {
+          query: $("#library-query").value, status: $("#library-status").value,
+          genre: $("#library-genre").value, format: $("#library-format").value,
+          limit: String(state.libraryBatch),
+        };
+        container.innerHTML = '<div class="match-grid" data-album-grid></div><p role="status" data-album-count>Loading albums...</p><div data-album-more><button class="action ghost" data-load-albums>Load more albums</button></div>';
+      }
+      const generation = albumGeneration;
+      const params = new URLSearchParams({...albumFilters, offset: String(albumOffset)});
+      const more = container.querySelector("[data-album-more]");
+      const load = container.querySelector("[data-load-albums]");
+      albumLoading = true; load.disabled = true;
       try {
         const page = await api(`/api/albums/page?${params}`);
-        if (!container.isConnected) return;
-        if (!page.items.length) {
-          container.innerHTML = `<div class="empty">No albums match this search. Scan the library if this is a new collection.</div>`;
-          return;
-        }
-        container.innerHTML = `<div class="match-grid">${page.items.map(album =>
-          `<button type="button" class="match-card" data-album-artist="${esc(album.album_artist)}" data-album="${esc(album.album)}">
+        if (!container.isConnected || generation !== albumGeneration) return;
+        albumOffset += page.items.length; albumTotal = page.total;
+        const fresh = page.items.filter(album => !loadedAlbums.has(albumKey(album)));
+        fresh.forEach(album => loadedAlbums.set(albumKey(album), album));
+        container.querySelector("[data-album-grid]").insertAdjacentHTML("beforeend", fresh.map(album =>
+          `<div class="album-tile"><label><input type="checkbox" data-select-album="${esc(albumKey(album))}"
+            aria-label="Select album ${esc(album.album)} by ${esc(album.album_artist)}"> Select album</label>
+          <button type="button" class="match-card" data-album-artist="${esc(album.album_artist)}" data-album="${esc(album.album)}">
             ${albumCover(album.cover_url)}
             <strong>${esc(album.album)}</strong>
             <em>${esc(album.album_artist)} · ${esc(album.year || "—")} · ${album.track_count} tracks${album.bad_count ? ` · ${album.bad_count} bad` : ""}</em>
-          </button>`
-        ).join("")}</div>
-        <div class="pager"><button class="action ghost prev" ${offset === 0 ? "disabled" : ""}>Previous</button>
-        <span>${page.total ? offset + 1 : 0}–${Math.min(offset + page.items.length, page.total)} of ${page.total}</span>
-        <button class="action ghost next" ${offset + page.items.length >= page.total ? "disabled" : ""}>Next</button></div>`;
-        container.querySelector(".prev").onclick = () => searchAlbums(Math.max(0, offset - 48));
-        container.querySelector(".next").onclick = () => searchAlbums(offset + 48);
+          </button></div>`
+        ).join(""));
+        container.querySelector("[data-album-count]").textContent = page.total ?
+          `${loadedAlbums.size} of ${page.total} albums loaded. Scroll down or use Load more.` :
+          "No albums match this search. Scan the library if this is a new collection.";
+        more.hidden = albumOffset >= albumTotal || !page.items.length;
+        container.querySelectorAll("[data-select-album]").forEach(input => input.onchange = () => {
+          const key = input.dataset.selectAlbum;
+          if (input.checked) selectedAlbums.set(key, loadedAlbums.get(key)); else selectedAlbums.delete(key);
+          updateAlbumSelection();
+        });
         container.querySelectorAll("[data-album]").forEach(button => {
           button.onclick = () => openAlbum(button.dataset.albumArtist, button.dataset.album);
         });
-      } catch (e) { container.textContent = e.message; toast(e.message, true); }
+        updateAlbumSelection();
+        watchAlbumScroll();
+      } catch (e) {
+        if (!container.isConnected || generation !== albumGeneration) return;
+        state.libraryObserver?.disconnect();
+        container.querySelector("[data-album-count]").textContent = `Cannot load albums: ${e.message}`;
+        more.hidden = false;
+        load.textContent = "Retry loading albums";
+        toast(e.message, true);
+      } finally {
+        if (generation === albumGeneration) { albumLoading = false; load.disabled = false; }
+      }
+      load.onclick = () => searchAlbums(albumOffset > 0);
     };
     const openAlbum = async (albumArtist, album) => {
       const params = new URLSearchParams({
@@ -829,9 +1001,11 @@ const views = {
       try {
         const detail = await api(`/api/albums/detail?${params}`);
         if (!el.isConnected) return;
+        state.libraryObserver?.disconnect();
         $("#library-albums").style.display = "none";
         const pageEl = $("#library-album-page");
         pageTracks = detail.tracks;
+        $("#library-track-tools").style.display = "";
         selectedTracks.clear();
         detail.tracks.slice(0, 200).forEach(track => selectedTracks.add(track.id));
         updateSelection();
@@ -844,6 +1018,7 @@ const views = {
             <button class="action ghost" data-number-album>Renumber selected</button>
             <button class="action ghost" data-artwork-album data-operation>Change artwork</button>
             <button class="action ghost" data-rename-album data-operation>Preview organization</button>
+            <button class="action ghost" data-dupes-album data-operation>Review album duplicates</button>
             <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button>
             <button class="action danger" data-trash-album data-operation>Trash selected</button></div>
           </div>
@@ -857,7 +1032,13 @@ const views = {
             <td>${esc(track.title)}</td><td>${esc(track.artist)}</td><td>${esc(track.status)}</td>
             <td>${playButton(track.id, track.title || track.path)} <button class="action ghost" data-edit-track="${track.id}">Edit track</button></td></tr>`
           ).join("")}</tbody></table></div></div>`;
-        pageEl.querySelector("[data-back]").onclick = () => { pageEl.innerHTML = ""; searchAlbums(); };
+        pageEl.querySelector("[data-back]").onclick = () => {
+          pageEl.innerHTML = ""; $("#library-albums").style.display = "";
+          $("#library-track-tools").style.display = "none";
+          pageTracks = []; selectedTracks.clear(); updateSelection(); watchAlbumScroll();
+        };
+        pageEl.querySelector("[data-dupes-album]").onclick = () =>
+          reviewAlbumDuplicates(detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id));
         pageEl.querySelector("[data-trash-album]").onclick = async () => {
           const trackIds = detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id);
           if (!trackIds.length) { toast("Select tracks to trash first.", true); return; }
@@ -869,43 +1050,135 @@ const views = {
             if (el.isConnected) await loadTrashReview(job_id);
           } catch (e) { toast(e.message, true); }
         };
-        pageEl.querySelector("[data-tag-album]").onclick = () => $("#metadata-album-bulk").click();
-        pageEl.querySelector("[data-rename-album]").onclick = async () => {
-          const trackIds = detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id);
-          if (!trackIds.length) { toast("Select tracks to organize first.", true); return; }
-          try {
-            const { job_id } = await post("/api/rename/preview-selected", {track_ids: trackIds});
-            state.renamePreviewJob = job_id;
-            await refreshActivity();
-            await pollJob(job_id, "Selected album rename preview");
-            if (el.isConnected) await loadRenameReview(job_id);
-          } catch (e) { toast(e.message, true); }
-        };
-        pageEl.querySelector("[data-edit-album]").onclick = () => {
-          const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
-          if (!tracks.length) { toast("Select tracks to edit first.", true); return; }
-          renderManualEditor(pageEl.querySelector("[data-manual-editor]"), tracks);
-        };
-        pageEl.querySelector("[data-number-album]").onclick = () => {
-          const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
-          if (!tracks.length) { toast("Select tracks to number first.", true); return; }
-          renderManualEditor(pageEl.querySelector("[data-manual-editor]"), tracks, "numbering");
-        };
-        pageEl.querySelectorAll("[data-edit-track]").forEach(button => button.onclick = () => {
-          const track = detail.tracks.find(item => item.id === Number(button.dataset.editTrack));
-          renderManualEditor(pageEl.querySelector("[data-manual-editor]"), [track], "track");
-        });
-        pageEl.querySelector("[data-artwork-album]").onclick = () => {
-          const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
-          if (!tracks.length) { toast("Select tracks for artwork first.", true); return; }
-          renderArtworkUpload(pageEl.querySelector("[data-artwork-editor]"), tracks);
-        };
-        pageEl.querySelectorAll("[data-select-track]").forEach(input => input.onchange = () => {
-          selectTrack(Number(input.dataset.selectTrack), input.checked); updateSelection();
-        });
+        bindAlbumActions(pageEl, detail);
         updateSelection();
         await refreshActivity();
       } catch (e) { toast(e.message, true); }
+    };
+    const previewOrganization = async trackIds => {
+      try {
+        const { job_id } = await post("/api/rename/preview-selected", {track_ids: trackIds});
+        state.renamePreviewJob = job_id;
+        await refreshActivity();
+        await pollJob(job_id, "Selected file organization preview");
+        if (el.isConnected) await loadRenameReview(job_id);
+      } catch (e) { toast(e.message, true); }
+    };
+    const reviewAlbumDuplicates = async trackIds => {
+      if (trackIds.length < 2) { toast("Select at least two tracks to compare.", true); return; }
+      const panel = el.querySelector("#album-dupe-review");
+      panel.innerHTML = '<div class="card" role="status">Comparing selected tracks. No files are being removed.</div>';
+      try {
+        const {job_id} = await post("/api/dupes/selected-preview", {track_ids: trackIds});
+        await refreshActivity();
+        const previewJob = await pollJob(job_id, "Album duplicate review");
+        const [result, targets] = await Promise.all([
+          api(`/api/jobs/${job_id}/results/groups?limit=200`),
+          api(`/api/jobs/${job_id}/results/tracks?limit=200`),
+        ]);
+        if (!panel.isConnected) return;
+        const groups = result.items;
+        const approved = new Set();
+        panel.innerHTML = `<div class="card"><h3>Review album duplicates</h3>
+          <p>${groups.length} possible duplicate groups among ${targets.total} selected tracks.
+          ${previewJob.summary.skipped || 0} bad or unavailable tracks excluded.
+          Compare quality and listen before choosing one keeper per group. Only approved copies go to recoverable trash.
+          Other albums and the main Duplicates review list are unchanged.</p>
+          <div class="row"><button class="action ghost" data-dupe-select-all>Select all groups</button>
+            <button class="action ghost" data-dupe-clear>Clear selection</button>
+            <span class="hint" data-dupe-count role="status">0 groups selected</span></div>
+          ${groups.map(g => duplicateGroupMarkup(g, false, "album")).join("")}
+          ${groups.length ? '<button class="action danger" data-dupe-apply data-operation>Trash approved copies</button>' :
+            '<p>No duplicates were found among these tracks. No files were changed.</p>'}
+          <div data-dupe-status role="status"></div></div>`;
+        const update = () => {
+          panel.querySelector("[data-dupe-count]").textContent = `${approved.size} groups selected`;
+          panel.querySelectorAll("[data-approve]").forEach(input => {
+            input.checked = approved.has(Number(input.dataset.approve));
+          });
+        };
+        panel.querySelector("[data-dupe-select-all]").onclick = () => {
+          groups.forEach(g => approved.add(g.group_id)); update();
+        };
+        panel.querySelector("[data-dupe-clear]").onclick = () => { approved.clear(); update(); };
+        panel.querySelectorAll("[data-approve]").forEach(input => input.onchange = () => {
+          const gid = Number(input.dataset.approve);
+          if (input.checked) approved.add(gid); else approved.delete(gid);
+          update();
+        });
+        panel.querySelectorAll("[data-keep]").forEach(input => input.onchange = () => {
+          const [gid, tid] = input.dataset.keep.split(":").map(Number);
+          groups.find(g => g.group_id === gid).keep_id = tid;
+        });
+        const apply = panel.querySelector("[data-dupe-apply]");
+        if (apply) apply.onclick = async () => {
+          const chosen = groups.filter(g => approved.has(g.group_id));
+          const copies = chosen.reduce((n, g) => n + g.members.length - 1, 0);
+          if (!copies) { toast("Approve duplicate groups first.", true); return; }
+          if (!confirm(`Move ${copies} reviewed duplicate copies to recoverable trash? One keeper per approved group remains. Renaming is a separate preview afterward.`)) return;
+          apply.disabled = true;
+          const status = panel.querySelector("[data-dupe-status]");
+          let accepted = false;
+          try {
+            const snapshots = Object.fromEntries(targets.items.map(track => [
+              track.id, {path: track.path, file_hash: track.file_hash},
+            ]));
+            const {job_id: applyId} = await post("/api/dupes/selected-apply", {
+              groups: chosen.map(g => ({track_ids: g.members.map(m => m.id), keep_id: g.keep_id})),
+              snapshots,
+            });
+            accepted = true;
+            await refreshActivity();
+            const job = await pollJob(applyId, "Album duplicate cleanup");
+            const [remaining, failures] = await Promise.all([
+              api(`/api/jobs/${applyId}/results/remaining_ids?limit=200`),
+              api(`/api/jobs/${applyId}/results/failures?limit=200`),
+            ]);
+            if (!panel.isConnected) return;
+            status.innerHTML = `<p>${job.summary.trashed} copies trashed; ${job.summary.failed} failures.
+              Review filenames before organizing the remaining tracks. Trashed files can be restored in Recovery.</p>` +
+              failures.items.map(item => `<p role="alert">${esc(item.path)}: ${esc(item.error)}</p>`).join("") +
+              (remaining.total ? '<button class="action" data-organize-remaining data-operation>Preview organization of remaining tracks</button>' : "");
+            const organize = status.querySelector("[data-organize-remaining]");
+            if (organize) organize.onclick = () => previewOrganization(remaining.items);
+            selectedTracks.clear(); updateSelection();
+            await searchAlbums(); await loadStats();
+          } catch (e) { status.textContent = e.message; toast(e.message, true); }
+          finally { if (accepted) apply.remove(); else apply.disabled = false; }
+        };
+        await refreshActivity();
+        panel.scrollIntoView({behavior: "smooth", block: "start"});
+      } catch (e) { panel.textContent = e.message; toast(e.message, true); }
+    };
+    const bindAlbumActions = (pageEl, detail) => {
+      pageEl.querySelector("[data-tag-album]").onclick = () => $("#metadata-album-bulk").click();
+      pageEl.querySelector("[data-rename-album]").onclick = async () => {
+        const trackIds = detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id);
+        if (!trackIds.length) { toast("Select tracks to organize first.", true); return; }
+        await previewOrganization(trackIds);
+      };
+      pageEl.querySelector("[data-edit-album]").onclick = () => {
+        const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
+        if (!tracks.length) { toast("Select tracks to edit first.", true); return; }
+        renderManualEditor(pageEl.querySelector("[data-manual-editor]"), tracks);
+      };
+      pageEl.querySelector("[data-number-album]").onclick = () => {
+        const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
+        if (!tracks.length) { toast("Select tracks to number first.", true); return; }
+        renderManualEditor(pageEl.querySelector("[data-manual-editor]"), tracks, "numbering");
+      };
+      pageEl.querySelectorAll("[data-edit-track]").forEach(button => button.onclick = () => {
+        const track = detail.tracks.find(item => item.id === Number(button.dataset.editTrack));
+        renderManualEditor(pageEl.querySelector("[data-manual-editor]"), [track], "track");
+      });
+      pageEl.querySelector("[data-artwork-album]").onclick = () => {
+        const tracks = detail.tracks.filter(track => selectedTracks.has(track.id));
+        if (!tracks.length) { toast("Select tracks for artwork first.", true); return; }
+        renderArtworkUpload(pageEl.querySelector("[data-artwork-editor]"), tracks);
+      };
+      pageEl.querySelectorAll("[data-select-track]").forEach(input => input.onchange = () => {
+        selectTrack(Number(input.dataset.selectTrack), input.checked); updateSelection();
+      });
     };
     const loadTrashReview = async jobId => {
       const [job, targets] = await Promise.all([
@@ -1113,8 +1386,10 @@ const views = {
         const status = panel.querySelector("[data-rename-status]");
         const close = panel.querySelector("[data-rename-close]");
         apply.disabled = true; close.disabled = true;
+        let accepted = false;
         try {
           const { job_id } = await post("/api/rename/apply-reviewed", {preview_job_id: jobId});
+          accepted = true;
           status.textContent = "Moving reviewed files. Progress and saved results are in Activity.";
           await refreshActivity();
           const result = await pollJob(job_id, "Selected album organization");
@@ -1128,8 +1403,11 @@ const views = {
           apply.remove();
           selectedTracks.clear(); updateSelection();
           await searchAlbums(); await loadStats();
-        } catch (e) { status.textContent = e.message; toast(e.message, true); apply.disabled = false; }
-        finally { applying = false; close.disabled = false; }
+        } catch (e) { status.textContent = e.message; toast(e.message, true); }
+        finally {
+          applying = false; close.disabled = false;
+          if (accepted) apply.remove(); else apply.disabled = false;
+        }
       };
       await refreshActivity();
       panel.scrollIntoView({behavior: "smooth", block: "start"});
@@ -1137,6 +1415,7 @@ const views = {
     const renderManualEditor = (panel, tracks, mode = "album") => {
       const isTrack = mode === "track";
       const isNumbering = mode === "numbering";
+      const isMerge = mode === "merge";
       const orderedTracks = [...tracks];
       const labels = isNumbering ? {track_no: "Track number", disc_no: "Disc number"} : isTrack ? {
         title: "Title", artist: "Track artist", track_no: "Track number", disc_no: "Disc number",
@@ -1146,6 +1425,9 @@ const views = {
       };
       const common = key => {
         const values = tracks.map(track => String(track[key] ?? ""));
+        if (isMerge && ["album", "album_artist"].includes(key)) {
+          return values[0] || (key === "album_artist" ? tracks[0].artist || "" : "");
+        }
         return values.every(value => value === values[0]) ? values[0] : "";
       };
       $("#manual-album-result").innerHTML = "";
@@ -1154,9 +1436,10 @@ const views = {
         "Only these selected tracks are numbered in the order shown. Titles, artists, existing track/disc totals, artwork, and unselected tracks stay unchanged. Disc numbers change only if checked." : isTrack ?
         "Only this track is edited, regardless of the album checkboxes. Unchecked tags, existing track/disc totals, and artwork stay unchanged." :
         "These tracks are fixed for this edit. Unchecked fields, titles, and track numbers stay unchanged. Mixed values are shown as empty.";
-      panel.innerHTML = `<form class="card"><h3>${isNumbering ? `Renumber ${tracks.length} selected tracks` : isTrack ? "Edit track tags" : `Edit tags on ${tracks.length} selected tracks`}</h3>
+      panel.innerHTML = `<form class="card"><h3>${isMerge ? `Merge ${tracks.length} tracks into one album` : isNumbering ? `Renumber ${tracks.length} selected tracks` : isTrack ? "Edit track tags" : `Edit tags on ${tracks.length} selected tracks`}</h3>
+        ${isMerge ? "<p>Use the same album name and album artist to join tracks across folders. Edit the target values below, then review each file. Track artists, titles, disc/track numbers, and artwork stay unchanged unless you explicitly select another field. No files are deleted or moved. Organization is a separate preview afterward.</p>" : ""}
         ${isTrack ? `<p class="path">${esc(tracks[0].path)}</p>` : ""}
-        <p>${unchanged} Choose fields to change, then preview. Blank values cannot clear tags.
+        <p>${isMerge ? "Review the target values and every file before confirming." : unchanged} Choose fields to change, then preview. Blank values cannot clear tags.
         No catalog lookup or file rename is performed.</p>
         <fieldset data-edit-fields style="border:0">
         ${isNumbering ? `<p>Use Up/Down to arrange the sequence. Numbering continues across the selected discs;
@@ -1169,9 +1452,9 @@ const views = {
           <div class="table-scroll"><table><thead><tr><th>Sequence</th><th>Title / file</th><th>Current disc</th><th>Current track</th><th>Order</th></tr></thead>
           <tbody data-number-order></tbody></table></div>` :
         Object.entries(labels).map(([key, label]) => `<div class="row">
-          <label class="check"><input type="checkbox" data-edit-field="${key}"> Change ${esc(label)}</label>
+          <label class="check"><input type="checkbox" data-edit-field="${key}" ${isMerge && ["album", "album_artist"].includes(key) ? "checked disabled" : ""}> Change ${esc(label)}</label>
           <input type="${["year", "track_no", "disc_no"].includes(key) ? "number" : "text"}" name="${key}"
-            aria-label="${esc(label)}" value="${esc(common(key))}" maxlength="1000" disabled
+            aria-label="${esc(label)}" value="${esc(common(key))}" maxlength="1000" ${isMerge && ["album", "album_artist"].includes(key) ? "" : "disabled"}
             ${["year", "track_no", "disc_no"].includes(key) ? 'min="1" max="9999" step="1"' : ""}>
         </div>`).join("")}</fieldset>
         <button type="submit" class="action">Preview changes</button>
@@ -1258,12 +1541,14 @@ const views = {
             busy = true;
             apply.disabled = true; fieldset.disabled = true; submit.disabled = true; cancel.disabled = true;
             status.textContent = "Saving reviewed tags. Results will be saved in Activity.";
+            let accepted = false;
             try {
               const reviews = preview.reviews.map(review => ({
                 review_id: review.review_id, candidate_index: 0, fields,
               }));
               const { job_id } = await post(`/api/metadata/${endpoint}/apply`,
                 isTrack ? reviews[0] : {reviews});
+              accepted = true;
               await refreshActivity();
               await pollJob(job_id, isNumbering ? "Album track numbering" : isTrack ? "Manual track edit" : "Manual album edit");
               const [applied, errors] = await Promise.all([
@@ -1271,16 +1556,22 @@ const views = {
                 api(`/api/jobs/${job_id}/results/errors?limit=200`),
               ]);
               if (!el.isConnected) return;
-              $("#manual-album-result").innerHTML = `<div class="card"><h3>${isNumbering ? "Track numbering" : isTrack ? "Track edit" : "Album edit"} results</h3>
+              status.textContent = "Tags saved. Results are below. Create a fresh preview for further changes.";
+              $("#manual-album-result").innerHTML = `<div class="card"><h3>${isMerge ? "Album merge" : isNumbering ? "Track numbering" : isTrack ? "Track edit" : "Album edit"} results</h3>
                 <p>${applied.total} files updated; ${errors.total} failed; ${preview.errors.length} unavailable at preview.
                 Files changed since preview are skipped. Details remain in Activity.</p>
-                ${failures(preview.errors)}${failures(errors.items)}</div>`;
+                ${failures(preview.errors)}${failures(errors.items)}
+                ${applied.total && !isTrack && !isNumbering ? '<button class="action" data-organize-edited data-operation>Preview organization of updated files</button>' : ""}</div>`;
+              const organize = $("#manual-album-result").querySelector("[data-organize-edited]");
+              if (organize) organize.onclick = () => previewOrganization(applied.items.map(item => item.track_id));
+              selectedAlbums.clear(); updateAlbumSelection();
               selectedTracks.clear(); updateSelection();
               await searchAlbums(); await loadStats();
             } catch (e) { status.textContent = e.message; toast(e.message, true); }
             finally {
               busy = false;
-              apply.disabled = false; fieldset.disabled = false; submit.disabled = false; cancel.disabled = false;
+              if (accepted) apply.remove(); else apply.disabled = false;
+              fieldset.disabled = false; submit.disabled = false; cancel.disabled = false;
             }
           };
         } catch (e) { status.textContent = e.message; }
@@ -1298,6 +1589,40 @@ const views = {
     $("#library-format").insertAdjacentHTML("beforeend", formatRows.map(f => `<option>${esc(f)}</option>`).join(""));
     $("#library-view-albums").onclick = () => { setView("albums"); $("#library-search").click(); };
     $("#library-view-tracks").onclick = () => { setView("tracks"); $("#library-search").click(); };
+    $("#library-batch").onchange = () => {
+      state.libraryBatch = Number($("#library-batch").value);
+      if (state.libraryView === "albums") searchAlbums();
+    };
+    $("#album-select-loaded").onclick = () => {
+      loadedAlbums.forEach((album, key) => selectedAlbums.set(key, album)); updateAlbumSelection();
+    };
+    $("#album-clear").onclick = () => { selectedAlbums.clear(); updateAlbumSelection(); };
+    $("#metadata-dupes").onclick = () => reviewAlbumDuplicates([...selectedTracks]);
+    $("#metadata-merge-tracks").onclick = async () => {
+      if (selectedTracks.size < 2) { toast("Select at least two tracks to merge.", true); return; }
+      try {
+        const tracks = await post("/api/tracks/selected", {track_ids: [...selectedTracks]});
+        if (el.isConnected) renderManualEditor($("#metadata-album"), tracks, "merge");
+      } catch (e) { toast(e.message, true); }
+    };
+    $("#album-merge").onclick = async () => {
+      const albums = [...selectedAlbums.values()];
+      if (albums.length < 2) { toast("Select at least two albums to merge.", true); return; }
+      if (albums.reduce((n, album) => n + album.track_count, 0) > 200) {
+        toast("Merge up to 200 tracks per batch. Choose fewer albums or select individual tracks.", true); return;
+      }
+      const button = $("#album-merge");
+      button.disabled = true;
+      try {
+        const details = await Promise.all(albums.map(album => api(`/api/albums/detail?${new URLSearchParams({
+          album_artist: album.album_artist, album: album.album, status: $("#library-status").value,
+        })}`)));
+        const tracks = [...new Map(details.flatMap(detail => detail.tracks).map(track => [track.id, track])).values()];
+        if (tracks.length > 200) throw new Error("Album membership changed. Select at most 200 tracks and try again.");
+        if (el.isConnected) renderManualEditor($("#metadata-album"), tracks, "merge");
+      } catch (e) { toast(e.message, true); }
+      finally { button.disabled = false; }
+    };
     setView(state.libraryView);
     $("#library-search").onclick = () => {
       if (state.libraryView === "albums") return searchAlbums(0);
@@ -2009,6 +2334,7 @@ const views = {
 };
 
 async function render() {
+  state.libraryObserver?.disconnect();
   try { await loadStats(); } catch (e) { toast(e.message, true); }
   const nav = $("#nav");
   nav.innerHTML = TABS.map(([id, label]) =>
@@ -2021,9 +2347,9 @@ async function render() {
   const el = $(`#tab-${state.tab}`);
   try { await views[state.tab](el); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   el.querySelectorAll("button.action:not(.ghost):not([data-lookup-operation])").forEach(button => { button.dataset.operation = ""; });
-  const active = state.jobs.some(j => ["queued", "running"].includes(j.status) && !j.read_only);
+  const active = state.jobs.some(j => ["queued", "running", "stopping"].includes(j.status) && !j.read_only);
   el.querySelectorAll("[data-operation]").forEach(button => { button.disabled = active; });
-  const searching = state.jobs.some(j => ["queued", "running"].includes(j.status) && j.read_only);
+  const searching = state.jobs.some(j => ["queued", "running", "stopping"].includes(j.status) && j.read_only);
   el.querySelectorAll("[data-lookup-operation]").forEach(button => { button.disabled = searching; });
 }
 async function watchActivity() {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlencode
@@ -30,7 +31,7 @@ from ..metadata_review import (
 from ..models import audio_format
 from ..rename import Renamer
 from ..restore_review import RestoreReview
-from ..scanner import Scanner
+from ..scanner import Scanner, file_hash
 from ..trash_review import TrashReview
 from ..usenet import Sabnzbd, SabnzbdError, search_all
 from .jobs import JobRegistry
@@ -53,11 +54,17 @@ class ScanBody(BaseModel):
     rescan: bool = False
 
 
+class AlbumTrackSnapshot(BaseModel):
+    path: str
+    file_hash: str
+
+
 class KeepOverride(BaseModel):
     hard_delete: bool = False
     keep_ids: Dict[int, int] = {}
     group_ids: Optional[List[int]] = None
     member_ids: Dict[int, List[int]] = {}
+    snapshots: Optional[Dict[int, AlbumTrackSnapshot]] = None
 
 
 class ManualDupeBody(BaseModel):
@@ -120,9 +127,9 @@ class AlbumSuggestBody(BaseModel):
     source: Optional[Literal["all", "musicbrainz", "itunes", "library"]] = None
 
 
-class AlbumTrackSnapshot(BaseModel):
-    path: str
-    file_hash: str
+class SelectedDuplicatesBody(BaseModel):
+    groups: List[ManualDupeBody]
+    snapshots: Dict[int, AlbumTrackSnapshot]
 
 
 class AlbumApplyBody(BaseModel):
@@ -151,11 +158,7 @@ class NumberingPreviewBody(BaseModel):
     disc_no: Any = None
 
 
-class RenamePreviewBody(BaseModel):
-    track_ids: List[int]
-
-
-class TrashPreviewBody(BaseModel):
+class TrackSelectionBody(BaseModel):
     track_ids: List[int]
 
 
@@ -257,6 +260,7 @@ def create_app(config: Config) -> FastAPI:
         jobs.update("Discovering files")
         report = Scanner(config, db).scan(
             rescan=body.rescan,
+            check_cancelled=jobs.check_cancelled,
             progress_state=lambda done, total, current: jobs.update(
                 "Reading audio metadata", done, total, current
             ),
@@ -308,17 +312,24 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/issues/trash")
     def issues_trash(body: IssuesTrashBody) -> Dict[str, str]:
-        if not 1 <= len(body.track_ids) <= 200 or len(set(body.track_ids)) != len(body.track_ids):
-            raise HTTPException(400, "Select between 1 and 200 distinct files.")
+        if not body.track_ids or len(set(body.track_ids)) != len(body.track_ids):
+            raise HTTPException(400, "Select distinct files to trash.")
 
         def run(job: Dict[str, Any]) -> Dict[str, Any]:
-            report = Doctor(config, db).trash_tracks(
-                body.track_ids, hard_delete=body.hard_delete, progress_state=jobs.update,
-            )
-            return {
-                "trashed": report.trashed, "deleted": report.deleted,
-                "failed": report.failed, "failures": report.failures,
-            }
+            result: Dict[str, Any] = {"trashed": 0, "deleted": 0, "failed": 0, "failures": []}
+            total = len(body.track_ids)
+            for offset in range(0, total, 200):
+                jobs.check_cancelled()
+                report = Doctor(config, db).trash_tracks(
+                    body.track_ids[offset:offset + 200], hard_delete=body.hard_delete,
+                    progress_state=lambda phase, done, count, current, base=offset: jobs.update(
+                        phase, base + done, total, current,
+                    ),
+                )
+                for key in ("trashed", "deleted", "failed"):
+                    result[key] += getattr(report, key)
+                result["failures"].extend(report.failures)
+            return result
 
         return {"job_id": jobs.start("issues-trash", run)}
 
@@ -334,6 +345,7 @@ def create_app(config: Config) -> FastAPI:
                         "title": member.track.title, "format": member.track.format,
                         "bitrate": member.track.bitrate, "bit_depth": member.track.bit_depth,
                         "quality_score": member.score,
+                        "file_hash": member.track.file_hash,
                     }
                     for member in group.members
                 ],
@@ -396,15 +408,29 @@ def create_app(config: Config) -> FastAPI:
             expected = body.member_ids.get(group.group_id)
             if expected is not None and set(expected) != {m.track.id for m in group.members}:
                 raise HTTPException(409, "Duplicate group membership changed. Review it again.")
+        if body.snapshots is not None:
+            members = [member.track for group in groups for member in group.members]
+            if set(body.snapshots) != {track.id for track in members}:
+                raise HTTPException(400, "Snapshots must cover exactly the reviewed duplicate groups.")
+            if any(
+                (body.snapshots[track.id].path, body.snapshots[track.id].file_hash)
+                != (track.path, track.file_hash)
+                for track in members
+            ):
+                raise HTTPException(409, "Duplicate files changed since review. Run Find duplicates again.")
         if not groups:
             return {"trashed": 0, "deleted": 0, "reclaimed_bytes": 0, "groups": 0}
         try:
-            report = finder.apply(groups, hard_delete=body.hard_delete, keep_ids=body.keep_ids)
+            report = finder.apply(
+                groups, hard_delete=body.hard_delete, keep_ids=body.keep_ids,
+                progress_state=jobs.update,
+            )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {
             "trashed": report.trashed, "deleted": report.deleted,
             "reclaimed_bytes": report.reclaimed_bytes, "groups": len(groups),
+            "failed": len(report.failures), "failures": report.failures,
         }
 
     @app.post("/api/dupes/apply-job")
@@ -419,11 +445,82 @@ def create_app(config: Config) -> FastAPI:
             group = finder.manual_group(body.track_ids, body.keep_id)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        report = finder.apply([group], hard_delete=body.hard_delete)
+        report = finder.apply([group], hard_delete=body.hard_delete, progress_state=jobs.update)
         return {
             "trashed": report.trashed, "deleted": report.deleted,
             "reclaimed_bytes": report.reclaimed_bytes,
+            "failed": len(report.failures), "failures": report.failures,
         }
+
+    def selected_tracks(track_ids: List[int]) -> list:
+        if not 1 <= len(track_ids) <= 200 or len(set(track_ids)) != len(track_ids):
+            raise HTTPException(400, "Select between 1 and 200 distinct tracks.")
+        tracks = [db.get_track(track_id) for track_id in track_ids]
+        if any(
+            track is None or track.status == "deleted" or not is_inside(track.path, config.library)
+            for track in tracks
+        ):
+            raise HTTPException(409, "Selected tracks changed or are unavailable. Refresh the library.")
+        return tracks
+
+    @app.post("/api/tracks/selected")
+    def tracks_selected(body: TrackSelectionBody) -> List[Dict[str, Any]]:
+        return [asdict(track) for track in selected_tracks(body.track_ids)]
+
+    @app.post("/api/dupes/selected-preview")
+    def selected_duplicates_preview(body: TrackSelectionBody) -> Dict[str, str]:
+        selected_tracks(body.track_ids)
+
+        def run(job: Dict[str, Any]) -> Dict[str, Any]:
+            selected = selected_tracks(body.track_ids)
+            tracks = [track for track in selected if track.status in ("ok", "suspect")]
+            groups = DuplicateFinder(config, db).find(
+                tracks=tracks, persist=False, progress_state=jobs.update,
+            )
+            return {
+                "groups": serialize_dupe_groups(groups),
+                "tracks": [
+                    {"id": track.id, "path": track.path, "file_hash": track.file_hash}
+                    for track in tracks
+                ],
+                "skipped": len(selected) - len(tracks),
+            }
+        return {"job_id": jobs.start("album-duplicates-preview", run)}
+
+    @app.post("/api/dupes/selected-apply")
+    def selected_duplicates_apply(body: SelectedDuplicatesBody) -> Dict[str, str]:
+        if not body.groups:
+            raise HTTPException(400, "Select duplicate groups to clean up.")
+        ids = [track_id for group in body.groups for track_id in group.track_ids]
+        if len(set(ids)) != len(ids) or set(ids) - set(body.snapshots):
+            raise HTTPException(400, "Groups must be distinct and covered by the reviewed snapshots.")
+        selected_tracks(list(body.snapshots))
+        if any(
+            len(group.track_ids) < 2 or group.keep_id not in group.track_ids
+            or group.hard_delete for group in body.groups
+        ):
+            raise HTTPException(400, "Choose one keeper per group. Only recoverable trash is supported here.")
+
+        def run(job: Dict[str, Any]) -> Dict[str, Any]:
+            tracks = selected_tracks(list(body.snapshots))
+            for track in tracks:
+                jobs.update("Checking reviewed duplicates", 0, len(tracks), track.path)
+                snapshot = body.snapshots[track.id]
+                if (
+                    snapshot.path != track.path or snapshot.file_hash != track.file_hash
+                    or Path(track.path).is_symlink() or file_hash(track.path) != snapshot.file_hash
+                ):
+                    raise ValueError("Files changed since duplicate review. Scan and review again.")
+            finder = DuplicateFinder(config, db)
+            groups = [finder.manual_group(group.track_ids, group.keep_id) for group in body.groups]
+            report = finder.apply(groups, progress_state=jobs.update)
+            return {
+                "trashed": report.trashed, "failed": len(report.failures), "failures": report.failures,
+                "remaining_ids": [
+                    track.id for track in tracks if db.get_track(track.id).status != "deleted"
+                ],
+            }
+        return {"job_id": jobs.start("album-duplicates-apply", run)}
 
     @app.post("/api/tracks/search")
     def tracks_search(body: TrackSearchBody) -> List[Dict[str, Any]]:
@@ -604,7 +701,8 @@ def create_app(config: Config) -> FastAPI:
         def run(job: Dict[str, Any]) -> Dict[str, Any]:
             jobs.update("Applying album tags", 0, len(body.track_ids))
             result = MetadataReview(config, db).apply_album(
-                body.track_ids, body.fields, body.values, rename=body.rename, snapshots=snapshots
+                body.track_ids, body.fields, body.values, rename=body.rename, snapshots=snapshots,
+                progress=jobs.update,
             )
             jobs.update("Applying album tags", len(body.track_ids), len(body.track_ids))
             return result
@@ -640,7 +738,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/albums/page")
     def albums_page(
-        offset: int = Query(0, ge=0), limit: int = Query(48, ge=1, le=100),
+        offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
         query: str = "", status: str = "", genre: str = "", format: str = "",
     ) -> Dict[str, Any]:
         page = db.album_groups_page(
@@ -794,7 +892,7 @@ def create_app(config: Config) -> FastAPI:
         )}
 
     @app.post("/api/trash/preview-selected")
-    def trash_preview_selected(body: TrashPreviewBody) -> Dict[str, str]:
+    def trash_preview_selected(body: TrackSelectionBody) -> Dict[str, str]:
         if not 1 <= len(body.track_ids) <= 200 or len(set(body.track_ids)) != len(body.track_ids):
             raise HTTPException(400, "Select between 1 and 200 distinct tracks.")
         return {"job_id": jobs.start(
@@ -834,10 +932,10 @@ def create_app(config: Config) -> FastAPI:
     def rename_run(body: ApplyBody) -> Dict[str, Any]:
         jobs.update("Planning folder and filename changes")
         renamer = Renamer(config, db)
-        report = renamer.plan()
+        report = renamer.plan(progress=jobs.update)
         if body.apply:
             jobs.update("Moving and renaming files")
-            report = renamer.apply(report)
+            report = renamer.apply(report, progress=jobs.update)
         return {
             "applied": body.apply, "to_move": len(report.moves),
             "moved": report.moved, "already_ok": report.already_ok,
@@ -850,7 +948,7 @@ def create_app(config: Config) -> FastAPI:
         }
 
     @app.post("/api/rename/preview-selected")
-    def rename_preview_selected(body: RenamePreviewBody) -> Dict[str, str]:
+    def rename_preview_selected(body: TrackSelectionBody) -> Dict[str, str]:
         if not 1 <= len(body.track_ids) <= 200 or len(set(body.track_ids)) != len(body.track_ids):
             raise HTTPException(400, "Select between 1 and 200 distinct tracks.")
         return {"job_id": jobs.start(
@@ -961,6 +1059,7 @@ def create_app(config: Config) -> FastAPI:
         results = []
         jobs.update("Downloading artwork", 0, len(albums))
         for index, album in enumerate(albums, start=1):
+            jobs.check_cancelled()
             result = artwork.process_album(
                 album, brainz.resolve_release, body.replace_small
             )
@@ -1117,6 +1216,10 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/jobs")
     def job_list() -> List[Dict[str, Any]]:
         return jobs.list()
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    def job_cancel(job_id: str) -> Dict[str, Any]:
+        return jobs.cancel(job_id)
 
     @app.get("/api/jobs/{job_id}/results/{section}")
     def job_results(

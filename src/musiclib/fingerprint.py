@@ -83,16 +83,21 @@ def compute_all(
     done = 0
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(compute_fingerprint, t.path): t for t in tracks}
-        for future in as_completed(futures):
-            track = futures[future]
-            result = future.result()
-            done += 1
-            if progress:
-                progress(done, track.path)
-            if result["fingerprint"]:
-                db.update_track_columns(
-                    track.id, fingerprint=result["fingerprint"],
-                    duration=result["duration"] or track.duration,
-                )
-                computed += 1
+        try:
+            for future in as_completed(futures):
+                track = futures[future]
+                result = future.result()
+                done += 1
+                if result["fingerprint"]:
+                    db.update_track_columns(
+                        track.id, fingerprint=result["fingerprint"],
+                        duration=result["duration"] or track.duration,
+                    )
+                    computed += 1
+                if progress:
+                    progress(done, track.path)
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
     return computed

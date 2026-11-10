@@ -77,7 +77,6 @@ class Doctor:
             issues: List[Issue] = [
                 i for i in track.issues
                 if i.kind not in ("short_file", "low_bitrate", "missing_file")
-                and not (i.kind == "decode_error" and deep and self.ffmpeg)
             ]
             if not os.path.isfile(track.path):
                 issues.append(Issue("missing_file", "File is missing on disk", "bad"))
@@ -101,11 +100,14 @@ class Doctor:
                         "warn",
                     )
                 )
-            structural_bad = [i for i in issues if i.severity == "bad"]
+            structural_bad = [
+                i for i in issues if i.severity == "bad"
+                and not (i.kind == "decode_error" and deep and self.ffmpeg)
+            ]
             track.issues = issues
-            track.status = "bad" if structural_bad else ("suspect" if issues else "ok")
+            track.status = "bad" if any(i.severity == "bad" for i in issues) else ("suspect" if issues else "ok")
             self.db.upsert_track(track)
-            if track.status != "bad":
+            if not structural_bad:
                 deep_targets.append(track)
             if progress_state:
                 progress_state("Checking metadata", index, len(tracks), track.path)
@@ -116,24 +118,26 @@ class Doctor:
                 progress_state("Decoding audio", 0, len(deep_targets), "")
             with ProcessPoolExecutor(max_workers=self.workers) as pool:
                 futures = {pool.submit(decode_check_ffmpeg, t.path): t for t in deep_targets}
-                for future in as_completed(futures):
-                    track = futures[future]
-                    result = future.result()
-                    done += 1
-                    if progress:
-                        progress(done, track.path)
-                    if not result["ok"]:
-                        track.issues.append(Issue("decode_error", result["error"], "bad"))
-                        track.status = "bad"
+                try:
+                    for future in as_completed(futures):
+                        track = futures[future]
+                        result = future.result()
+                        done += 1
+                        if progress:
+                            progress(done, track.path)
+                        track.issues = [issue for issue in track.issues if issue.kind != "decode_error"]
+                        if not result["ok"]:
+                            track.issues.append(Issue("decode_error", result["error"], "bad"))
+                        track.status = "bad" if any(i.severity == "bad" for i in track.issues) else (
+                            "suspect" if track.issues else "ok"
+                        )
                         self.db.upsert_track(track)
-                    elif track.status == "suspect":
-                        self.db.upsert_track(track)
-                    else:
-                        track.issues = []
-                        track.status = "ok"
-                        self.db.upsert_track(track)
-                    if progress_state:
-                        progress_state("Decoding audio", done, len(deep_targets), track.path)
+                        if progress_state:
+                            progress_state("Decoding audio", done, len(deep_targets), track.path)
+                except BaseException:
+                    for future in futures:
+                        future.cancel()
+                    raise
         elif deep and not self.ffmpeg:
             report.results.append(
                 {

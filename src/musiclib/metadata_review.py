@@ -6,7 +6,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 import musicbrainzngs
@@ -692,6 +692,7 @@ class MetadataReview:
         values: Dict[str, Any],
         rename: bool = False,
         snapshots: Optional[Dict[int, Tuple[str, str]]] = None,
+        progress: Optional[Callable[..., None]] = None,
     ) -> Dict[str, Any]:
         if not fields or set(fields) - set(ALBUM_FIELDS):
             raise ValueError("Select one or more album fields to apply.")
@@ -706,7 +707,9 @@ class MetadataReview:
         if not tags_to_write:
             raise ValueError("The selected album has no values for the chosen fields.")
         applied, errors = [], []
-        for track_id in track_ids:
+        for index, track_id in enumerate(track_ids):
+            if progress:
+                progress("Applying album tags", index, len(track_ids), str(track_id))
             track = self.db.get_track(track_id)
             if track is None or track.status == "deleted":
                 errors.append({"track_id": track_id, "error": "Track is not available."})
@@ -732,7 +735,9 @@ class MetadataReview:
             from .rename import Renamer
             selected = [self.db.get_track(item["track_id"]) for item in applied]
             selected = [track for track in selected if track is not None]
-            report = Renamer(self.config, self.db).apply(Renamer(self.config, self.db).plan(selected))
+            report = Renamer(self.config, self.db).apply(
+                Renamer(self.config, self.db).plan(selected, progress=progress), progress=progress,
+            )
             renamed = report.moved
             rename_errors = [{"path": path, "error": reason} for path, reason in report.errors]
         return {

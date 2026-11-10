@@ -239,6 +239,8 @@ def dupes(
             f"[green]{report.trashed} moved to trash, {report.deleted} deleted, "
             f"{human_bytes(report.reclaimed_bytes)} reclaimed[/green]"
         )
+        for failure in report.failures:
+            console.print(f"Skipped {failure['path']}: {failure['error']}", style="red", markup=False)
     else:
         console.print("[yellow]dry-run; pass --apply to remove losers[/yellow]")
     db.close()

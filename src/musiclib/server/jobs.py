@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 import uuid
+from concurrent.futures import CancelledError
 from functools import wraps
 from typing import Any, Dict, Optional, get_type_hints
 
@@ -25,12 +26,15 @@ class JobRegistry:
         self._lookup_lease = threading.Lock()
         self._local = threading.local()
         self._threads: list = []
+        self._state_lock = threading.RLock()
+        self._active: Dict[str, Dict[str, Any]] = {}
+        self._cancellations: Dict[str, threading.Event] = {}
         db.execute(
             "CREATE TABLE IF NOT EXISTS jobs "
             "(id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, result TEXT)"
         )
         for job in self.list():
-            if job["status"] in ("queued", "running"):
+            if job["status"] in ("queued", "running", "stopping"):
                 job.update(
                     status="error", finished=time.time(),
                     error="Application restarted before this job finished. Review results before retrying.",
@@ -96,10 +100,16 @@ class JobRegistry:
             "started": time.time(), "finished": None, "phase": "Preparing",
             "completed": 0, "total": None, "current": "", "error": None,
             "summary": None, "read_only": read_only,
+            "cancel_requested": False,
         }
         try:
-            self._save(job)
+            with self._state_lock:
+                self._active[job["id"]] = job
+                self._cancellations[job["id"]] = threading.Event()
+                self._save(job)
         except Exception:
+            self._active.pop(job["id"], None)
+            self._cancellations.pop(job["id"], None)
             lease.release()
             raise
 
@@ -107,17 +117,28 @@ class JobRegistry:
             setattr(self._local, ownership, True)
             self._local.job = job
             try:
-                job["status"] = "running"
-                self._save(job)
+                with self._state_lock:
+                    self.check_cancelled()
+                    job["status"] = "running"
+                    self._save(job)
                 result = fn(job)
-                job.update(
-                    status="done", finished=time.time(), phase="Complete",
-                    summary={
-                        key: len(value) if isinstance(value, list) else value
-                        for key, value in result.items()
-                    },
-                )
-                self._save(job, result)
+                with self._state_lock:
+                    job.update(
+                        status="done", finished=time.time(), phase="Complete",
+                        summary={
+                            key: len(value) if isinstance(value, list) else value
+                            for key, value in result.items()
+                        },
+                    )
+                    self._save(job, result)
+            except CancelledError:
+                with self._state_lock:
+                    job.update(
+                        status="cancelled", finished=time.time(), phase="Stopped",
+                        error=None,
+                        summary={"processed": job["completed"], "total": job["total"]},
+                    )
+                    self._save(job)
             except Exception as exc:
                 logger.exception("Musiclib %s job %s failed", kind, job["id"])
                 job.update(status="error", finished=time.time(), error=str(exc))
@@ -125,6 +146,9 @@ class JobRegistry:
             finally:
                 setattr(self._local, ownership, False)
                 self._local.job = None
+                with self._state_lock:
+                    self._active.pop(job["id"], None)
+                    self._cancellations.pop(job["id"], None)
                 lease.release()
 
         thread = threading.Thread(target=runner, daemon=True)
@@ -135,6 +159,8 @@ class JobRegistry:
             try:
                 self._save(job)
             finally:
+                self._active.pop(job["id"], None)
+                self._cancellations.pop(job["id"], None)
                 lease.release()
             raise
         self._threads.append(thread)
@@ -144,8 +170,31 @@ class JobRegistry:
         self, job: Dict[str, Any], phase: str, completed: int = 0,
         total: Optional[int] = None, current: str = "",
     ) -> None:
-        job.update(phase=phase, completed=completed, total=total, current=current)
-        self._save(job)
+        with self._state_lock:
+            job.update(phase=phase, completed=completed, total=total, current=current)
+            self._save(job)
+            self.check_cancelled()
+
+    def check_cancelled(self) -> None:
+        job = getattr(self._local, "job", None)
+        if job is not None:
+            event = self._cancellations.get(job["id"])
+            if event is not None and event.is_set():
+                raise CancelledError("Job stopped at a safe checkpoint.")
+
+    def cancel(self, job_id: str) -> Dict[str, Any]:
+        with self._state_lock:
+            job = self._active.get(job_id)
+            if job is None:
+                if self.get(job_id) is None:
+                    raise HTTPException(404, "job not found")
+                raise HTTPException(409, "This job has already finished.")
+            if job["status"] not in ("queued", "running", "stopping"):
+                raise HTTPException(409, "This job has already finished.")
+            self._cancellations[job_id].set()
+            job.update(status="stopping", cancel_requested=True)
+            self._save(job)
+            return dict(job)
 
     def update(
         self, phase: str, completed: int = 0, total: Optional[int] = None, current: str = "",

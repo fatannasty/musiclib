@@ -5,6 +5,7 @@ import logging
 import os
 import sqlite3
 import uuid
+from concurrent.futures import CancelledError
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -156,9 +157,14 @@ class RestoreReview:
         if not entries:
             raise ValueError("This preview has no files ready to restore.")
         restored, errors, restored_paths = [], [], []
+        cancelled = None
         for index, snapshot in enumerate(entries):
             if progress:
-                progress("Restoring reviewed files", index, len(entries), snapshot["path"])
+                try:
+                    progress("Restoring reviewed files", index, len(entries), snapshot["path"])
+                except CancelledError as exc:
+                    cancelled = exc
+                    break
             try:
                 self._check_snapshot(snapshot)
                 reason = self._target_problem(snapshot["source"], snapshot["target"])
@@ -193,7 +199,7 @@ class RestoreReview:
         if restored_paths:
             try:
                 scan_report = Scanner(self.config, self.db).refresh_paths(
-                    restored_paths, progress_state=progress,
+                    restored_paths,
                 )
                 scan_errors = [
                     {
@@ -206,5 +212,7 @@ class RestoreReview:
                 logger.exception("Could not refresh catalog metadata after reviewed restore")
                 scan_errors = [{"path": path, "error": str(exc)} for path in restored_paths]
         if progress:
+            if cancelled is not None:
+                raise cancelled
             progress("Restore complete", len(entries), len(entries), "")
         return {"restored": restored, "errors": errors, "scan_errors": scan_errors}

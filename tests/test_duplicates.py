@@ -82,10 +82,8 @@ def test_apply_trashes_losers(lib_env, mini_library):
     assert report.trashed == len(loser_paths)
     assert report.deleted == 0
     assert os.path.exists(keep_path)
-    trashed_names = set()
-    trash_root = os.path.join(env.config.trash_dir, os.listdir(env.config.trash_dir)[0])
-    for name in os.listdir(trash_root):
-        trashed_names.add(name)
+    from pathlib import Path
+    trashed_names = {path.name for path in Path(env.config.trash_dir).rglob("*") if path.is_file()}
     for path in loser_paths:
         assert not os.path.exists(path)
         assert os.path.basename(path) in trashed_names
@@ -155,3 +153,27 @@ def test_fingerprint_comparison_does_not_skip_large_duration_buckets(lib_env):
     groups = DuplicateFinder(lib_env.config, lib_env.db).find(fingerprint_pass=True)
     assert len(groups) == 1
     assert len(groups[0].members) == 61
+
+
+@pytest.mark.parametrize("change", ["keeper-missing", "keeper-changed", "copy-changed"])
+def test_stale_duplicates_never_remove_a_usable_copy(mini_library, change):
+    env = mini_library
+    Scanner(env.config, env.db, workers=1).scan()
+    finder = DuplicateFinder(env.config, env.db)
+    groups = finder.find()
+    keeper = groups[0].keep.track
+    loser = next(m.track for m in groups[0].members if m.action == "loser")
+    from pathlib import Path
+    if change == "keeper-missing":
+        Path(keeper.path).unlink()
+    elif change == "keeper-changed":
+        with open(keeper.path, "ab") as stream:
+            stream.write(b"changed")
+    else:
+        with open(loser.path, "ab") as stream:
+            stream.write(b"changed")
+    report = finder.apply(groups)
+    assert report.trashed == 0
+    assert report.failures
+    assert Path(loser.path).is_file()
+    assert env.db.query("SELECT * FROM deletions") == []
