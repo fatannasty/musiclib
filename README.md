@@ -54,11 +54,19 @@ Files placed directly in the library root are organized into
 `Singles/<Genre>/Artist - Title.ext`; files without a genre use `Unknown Genre`.
 Set `organize.root_singles = false` in the config to disable this rule.
 
-The dashboard keeps a persistent Activity panel with exact phase and file counts,
-elapsed time, job history, and paginated results. Only one library-changing job
+The dashboard keeps a compact Activity bar with readable task names, phase,
+file counts, elapsed time, and **Stop job**. Expand **Details, history and results**
+for current paths, stop behavior, saved jobs, and paginated results. File-level
+results show readable outcomes; raw records are collapsed under **Technical details**.
+Close results when finished. Failed jobs have a dismissible notice; dismissing
+the notice does not delete the job or its error history. Only one library-changing job
 runs at a time. Interrupted jobs are marked for review on restart. The Library tab
 supports catalog search and filters; Recovery lists trashed files and restores
 them only when the original path is still free.
+Job polling preserves the Stop button and keyboard focus rather than rebuilding
+the controls. Locked actions explain whether a library operation or catalog
+search is busy; browsing, selection, and playback remain available. Background
+refreshes do not override a form's own disabled/busy state.
 
 Use **Stop job** in Activity to request a cooperative stop. The job remains
 **stopping** and keeps its operation lock until the worker reaches a safe
@@ -178,6 +186,22 @@ count, and cover when a MusicBrainz ID or embedded art exists). Open an album to
 see its tracks, already selected so you can edit tags or **Find catalog matches**. Switch to **Tracks**
 for the file table and per-track lookup.
 
+Library uses one active review workspace, with **Select → Preview → Confirm →
+Results** progress. Opening another workflow or leaving an unfinished review asks
+before discarding its choices. A running review cannot be replaced in place;
+you can leave it after confirmation and monitor its job in Activity. Closing a
+review does not stop or undo an accepted job. Late responses from a discarded
+review cannot replace the current one. Draft choices are not saved across page
+reloads; saved job previews can be reopened from Activity, one at a time.
+
+Selection actions appear only when relevant. On an album page, **Edit album
+tags** and **Find catalog matches** are the main actions. Open **More album actions**
+for numbering, artwork, organization, and duplicate review; **Remove files**
+keeps trash separate. In Tracks view, **Catalog lookup** contains **Find album
+matches** and **Look up each track**. Select at least two tracks/albums to see
+merge actions. Duplicates keeps its manual file picker under **Choose duplicate
+files manually**. No tools or navigation tabs have been removed.
+
 Choose **50, 100, 150, or 200 Albums per load**. Scrolling near the bottom appends
 the next batch instead of replacing existing albums; **Load more albums** also
 works with a keyboard or without automatic scroll detection. Album selections
@@ -261,7 +285,7 @@ preserved. Supported formats are MP3, FLAC,
 M4A/MP4 (including ALAC), Ogg Vorbis, Opus, WAV, and AIFF.
 
 Artwork previews and apply results are saved in Activity. Use **View results →
-Review artwork preview** to reopen a preview after refreshing. An apply attempt
+Review artwork** to reopen a preview after refreshing. An apply attempt
 consumes its preview; create a fresh preview to retry failed files. Embedded art
 takes priority over catalog artwork on album cards, and updated covers refresh
 without requiring a manual browser-cache clear.
@@ -281,7 +305,7 @@ checked again before moving. Changed files and new conflicts are reported withou
 stopping other files. Existing targets are never overwritten, including if another
 process creates a target during the move. Tags, artwork, and empty folders are left
 untouched. Preview and apply results remain in Activity; use **View results →
-Review rename preview** on a `rename-preview` job to reopen a saved preview after
+Review organization** on a `rename-preview` job to reopen a saved preview after
 refreshing. Create a fresh preview to retry failed files.
 
 To remove unwanted album tracks, select up to 200 on an album page and choose
@@ -302,8 +326,8 @@ not stop the remaining files. NAS permission checks at preview are advisory.
 If a catalog update fails after a move, the file remains in Recovery and the
 reported error asks you to run Scan.
 
-Preview/apply results remain in Activity. Use **View results → Review trash
-preview** to reopen a preview after refreshing. An apply attempt consumes it;
+Preview/apply results remain in Activity. Use **View results → Review trash**
+to reopen a preview after refreshing. An apply attempt consumes it;
 create a fresh preview to retry failures. Restore moved files from **Recovery**,
 which refuses occupied original paths and supports copying across filesystems
 when hard links are unavailable. A file restored later cannot be trashed again
@@ -352,8 +376,8 @@ bulk lookup runs at a time; a second search asks you to wait rather than creatin
 an unbounded queue. Writes and moves still run one at a time. Activity shows both
 background jobs when a bulk lookup and a library operation overlap.
 
-For bulk tagging, select up to 100 Library tracks across pages and choose **Look up
-selected tracks**. Review the album cards for each file and select the individual
+For bulk tagging, select up to 100 Library tracks across pages and choose **Catalog
+lookup → Look up each track**. Review the album cards for each file and select the individual
 fields to write, then choose **Apply reviewed tags** and confirm the batch.
 No fields are selected automatically; changing a candidate clears that track's
 field selection. Files without search terms are reported separately and can be
@@ -479,12 +503,15 @@ Then open `http://<nas-ip>:8000`. Full guide: [docs/DEPLOY-NAS.md](docs/DEPLOY-N
 
 ```bash
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest            # 54 tests, no network or ffmpeg required
+.venv/bin/pytest
 .venv/bin/ruff check src tests
+node --test tests/dashboard.test.cjs
 ```
 
 The test suite generates its own valid FLAC/MP3/WAV fixtures at the byte level, so
 it runs anywhere without binary dependencies.
+Dashboard interaction regressions use Node's built-in test runner (no npm install);
+Node is only needed to run those development checks, not to serve the dashboard.
 
 ## How it handles large libraries
 
