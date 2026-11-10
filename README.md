@@ -257,8 +257,11 @@ Preview and apply results remain in Activity. Use **View results → Review rest
 preview** to reopen a saved preview after refresh. An apply attempt consumes it;
 create a fresh preview to retry failures. Existing single-file **Restore** remains
 available. Restored tracks are flagged for review; run **Scan** to refresh their
-metadata. A catalog/history failure after a successful move reports the restored
-path explicitly instead of moving it back or overwriting anything.
+metadata if needed. Recovery now refreshes restored audio metadata and album
+bookkeeping automatically; unreadable files are reported separately from restore
+failures, remain restored, and can be checked with **Bad Files**. A catalog/history
+failure after a successful move reports the restored path explicitly instead of
+moving it back or overwriting anything.
 
 In Library, choose **Lookup**, enter or correct the title and/or artist, then
 search. MusicBrainz and iTunes are queried together, and matching albums show Cover Art Archive

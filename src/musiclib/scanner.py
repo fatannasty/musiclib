@@ -12,6 +12,7 @@ import mutagen
 
 from .config import Config
 from .db import Database
+from .fsops import is_inside
 from .models import Album, Issue, Track, audio_format
 
 FOLDER_IMAGE_NAMES = [
@@ -286,6 +287,37 @@ class Scanner:
                     "UPDATE tracks SET status='deleted' WHERE path=?", (path,)
                 )
                 report.removed += 1
+        self.rebuild_albums(root)
+        return report
+
+    def refresh_paths(
+        self, paths: List[str],
+        progress_state: Optional[Callable[[str, int, int, str], None]] = None,
+    ) -> ScanReport:
+        root = str(Path(self.config.library).expanduser().resolve())
+        unique_paths = list(dict.fromkeys(paths))
+        report = ScanReport(scanned=len(unique_paths))
+        error_paths = []
+        if progress_state:
+            progress_state("Refreshing restored file metadata", 0, len(unique_paths), "")
+        for index, path in enumerate(unique_paths, start=1):
+            source = Path(path)
+            if source.is_symlink() or not is_inside(path, root) or not source.is_file():
+                result = {
+                    "path": path, "size": 0, "mtime": 0.0,
+                    "error": "Restored file is unavailable, symbolic, or outside the library.",
+                }
+            else:
+                result = scan_worker(path)
+            previous_errors = report.errors
+            self._store_result(
+                result, report, row_exists=self.db.find_track_by_path(path) is not None,
+            )
+            if report.errors > previous_errors:
+                error_paths.append(path)
+            if progress_state:
+                progress_state("Refreshing restored file metadata", index, len(unique_paths), path)
+        report.error_paths = error_paths
         self.rebuild_albums(root)
         return report
 

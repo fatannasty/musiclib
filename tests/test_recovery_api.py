@@ -1,21 +1,34 @@
 import os
 
+from conftest import make_mp3
 from fastapi.testclient import TestClient
 
+import musiclib.scanner as scanner_module
 from musiclib.fsops import trash_file
 from musiclib.models import Track
+from musiclib.scanner import Scanner
 from musiclib.server.app import create_app
 
 
-def test_trash_restore_uses_existing_database_entry(lib_env):
+def test_trash_restore_refreshes_metadata_without_scanning_unrelated_tracks(lib_env, monkeypatch):
     env = lib_env
-    original = env.library / "Artist" / "song.flac"
+    original = env.library / "Artist" / "song.mp3"
     original.parent.mkdir()
-    original.write_bytes(b"audio")
-    track = env.db.upsert_track(Track(path=str(original), size=5, status="deleted"))
+    make_mp3(original, tags={"title": "Restored song", "artist": "Artist", "album": "Album"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.find_track_by_path(str(original))
     trashed = trash_file(str(original), env.config.trash_dir)
-    env.db.record_deletion(str(original), 5, "hash", "duplicate", trashed)
+    env.db.record_deletion(str(original), track.size, track.file_hash, "duplicate", trashed)
+    env.db.update_track_columns(track.id, status="deleted")
     entry = env.db.query_one("SELECT id FROM deletions")["id"]
+    scanned_paths = []
+    original_scan_worker = scanner_module.scan_worker
+
+    def track_scan(path):
+        scanned_paths.append(path)
+        return original_scan_worker(path)
+
+    monkeypatch.setattr(scanner_module, "scan_worker", track_scan)
 
     with TestClient(create_app(env.config)) as client:
         page = client.get("/api/trash").json()
@@ -24,11 +37,35 @@ def test_trash_restore_uses_existing_database_entry(lib_env):
         response = client.post("/api/trash/restore", json={"deletion_id": entry})
         assert response.status_code == 200
         assert response.json()["restored"] == str(original.resolve())
-        assert original.read_bytes() == b"audio"
+        assert response.json()["scan_errors"] == []
         assert not os.path.exists(trashed)
-        assert env.db.get_track(track.id).status == "suspect"
+        restored_track = env.db.get_track(track.id)
+        assert restored_track.status == "ok"
+        assert restored_track.title == "Restored song"
+        assert scanned_paths == [str(original.resolve())]
         assert client.get("/api/trash").json()["total"] == 0
         assert client.get("/api/trash?include_restored=true").json()["total"] == 1
+
+
+def test_trash_restore_reports_metadata_scan_failure_without_failing_restore(lib_env):
+    env = lib_env
+    original = env.library / "Artist" / "unreadable.flac"
+    original.parent.mkdir()
+    original.write_bytes(b"not an audio file")
+    track = env.db.upsert_track(Track(
+        path=str(original), size=original.stat().st_size, format="flac", status="deleted",
+    ))
+    trashed = trash_file(str(original), env.config.trash_dir)
+    env.db.record_deletion(str(original), track.size, None, "test", trashed)
+    entry = env.db.query_one("SELECT id FROM deletions")["id"]
+
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/trash/restore", json={"deletion_id": entry})
+        assert response.status_code == 200
+        assert response.json()["restored"] == str(original.resolve())
+        assert response.json()["scan_errors"][0]["path"] == str(original.resolve())
+        assert original.exists()
+        assert env.db.get_track(track.id).status == "bad"
 
 
 def test_restore_refuses_occupied_path_without_overwriting(lib_env):

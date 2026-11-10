@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,7 @@ from ..usenet import Sabnzbd, SabnzbdError, search_all
 from .jobs import JobRegistry
 
 STATIC_DIR = Path(__file__).parent / "static"
+logger = logging.getLogger(__name__)
 
 
 class ApplyBody(BaseModel):
@@ -709,7 +711,19 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(
                 500, f"file restored to {target}, but database history update failed: {exc}"
             ) from exc
-        return {"restored": target}
+        try:
+            scan_report = Scanner(config, db).refresh_paths([target])
+            scan_errors = [
+                {
+                    "path": path,
+                    "error": "File was restored, but its catalog metadata could not be refreshed. Run Scan.",
+                }
+                for path in scan_report.error_paths
+            ]
+        except Exception as exc:
+            logger.exception("Could not refresh catalog metadata after single-file restore")
+            scan_errors = [{"path": target, "error": str(exc)}]
+        return {"restored": target, "scan_errors": scan_errors}
 
     @app.post("/api/trash/restore-preview")
     def restore_preview(body: RestorePreviewBody) -> Dict[str, str]:
