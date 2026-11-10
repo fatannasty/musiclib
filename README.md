@@ -130,8 +130,22 @@ Organize (rename preview/apply), Cover Art, Missing Music (MusicBrainz gaps), Us
 
 Library opens on an **Albums** grid grouped from scanned tags (artist, year, track
 count, and cover when a MusicBrainz ID or embedded art exists). Open an album to
-see its tracks, already selected so you can **Tag this album**. Switch to **Tracks**
+see its tracks, already selected so you can edit tags or **Find catalog matches**. Switch to **Tracks**
 for the file table and per-track lookup.
+
+On an album page, **Edit album tags** lets you correct up to 200 selected tracks
+without a catalog lookup. Check only the fields you want to replace (album, album
+artist, year, genre, track artist, or MusicBrainz release ID), then **Preview
+changes** to see each file's current and proposed values. No fields are checked
+automatically. Mixed values are shown as empty; unchecked fields remain intact.
+Blank values cannot clear tags. Changing the form invalidates the preview.
+Choose **Confirm and save tags** and confirm the batch to write it. Titles,
+track numbers, and filenames stay unchanged; changing track artist explicitly
+replaces the artist on every selected track, including compilations.
+
+Manual edits use saved reviews: files moved or changed since preview are skipped,
+and per-file permission errors do not stop the remaining files. Results are saved
+in Activity. After saving, the album grid refreshes to reflect the new tags.
 
 In Library, choose **Lookup**, enter or correct the title and/or artist, then
 search. MusicBrainz and iTunes are queried together so simple title/artist matches
