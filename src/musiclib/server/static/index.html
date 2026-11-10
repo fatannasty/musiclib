@@ -170,6 +170,7 @@ async function showJobResults(job) {
   const lists = {
     scan: [], doctor: ["results"], duplicates: ["groups"],
     rename: ["moves", "skipped_files", "errors"], art: ["albums"], "duplicates-apply": [],
+    "metadata-lookup": ["reviews", "errors"], "metadata-apply": ["applied", "errors"],
   }[job.kind] || [];
   container.querySelector(".sections").innerHTML = sections.map(([key, value]) => `<span class="tag dim">${esc(key)}: ${value}</span>`).join("") +
     lists.map(key => `<button class="action ghost" data-section="${key}">${esc(key)}</button>`).join("");
@@ -178,6 +179,13 @@ async function showJobResults(job) {
       offset => api(`/api/jobs/${job.id}/results/${button.dataset.section}?offset=${offset}`),
       ["Result"], item => `<tr><td class="path">${esc(JSON.stringify(item, null, 2))}</td></tr>`);
   });
+  if (job.kind === "metadata-lookup") {
+    const button = document.createElement("button");
+    button.className = "action ghost";
+    button.textContent = "Review suggestions";
+    button.onclick = () => { state.metadataLookupJob = job.id; state.tab = "library"; render(); };
+    container.querySelector(".sections").append(button);
+  }
   container.querySelector("[data-section]")?.click();
 }
 async function refreshActivity() {
@@ -397,7 +405,31 @@ const views = {
       <select id="library-status"><option value="">Healthy and flagged</option><option value="suspect">Needs review</option><option value="bad">Bad files</option></select>
       <button class="action ghost" id="library-search">Search</button>
     </div><p class="hint">Browse the catalog, search MusicBrainz for suggestions, and review tag changes before writing them to files.</p>
+    <div class="row"><button class="action ghost" id="metadata-select-page">Select this page</button>
+      <button class="action ghost" id="metadata-clear-selection">Clear selection</button>
+      <span id="metadata-selection-count">0 tracks selected</span>
+      <button class="action" id="metadata-lookup-bulk" data-operation>Look up selected tracks</button></div>
+    <p class="hint">Select up to 100 tracks across pages. Untagged tracks can be searched individually using Lookup.</p>
+    <div id="metadata-bulk"></div>
     <div id="metadata-search"></div><div id="metadata-review"></div><div id="library-table"></div>`;
+    const selectedTracks = new Set();
+    let pageTracks = [];
+    const updateSelection = () => {
+      $("#metadata-selection-count").textContent = `${selectedTracks.size} tracks selected`;
+      el.querySelectorAll("[data-select-track]").forEach(input => {
+        input.checked = selectedTracks.has(Number(input.dataset.selectTrack));
+      });
+    };
+    const selectTrack = (id, checked) => {
+      if (checked && selectedTracks.size >= 100 && !selectedTracks.has(id)) {
+        toast("Select at most 100 tracks per batch.", true);
+      } else if (checked) selectedTracks.add(id);
+      else selectedTracks.delete(id);
+    };
+    $("#metadata-select-page").onclick = () => {
+      pageTracks.forEach(track => selectTrack(track.id, true)); updateSelection();
+    };
+    $("#metadata-clear-selection").onclick = () => { selectedTracks.clear(); updateSelection(); };
     const [genreRows, formatRows] = await Promise.all([api("/api/genres"), api("/api/formats")]);
     $("#library-genre").insertAdjacentHTML("beforeend", genreRows.map(g => `<option>${esc(g)}</option>`).join(""));
     $("#library-format").insertAdjacentHTML("beforeend", formatRows.map(f => `<option>${esc(f)}</option>`).join(""));
@@ -406,15 +438,23 @@ const views = {
         query: $("#library-query").value, genre: $("#library-genre").value,
         format: $("#library-format").value, status: $("#library-status").value, limit: 50,
       };
-      pagedTable($("#library-table"), offset => post("/api/tracks/page", {...filters, offset}),
-        ["Artist", "Album", "Title", "Genre", "Format", "Status", "Path", "Metadata"],
-        t => `<tr><td>${esc(t.artist)}</td><td>${esc(t.album)}</td><td>${esc(t.title)}</td>
+      return pagedTable($("#library-table"), offset => post("/api/tracks/page", {...filters, offset}),
+        ["Select", "Artist", "Album", "Title", "Genre", "Format", "Status", "Path", "Metadata"],
+        t => `<tr><td><input type="checkbox" data-select-track="${t.id}" aria-label="Select ${esc(t.title || t.path)}"></td>
+          <td>${esc(t.artist)}</td><td>${esc(t.album)}</td><td>${esc(t.title)}</td>
           <td>${esc(t.genre || "—")}</td><td>${esc(t.format || "—")}</td><td>${esc(t.status)}</td>
           <td class="path">${esc(t.path)}</td><td><button class="action ghost" data-lookup="${t.id}">Lookup</button></td></tr>`,
-        tracks => tracks.forEach(track => {
-          const button = el.querySelector(`[data-lookup="${track.id}"]`);
-          if (button) button.onclick = () => renderMetadataSearch(track);
-        }));
+        tracks => {
+          pageTracks = tracks;
+          tracks.forEach(track => {
+            const button = el.querySelector(`[data-lookup="${track.id}"]`);
+            if (button) button.onclick = () => renderMetadataSearch(track);
+          });
+          el.querySelectorAll("[data-select-track]").forEach(input => input.onchange = () => {
+            selectTrack(Number(input.dataset.selectTrack), input.checked); updateSelection();
+          });
+          updateSelection();
+        });
     };
     const renderMetadataSearch = track => {
       const searchPanel = el.querySelector("#metadata-search");
@@ -454,10 +494,10 @@ const views = {
       };
       searchPanel.scrollIntoView({behavior: "smooth", block: "start"});
     };
-    const renderMetadataReview = review => {
-      const panel = $("#metadata-review");
+    const renderMetadataReview = (review, panel = $("#metadata-review"), onSelection = null) => {
       if (!review.candidates.length) {
-        panel.innerHTML = `<div class="card"><h3>No MusicBrainz matches</h3><p>No suggestions were found. Existing file tags were not changed.</p></div>`;
+        panel.innerHTML = `<div class="card"><h3>No MusicBrainz matches</h3>
+          <p class="path">${esc(review.track.path)}</p><p>No suggestions were found. Existing file tags were not changed.</p></div>`;
         return;
       }
       let candidateIndex = 0;
@@ -473,8 +513,9 @@ const views = {
           <p>Source: MusicBrainz · confidence ${candidate.confidence}/100. Suggestions do not change your files until you select fields and apply.</p>
           <p class="path">${esc(review.track.path)}</p>
           <div class="row candidate-options">${review.candidates.map((item, index) =>
-            `<label class="check"><input type="radio" name="metadata-candidate" value="${index}" ${index === candidateIndex ? "checked" : ""}>
-              ${esc(item.fields.title)} — ${esc(item.fields.artist)} <span class="tag ${item.confidence >= 90 ? "ok" : "warn"}">${item.confidence}%</span></label>`
+            `<label class="check"><input type="radio" name="metadata-candidate-${review.review_id}" value="${index}" ${index === candidateIndex ? "checked" : ""}>
+              ${esc(item.fields.title)} — ${esc(item.fields.artist)} · ${esc(item.fields.album || "No album")} (${esc(item.fields.year || "No year")})
+              <span class="tag ${item.confidence >= 90 ? "ok" : "warn"}">${item.confidence}%</span></label>`
           ).join("")}</div>
           <div>${fields.map(key => {
             const current = review.track[key] ?? "—";
@@ -484,35 +525,121 @@ const views = {
               <span>Current: ${esc(current)}</span><span>MusicBrainz: ${esc(suggested)}${differs ? " (change)" : ""}</span></label>`;
           }).join("")}</div>
           <p class="hint">No fields are selected by default. Choose each change to write, then confirm before applying.</p>
-          <button class="action" id="metadata-apply">Apply selected tags</button>
-          <button class="action ghost" id="metadata-cancel">Close</button></div>`;
-        panel.querySelectorAll('[name="metadata-candidate"]').forEach(radio => radio.onchange = () => {
+          ${onSelection ? "" : '<button class="action" data-metadata-apply>Apply selected tags</button>'}
+          <button class="action ghost" data-metadata-cancel>${onSelection ? "Skip track" : "Close"}</button></div>`;
+        panel.querySelectorAll('input[type="radio"]').forEach(radio => radio.onchange = () => {
+          if (onSelection) onSelection(null);
           candidateIndex = Number(radio.value); renderCandidate();
         });
-        $("#metadata-cancel").onclick = () => { panel.innerHTML = ""; };
-        $("#metadata-apply").onclick = async () => {
-          const selectedFields = [...panel.querySelectorAll("[data-metadata-field]:checked")]
+        const selectedFields = () => [...panel.querySelectorAll("[data-metadata-field]:checked")]
             .map(input => input.dataset.metadataField);
-          if (!selectedFields.length) { toast("Select at least one field to apply.", true); return; }
-          if (!confirm(`Apply ${selectedFields.length} MusicBrainz tag(s) to this file?`)) return;
+        panel.querySelector("[data-metadata-cancel]").onclick = () => {
+          if (onSelection) onSelection(null);
+          panel.innerHTML = "";
+        };
+        if (onSelection) {
+          panel.querySelectorAll("[data-metadata-field]").forEach(input => input.onchange = () => {
+            const fields = selectedFields();
+            onSelection(fields.length ? {
+              review_id: review.review_id, candidate_index: candidateIndex, fields,
+            } : null);
+          });
+          return;
+        }
+        panel.querySelector("[data-metadata-apply]").onclick = async () => {
+          const fields = selectedFields();
+          if (!fields.length) { toast("Select at least one field to apply.", true); return; }
+          if (!confirm(`Apply ${fields.length} MusicBrainz tag(s) to this file?`)) return;
+          const applyButton = panel.querySelector("[data-metadata-apply]");
           try {
-            $("#metadata-apply").disabled = true;
+            applyButton.disabled = true;
             const result = await post("/api/metadata/apply", {
-              review_id: review.review_id, candidate_index: candidateIndex, fields: selectedFields,
+              review_id: review.review_id, candidate_index: candidateIndex, fields,
             });
-            toast(`Updated ${selectedFields.join(", ")}`);
+            toast(`Updated ${fields.join(", ")}`);
             panel.innerHTML = `<div class="card"><h3>Tags updated</h3><p>${esc(result.path)}</p></div>`;
-            await $("#library-search").click(); await loadStats();
-          } catch (e) { toast(e.message, true); $("#metadata-apply").disabled = false; }
+            await $("#library-search").onclick(); await loadStats();
+          } catch (e) { toast(e.message, true); applyButton.disabled = false; }
         };
       };
       renderCandidate();
-      panel.scrollIntoView({behavior: "smooth", block: "start"});
+      if (!onSelection) panel.scrollIntoView({behavior: "smooth", block: "start"});
+    };
+    const loadBulkReview = async jobId => {
+      const [reviews, errors] = await Promise.all([
+        api(`/api/jobs/${jobId}/results/reviews?limit=100`),
+        api(`/api/jobs/${jobId}/results/errors?limit=100`),
+      ]);
+      if (!el.isConnected) return;
+      const panel = el.querySelector("#metadata-bulk");
+      const choices = new Map();
+      panel.innerHTML = `<div class="card"><h3>Bulk MusicBrainz review</h3>
+        <p>Review each candidate and choose fields below. Nothing is selected automatically. Files are not renamed or moved.</p>
+        <p>${reviews.total} looked up; ${errors.total} lookup errors.</p>
+        ${errors.items.map(item => `<p role="alert">Track ${item.track_id}: ${esc(item.error)}</p>`).join("")}
+        <button class="action" data-bulk-apply data-operation>Apply reviewed tags</button>
+        <span data-bulk-count>0 tracks ready</span><div data-bulk-status role="status"></div>
+        <fieldset data-bulk-reviews style="border:0;padding:0"></fieldset></div>`;
+      const cards = panel.querySelector("[data-bulk-reviews]");
+      reviews.items.forEach(review => {
+        const card = document.createElement("div");
+        card.dataset.reviewId = review.review_id;
+        cards.append(card);
+        renderMetadataReview(review, card, selection => {
+          if (selection) choices.set(review.review_id, selection);
+          else choices.delete(review.review_id);
+          panel.querySelector("[data-bulk-count]").textContent = `${choices.size} tracks ready`;
+        });
+      });
+      panel.querySelector("[data-bulk-apply]").onclick = async () => {
+        const selected = [...choices.values()];
+        const count = selected.reduce((total, review) => total + review.fields.length, 0);
+        if (!selected.length) { toast("Select fields on at least one track.", true); return; }
+        if (!confirm(`Write ${count} selected tag(s) across ${selected.length} file(s)? Files are processed individually; failures will be listed.`)) return;
+        const status = panel.querySelector("[data-bulk-status]");
+        const button = panel.querySelector("[data-bulk-apply]");
+        try {
+          button.disabled = true;
+          cards.disabled = true;
+          const { job_id } = await post("/api/metadata/apply-bulk", {reviews: selected});
+          status.textContent = "Applying reviewed tags. Progress and saved results are in Activity.";
+          await refreshActivity();
+          await pollJob(job_id, "Bulk tag updates");
+          const [applied, failures] = await Promise.all([
+            api(`/api/jobs/${job_id}/results/applied?limit=100`),
+            api(`/api/jobs/${job_id}/results/errors?limit=100`),
+          ]);
+          if (!panel.isConnected) return;
+          status.innerHTML = `<p>${applied.total} files updated; ${failures.total} failed.</p>` +
+            failures.items.map(item => `<p role="alert">Review ${item.review_id}: ${esc(item.error)}</p>`).join("");
+          applied.items.forEach(item => {
+            choices.delete(item.review_id);
+            panel.querySelector(`[data-review-id="${item.review_id}"]`).textContent = `Updated: ${item.path}`;
+          });
+          panel.querySelector("[data-bulk-count]").textContent = `${choices.size} tracks ready`;
+          await $("#library-search").onclick(); await loadStats();
+        } catch (e) { status.textContent = e.message; toast(e.message, true); }
+        finally { button.disabled = false; cards.disabled = false; }
+      };
+    };
+    $("#metadata-lookup-bulk").onclick = async () => {
+      if (!selectedTracks.size) { toast("Select tracks to look up first.", true); return; }
+      try {
+        const { job_id } = await post("/api/metadata/lookup-bulk", {track_ids: [...selectedTracks]});
+        state.metadataLookupJob = job_id;
+        await refreshActivity();
+        await pollJob(job_id, "Bulk MusicBrainz lookup");
+        await loadBulkReview(job_id);
+      } catch (e) { toast(e.message, true); }
     };
     $("#library-query").onkeydown = event => {
       if (event.key === "Enter") { event.preventDefault(); $("#library-search").click(); }
     };
-    await $("#library-search").click();
+    await $("#library-search").onclick();
+    if (state.metadataLookupJob) {
+      const job = await api(`/api/jobs/${state.metadataLookupJob}`);
+      if (job.status === "done") await loadBulkReview(job.id);
+    }
   },
 
   async recovery(el) {

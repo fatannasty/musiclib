@@ -1,8 +1,11 @@
+import threading
+from pathlib import Path
 
 import musicbrainzngs
 import pytest
 from conftest import make_mp3
 from fastapi.testclient import TestClient
+from test_jobs_api import wait_job
 
 from musiclib.metadata_review import MetadataReview, lookup_track
 from musiclib.models import Track
@@ -259,3 +262,134 @@ def test_provider_failure_has_actionable_api_error(lib_env, monkeypatch, error):
         assert "MusicBrainz lookup failed" in response.json()["detail"]
         assert str(error) in response.json()["detail"]
     assert path.read_bytes() == before
+
+
+def test_bulk_lookup_preserves_files_and_saves_matches_empty_results_and_errors(lib_env, monkeypatch):
+    env = lib_env
+    for name, title in (("match", "Song"), ("empty", "No match"), ("untagged", "")):
+        make_mp3(env.library / f"{name}.mp3", tags={"title": title})
+    Scanner(env.config, env.db).scan()
+    tracks = env.db.all_tracks()
+    before = {track.path: Path(track.path).read_bytes() for track in tracks}
+
+    def search(**kwargs):
+        return {"recording-list": []} if kwargs["recording"] == "No match" else _musicbrainz_result()
+
+    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/lookup-bulk", json={
+            "track_ids": [track.id for track in tracks],
+        })
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+        job = wait_job(client, job_id)
+        assert job["status"] == "done"
+        assert job["completed"] == job["total"] == 3
+        assert job["summary"] == {"reviews": 2, "errors": 1}
+        reviews = client.get(f"/api/jobs/{job_id}/results/reviews").json()["items"]
+        assert sorted(len(review["candidates"]) for review in reviews) == [0, 1]
+        errors = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"]
+        assert "Enter a title or artist" in errors[0]["error"]
+    with TestClient(create_app(env.config)) as client:
+        assert client.get(f"/api/jobs/{job_id}/results/reviews").json()["items"] == reviews
+    for track in tracks:
+        assert Path(track.path).read_bytes() == before[track.path]
+
+
+def test_bulk_apply_only_selected_fields_and_reports_stale_files(lib_env, monkeypatch):
+    env = lib_env
+    for index in range(3):
+        make_mp3(env.library / f"{index}.mp3", tags={
+            "title": f"Original {index}", "artist": "Original Artist",
+        })
+    Scanner(env.config, env.db).scan()
+    tracks = env.db.all_tracks()
+    monkeypatch.setattr(
+        musicbrainzngs, "search_recordings", lambda **kwargs: _musicbrainz_result()
+    )
+    reviews = [MetadataReview(env.config, env.db).propose(track.id) for track in tracks]
+    with open(tracks[1].path, "ab") as audio_file:
+        audio_file.write(b"changed")
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/apply-bulk", json={"reviews": [
+            {"review_id": review["review_id"], "candidate_index": 0, "fields": ["title"]}
+            for review in reviews[:2]
+        ]})
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+        job = wait_job(client, job_id)
+        assert job["status"] == "done"
+        assert job["completed"] == job["total"] == 2
+        assert job["summary"] == {"applied": 1, "errors": 1}
+        errors = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"]
+        assert errors[0]["review_id"] == reviews[1]["review_id"]
+        assert "changed since lookup" in errors[0]["error"]
+        assert env.db.get_track(tracks[0].id).title == "Correct Song"
+        assert env.db.get_track(tracks[0].id).artist == "Original Artist"
+        assert env.db.get_track(tracks[1].id).title == tracks[1].title
+        assert env.db.get_track(tracks[2].id).title == tracks[2].title
+        retry = client.post("/api/metadata/apply-bulk", json={"reviews": [{
+            "review_id": reviews[0]["review_id"], "candidate_index": 0, "fields": ["artist"],
+        }]})
+        retry_id = retry.json()["job_id"]
+        assert wait_job(client, retry_id)["summary"] == {"applied": 0, "errors": 1}
+        assert env.db.get_track(tracks[0].id).artist == "Original Artist"
+
+
+@pytest.mark.parametrize("track_ids", [[], [1, 1], list(range(101))])
+def test_bulk_lookup_rejects_empty_duplicate_and_oversized_batches(lib_env, track_ids):
+    with TestClient(create_app(lib_env.config)) as client:
+        assert client.post("/api/metadata/lookup-bulk", json={
+            "track_ids": track_ids,
+        }).status_code == 400
+        assert client.get("/api/jobs").json() == []
+
+
+@pytest.mark.parametrize("reviews", [
+    [],
+    [{"review_id": 1, "candidate_index": 0, "fields": []}],
+    [{"review_id": 1, "candidate_index": 0, "fields": ["path"]}],
+    [{"review_id": 1, "candidate_index": -1, "fields": ["title"]}],
+    [{"review_id": 1, "candidate_index": 0, "fields": ["title"]}] * 2,
+    [{"review_id": index, "candidate_index": 0, "fields": ["title"]} for index in range(101)],
+])
+def test_bulk_apply_rejects_invalid_batches_before_starting(lib_env, reviews):
+    with TestClient(create_app(lib_env.config)) as client:
+        assert client.post("/api/metadata/apply-bulk", json={
+            "reviews": reviews,
+        }).status_code == 400
+        assert client.get("/api/jobs").json() == []
+
+
+def test_bulk_provider_failure_continues_and_holds_library_lock(lib_env, monkeypatch):
+    env = lib_env
+    for title in ("Failure", "Success"):
+        make_mp3(env.library / f"{title}.mp3", tags={"title": title})
+    Scanner(env.config, env.db).scan()
+    entered, finish = threading.Event(), threading.Event()
+
+    def search(**kwargs):
+        if kwargs["recording"] == "Failure":
+            raise musicbrainzngs.NetworkError("provider unavailable")
+        entered.set()
+        assert finish.wait(5)
+        return _musicbrainz_result()
+
+    monkeypatch.setattr(musicbrainzngs, "search_recordings", search)
+    with TestClient(create_app(env.config)) as client:
+        try:
+            response = client.post("/api/metadata/lookup-bulk", json={
+                "track_ids": [track.id for track in env.db.all_tracks()],
+            })
+            assert response.status_code == 200
+            job_id = response.json()["job_id"]
+            assert entered.wait(5)
+            assert client.post("/api/metadata/lookup", json={"track_id": 1}).status_code == 409
+            assert client.post("/api/metadata/apply-bulk", json={"reviews": [{
+                "review_id": 1, "candidate_index": 0, "fields": ["title"],
+            }]}).status_code == 409
+        finally:
+            finish.set()
+        assert wait_job(client, job_id)["summary"] == {"reviews": 1, "errors": 1}
+        error = client.get(f"/api/jobs/{job_id}/results/errors").json()["items"][0]
+        assert "provider unavailable" in error["error"]

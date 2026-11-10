@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
+from mutagen import MutagenError
 from pydantic import BaseModel
 
 from ..artwork import Artwork
@@ -79,6 +80,14 @@ class MetadataApplyBody(BaseModel):
     review_id: int
     candidate_index: int
     fields: List[str]
+
+
+class MetadataBulkLookupBody(BaseModel):
+    track_ids: List[int]
+
+
+class MetadataBulkApplyBody(BaseModel):
+    reviews: List[MetadataApplyBody]
 
 
 class SabAddBody(BaseModel):
@@ -345,6 +354,56 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(500, str(exc)) from exc
+
+    @app.post("/api/metadata/lookup-bulk")
+    def metadata_lookup_bulk(body: MetadataBulkLookupBody) -> Dict[str, str]:
+        if not 1 <= len(body.track_ids) <= 100 or len(set(body.track_ids)) != len(body.track_ids):
+            raise HTTPException(400, "Select between 1 and 100 distinct tracks.")
+
+        def run(job: Dict[str, Any]) -> Dict[str, Any]:
+            reviewer = MetadataReview(config, db)
+            reviews, errors = [], []
+            total = len(body.track_ids)
+            for index, track_id in enumerate(body.track_ids):
+                jobs.update("Looking up MusicBrainz suggestions", index, total, str(track_id))
+                try:
+                    reviews.append(reviewer.propose(track_id))
+                except (ValueError, RuntimeError, OSError) as exc:
+                    errors.append({"track_id": track_id, "error": str(exc)})
+                jobs.update("Looking up MusicBrainz suggestions", index + 1, total, str(track_id))
+            return {"reviews": reviews, "errors": errors}
+
+        return {"job_id": jobs.start("metadata-lookup", run)}
+
+    @app.post("/api/metadata/apply-bulk")
+    def metadata_apply_bulk(body: MetadataBulkApplyBody) -> Dict[str, str]:
+        review_ids = [review.review_id for review in body.reviews]
+        if not 1 <= len(review_ids) <= 100 or len(set(review_ids)) != len(review_ids):
+            raise HTTPException(400, "Select between 1 and 100 distinct reviews.")
+        if any(
+            not review.fields or set(review.fields) - set(EDITABLE_FIELDS)
+            or review.candidate_index < 0
+            for review in body.reviews
+        ):
+            raise HTTPException(400, "Choose a candidate and valid metadata fields for each review.")
+
+        def run(job: Dict[str, Any]) -> Dict[str, Any]:
+            reviewer = MetadataReview(config, db)
+            applied, errors = [], []
+            total = len(body.reviews)
+            for index, review in enumerate(body.reviews):
+                jobs.update("Applying reviewed metadata", index, total, str(review.review_id))
+                try:
+                    result = reviewer.apply(
+                        review.review_id, review.candidate_index, review.fields
+                    )
+                    applied.append({"review_id": review.review_id, **result})
+                except (ValueError, RuntimeError, OSError, MutagenError) as exc:
+                    errors.append({"review_id": review.review_id, "error": str(exc)})
+                jobs.update("Applying reviewed metadata", index + 1, total, str(review.review_id))
+            return {"applied": applied, "errors": errors}
+
+        return {"job_id": jobs.start("metadata-apply", run)}
 
     @app.post("/api/tracks/page")
     def tracks_page(body: TrackSearchBody) -> Dict[str, Any]:
