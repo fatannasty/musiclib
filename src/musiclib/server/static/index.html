@@ -235,9 +235,10 @@ async function showJobResults(job) {
   container.innerHTML = `<h3>${esc(job.kind)} results</h3><div class="row sections"></div><div class="results-page"></div>`;
   const sections = Object.entries(job.summary || {}).filter(([, value]) => typeof value === "number");
   const lists = {
-    scan: [], doctor: ["results"], duplicates: ["groups"],
+    scan: [], doctor: ["results", "failures"], duplicates: ["groups"],
     rename: ["moves", "skipped_files", "errors"], art: ["albums"], "duplicates-apply": [],
     "metadata-lookup": ["reviews", "errors"], "metadata-apply": ["applied", "errors"],
+    "issues-trash": ["failures"], "album-apply": ["applied", "errors", "rename_errors"],
   }[job.kind] || [];
   container.querySelector(".sections").innerHTML = sections.map(([key, value]) => `<span class="tag dim">${esc(key)}: ${value}</span>`).join("") +
     lists.map(key => `<button class="action ghost" data-section="${key}">${esc(key)}</button>`).join("");
@@ -447,21 +448,39 @@ const views = {
   async doctor(el) {
     el.innerHTML = `<div class="row">
       <button class="action" id="btn-check" data-operation>Check files</button>
-      <button class="action danger" id="btn-remove" data-operation style="display:none">Trash bad files</button>
+      <button class="action danger" id="btn-remove" data-operation style="display:none">Trash all bad files</button>
+      <button class="action danger" id="btn-trash-selected" data-operation>Trash selected</button>
       <label class="check"><input type="checkbox" id="opt-deep" checked> deep decode (ffmpeg)</label>
     </div><div class="row">
       <select id="issue-severity" aria-label="Issue severity"><option value="">All severities</option><option value="bad">Bad — broken files</option><option value="warn">Warnings — review only</option></select>
       <select id="issue-kind" aria-label="Issue type"><option value="">All issue types</option><option value="decode_error">Audio corruption</option>
       <option value="unparseable">Unreadable audio</option><option value="missing_file">Missing file</option><option value="missing_tags">Missing metadata</option>
       <option value="low_bitrate">Low bitrate</option><option value="short_file">Short file</option></select>
-    </div><p class="hint">Warnings are not automatically deleted. Checks and removal appear in Activity.</p>
+    </div><p class="hint">Select files to trash even if a full check has not just finished. Permission errors are listed per file and do not stop the rest. Warnings are not included in Trash all bad files.</p>
     <div id="doc-summary"></div><div id="doc-out"></div>`;
+    const selected = new Set();
+    const updateTrashSelection = () => {
+      el.querySelectorAll("[data-trash-track]").forEach(input => {
+        input.checked = selected.has(Number(input.dataset.trashTrack));
+      });
+    };
     const showIssues = async () => {
       const severity = $("#issue-severity").value, kind = $("#issue-kind").value;
+      const bad = await api("/api/issues/page?offset=0&limit=1&severity=bad");
+      $("#btn-remove").style.display = bad.total ? "" : "none";
       await pagedTable($("#doc-out"),
         offset => api(`/api/issues/page?offset=${offset}&severity=${encodeURIComponent(severity)}&kind=${encodeURIComponent(kind)}`),
-        ["Severity", "Issue", "Details", "File"],
-        i => `<tr><td>${esc(i.severity)}</td><td>${esc(i.kind)}</td><td>${esc(i.detail)}</td><td class="path">${esc(i.path)}</td></tr>`);
+        ["Select", "Severity", "Issue", "Details", "File"],
+        i => `<tr><td><input type="checkbox" data-trash-track="${i.track_id}" aria-label="Select ${esc(i.path)}"></td>
+          <td>${esc(i.severity)}</td><td>${esc(i.kind)}</td><td>${esc(i.detail)}</td><td class="path">${esc(i.path)}</td></tr>`,
+        () => {
+          el.querySelectorAll("[data-trash-track]").forEach(input => input.onchange = () => {
+            const id = Number(input.dataset.trashTrack);
+            if (input.checked) selected.add(id); else selected.delete(id);
+            updateTrashSelection();
+          });
+          updateTrashSelection();
+        });
     };
     $("#issue-severity").onchange = showIssues;
     $("#issue-kind").onchange = showIssues;
@@ -469,16 +488,31 @@ const views = {
       const job = await runTask("doctor", { deep: $("#opt-deep").checked });
       if (!el.isConnected) return;
       $("#doc-summary").textContent = `${job.summary.checked} checked · ${job.summary.bad} bad · ${job.summary.suspect} suspect`;
-      $("#btn-remove").style.display = job.summary.bad ? "" : "none";
       if (!job.summary.bad) toast("No broken files found. Warnings are still available for review.");
       await showIssues(); await loadStats();
     };
     $("#btn-remove").onclick = async () => {
-      if (!confirm("Recheck metadata and move all currently bad files to trash? Warnings will remain.")) return;
+      if (!confirm("Recheck metadata and move all currently bad files to trash? Warnings will remain. Files that cannot be moved are reported and skipped.")) return;
       const job = await runTask("doctor", { apply: true, hard_delete: false, deep: false });
-      toast(`Trashed ${job.summary.trashed} bad files`);
-      if (el.isConnected) { $("#btn-remove").style.display = "none"; await showIssues(); }
+      toast(`Trashed ${job.summary.trashed} bad files` + (job.summary.failed ? `; ${job.summary.failed} could not be moved` : ""));
+      if (el.isConnected) await showIssues();
       await loadStats();
+    };
+    $("#btn-trash-selected").onclick = async () => {
+      if (!selected.size) { toast("Select files to trash first.", true); return; }
+      if (!confirm(`Move ${selected.size} selected file(s) to trash? Failed files are listed and the rest continue.`)) return;
+      try {
+        const { job_id } = await post("/api/issues/trash", {track_ids: [...selected]});
+        await refreshActivity();
+        const job = await pollJob(job_id, "Trash selected files");
+        const failures = await api(`/api/jobs/${job_id}/results/failures?limit=200`);
+        toast(`Trashed ${job.summary.trashed}` + (job.summary.failed ? `; ${job.summary.failed} failed` : ""));
+        $("#doc-summary").innerHTML = failures.items.map(item =>
+          `<p role="alert">${esc(item.path || item.track_id)}: ${esc(item.error)}</p>`).join("");
+        selected.clear();
+        if (el.isConnected) await showIssues();
+        await loadStats();
+      } catch (e) { toast(e.message, true); }
     };
     await showIssues();
   },
@@ -494,8 +528,10 @@ const views = {
     <div class="row"><button class="action ghost" id="metadata-select-page">Select this page</button>
       <button class="action ghost" id="metadata-clear-selection">Clear selection</button>
       <span id="metadata-selection-count">0 tracks selected</span>
-      <button class="action" id="metadata-lookup-bulk" data-operation>Look up selected tracks</button></div>
-    <p class="hint">Select up to 100 tracks across pages. Untagged tracks can be searched individually using Lookup.</p>
+      <button class="action" id="metadata-lookup-bulk" data-operation>Look up selected tracks</button>
+      <button class="action" id="metadata-album-bulk" data-operation>Tag selected as one album</button></div>
+    <p class="hint">Select up to 200 tracks. Per-track lookup is limited to 100 files. Album tagging writes the same album fields to every selected file after you confirm. Files are not renamed unless you choose that option.</p>
+    <div id="metadata-album"></div>
     <div id="metadata-bulk"></div>
     <div id="metadata-search"></div><div id="metadata-review"></div><div id="library-table"></div>`;
     const selectedTracks = new Set();
@@ -507,8 +543,8 @@ const views = {
       });
     };
     const selectTrack = (id, checked) => {
-      if (checked && selectedTracks.size >= 100 && !selectedTracks.has(id)) {
-        toast("Select at most 100 tracks per batch.", true);
+      if (checked && selectedTracks.size >= 200 && !selectedTracks.has(id)) {
+        toast("Select at most 200 tracks per batch.", true);
       } else if (checked) selectedTracks.add(id);
       else selectedTracks.delete(id);
     };
@@ -719,8 +755,99 @@ const views = {
         finally { button.disabled = false; cards.disabled = false; }
       };
     };
+    const albumLabels = {
+      album: "Album", album_artist: "Album artist", artist: "Artist",
+      year: "Year", genre: "Genre", mbid_release: "Release ID",
+    };
+    $("#metadata-album-bulk").onclick = async () => {
+      if (!selectedTracks.size) { toast("Select tracks to tag as one album first.", true); return; }
+      const panel = el.querySelector("#metadata-album");
+      const first = pageTracks.find(track => selectedTracks.has(track.id)) || {};
+      panel.innerHTML = `<form class="card"><h3>Tag selected tracks as one album</h3>
+        <p>Suggestions include albums already in your library, then MusicBrainz and iTunes. Nothing is written until you choose fields and confirm.</p>
+        <div class="row">
+          <label>Album <input type="text" name="album" value="${esc(first.album || "")}"></label>
+          <label>Artist <input type="text" name="artist" value="${esc(first.album_artist || first.artist || "")}"></label>
+          <button type="submit" class="action">Find album matches</button>
+        </div><p role="status" class="hint" data-album-status></p>
+        <div data-album-results></div></form>`;
+      const form = panel.querySelector("form");
+      form.onsubmit = async event => {
+        event.preventDefault();
+        const status = form.querySelector("[data-album-status]");
+        const results = form.querySelector("[data-album-results]");
+        const submit = form.querySelector('button[type="submit"]');
+        submit.disabled = true;
+        status.textContent = "Searching your library and catalogs…";
+        results.innerHTML = "";
+        try {
+          const payload = await post("/api/metadata/album-suggest", {
+            track_ids: [...selectedTracks],
+            album: form.elements.namedItem("album").value.trim(),
+            artist: form.elements.namedItem("artist").value.trim(),
+          });
+          if (!form.isConnected) return;
+          status.textContent = `${payload.tracks.length} tracks · ${payload.suggestions.length} suggestions`;
+          if (!payload.suggestions.length) {
+            results.innerHTML = "<p>No album suggestions were found. File tags were not changed.</p>";
+            return;
+          }
+          let suggestionIndex = 0;
+          const draw = () => {
+            const suggestion = payload.suggestions[suggestionIndex];
+            const fields = Object.keys(albumLabels).filter(key => suggestion.fields[key] != null);
+            results.innerHTML = `<div class="match-grid">${payload.suggestions.map((item, index) =>
+              `<label class="match-card ${index === suggestionIndex ? "selected" : ""}">
+                <input type="radio" name="album-suggestion" value="${index}" ${index === suggestionIndex ? "checked" : ""}>
+                ${coverMarkup(item)}
+                <strong>${esc(item.fields.album)}</strong>
+                <em>${esc(item.fields.album_artist || item.fields.artist || "Unknown artist")} (${esc(item.fields.year || "—")})</em>
+                <span class="tag ${item.source === "Your library" ? "ok" : "warn"}">${esc(item.source)}${item.in_library ? ` · ${item.in_library} tracks` : ""} · ${item.confidence}%</span>
+              </label>`
+            ).join("")}</div>
+            <div>${fields.map(key => `<label class="metadata-field"><span><input type="checkbox" data-album-field="${key}"> ${albumLabels[key]}</span>
+              <span>Suggested: ${esc(suggestion.fields[key])}</span></label>`).join("")}</div>
+            <label class="check"><input type="checkbox" data-album-rename> Also rename these files using current Organize templates</label>
+            <button class="action" data-album-apply data-operation>Apply album tags</button>`;
+            results.querySelectorAll('input[type="radio"]').forEach(radio => radio.onchange = () => {
+              suggestionIndex = Number(radio.value); draw();
+            });
+            results.querySelector("[data-album-apply]").onclick = async () => {
+              const chosen = [...results.querySelectorAll("[data-album-field]:checked")].map(input => input.dataset.albumField);
+              if (!chosen.length) { toast("Select at least one album field to apply.", true); return; }
+              const rename = results.querySelector("[data-album-rename]").checked;
+              if (!confirm(`Write ${chosen.length} album field(s) to ${payload.tracks.length} file(s)${rename ? " and rename them" : ""}?`)) return;
+              const button = results.querySelector("[data-album-apply]");
+              try {
+                button.disabled = true;
+                const values = {};
+                chosen.forEach(key => { values[key] = suggestion.fields[key]; });
+                const { job_id } = await post("/api/metadata/album-apply", {
+                  track_ids: payload.tracks.map(track => track.id), fields: chosen, values, rename,
+                });
+                status.textContent = "Applying album tags. Progress is in Activity.";
+                await refreshActivity();
+                await pollJob(job_id, "Album tag update");
+                const [applied, errors, renameErrors] = await Promise.all([
+                  api(`/api/jobs/${job_id}/results/applied?limit=200`),
+                  api(`/api/jobs/${job_id}/results/errors?limit=200`),
+                  api(`/api/jobs/${job_id}/results/rename_errors?limit=200`),
+                ]);
+                status.innerHTML = `<p>${applied.total} files updated; ${errors.total} failed; ${renameErrors.total} rename errors.</p>` +
+                  errors.items.map(item => `<p role="alert">${esc(item.path || item.track_id)}: ${esc(item.error)}</p>`).join("");
+                await $("#library-search").onclick(); await loadStats();
+              } catch (e) { toast(e.message, true); button.disabled = false; }
+            };
+          };
+          draw();
+        } catch (e) { status.textContent = e.message; }
+        finally { submit.disabled = false; }
+      };
+      panel.scrollIntoView({behavior: "smooth", block: "start"});
+    };
     $("#metadata-lookup-bulk").onclick = async () => {
       if (!selectedTracks.size) { toast("Select tracks to look up first.", true); return; }
+      if (selectedTracks.size > 100) { toast("Per-track lookup is limited to 100 files. Use album tagging for larger groups.", true); return; }
       try {
         const { job_id } = await post("/api/metadata/lookup-bulk", {track_ids: [...selectedTracks]});
         state.metadataLookupJob = job_id;

@@ -448,6 +448,74 @@ def test_itunes_cover_merges_with_musicbrainz_match(monkeypatch):
     assert results[0]["fields"]["mbid_track"] == "recording-1"
 
 
+def test_album_suggestions_rank_existing_library_albums(lib_env, monkeypatch):
+    env = lib_env
+    for index in range(2):
+        make_mp3(env.library / f"night-{index}.mp3", tags={
+            "title": f"Night {index}", "artist": "Known Artist",
+            "album": "Night Songs", "albumartist": "Known Artist", "date": "2001",
+        })
+    make_mp3(env.library / "other.mp3", tags={
+        "title": "Other", "artist": "Other Artist", "album": "Other Album",
+    })
+    make_mp3(env.library / "new.mp3", tags={
+        "title": "New Track", "artist": "Known Artist", "album": "Wrong Album",
+    })
+    Scanner(env.config, env.db).scan()
+    monkeypatch.setattr(
+        "musiclib.metadata_review.musicbrainzngs.search_releases",
+        lambda **kwargs: {"release-list": [{
+            "id": "release-2", "title": "Night Songs Deluxe", "ext:score": "80",
+            "date": "2001-05-01", "artist-credit": [{"artist": {"name": "Known Artist"}}],
+        }]},
+    )
+    tracks = [track for track in env.db.all_tracks() if track.title == "New Track"]
+    before = Path(tracks[0].path).read_bytes()
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/album-suggest", json={
+            "track_ids": [tracks[0].id], "album": "Night", "artist": "Known Artist",
+        })
+    assert response.status_code == 200
+    suggestions = response.json()["suggestions"]
+    assert suggestions[0]["source"] == "Your library"
+    assert suggestions[0]["fields"]["album"] == "Night Songs"
+    assert suggestions[0]["in_library"] == 2
+    assert any(item["source"] == "MusicBrainz" for item in suggestions)
+    assert Path(tracks[0].path).read_bytes() == before
+
+
+def test_album_apply_writes_only_chosen_fields(lib_env, monkeypatch):
+    env = lib_env
+    for index in range(2):
+        make_mp3(env.library / f"track-{index}.mp3", tags={
+            "title": f"Song {index}", "artist": "Old Artist", "album": "Old Album",
+        })
+    Scanner(env.config, env.db).scan()
+    tracks = env.db.all_tracks()
+    monkeypatch.setattr("musiclib.metadata_review.musicbrainzngs.search_releases", lambda **kwargs: {"release-list": []})
+    with TestClient(create_app(env.config)) as client:
+        rejected = client.post("/api/metadata/album-apply", json={
+            "track_ids": [track.id for track in tracks], "fields": [], "values": {},
+        })
+        assert rejected.status_code == 400
+        assert client.get("/api/jobs").json() == []
+        response = client.post("/api/metadata/album-apply", json={
+            "track_ids": [track.id for track in tracks],
+            "fields": ["album", "year"],
+            "values": {"album": "New Album", "year": 1999, "artist": "Should Ignore"},
+        })
+        job = wait_job(client, response.json()["job_id"])
+        assert job["status"] == "done"
+        assert job["summary"]["applied"] == 2
+        assert job["summary"]["errors"] == 0
+    for track in tracks:
+        updated = env.db.get_track(track.id)
+        assert updated.album == "New Album"
+        assert updated.year == 1999
+        assert updated.title == track.title
+        assert updated.artist == "Old Artist"
+
+
 def test_itunes_results_are_used_when_musicbrainz_fails(monkeypatch):
     def fail(**kwargs):
         raise musicbrainzngs.NetworkError("connection timed out")
