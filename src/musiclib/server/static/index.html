@@ -200,6 +200,12 @@ const TABS = [
 const state = { tab: "overview", jobs: [], libraryView: "albums" };
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const albumSourceOptions = selected => [
+  ["all", "Library + both catalogs"],
+  ["musicbrainz", "Library + MusicBrainz"],
+  ["itunes", "Library + iTunes"],
+  ["library", "Your library only (offline)"],
+].map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("");
 const fmtBytes = (b) => {
   if (b == null) return "-";
   const u = ["B","KB","MB","GB","TB"]; let i = 0;
@@ -1285,7 +1291,9 @@ const views = {
       };
       panel.scrollIntoView({behavior: "smooth", block: "start"});
     };
-    const [genreRows, formatRows] = await Promise.all([api("/api/genres"), api("/api/formats")]);
+    const [genreRows, formatRows, settings] = await Promise.all([
+      api("/api/genres"), api("/api/formats"), api("/api/settings"),
+    ]);
     $("#library-genre").insertAdjacentHTML("beforeend", genreRows.map(g => `<option>${esc(g)}</option>`).join(""));
     $("#library-format").insertAdjacentHTML("beforeend", formatRows.map(f => `<option>${esc(f)}</option>`).join(""));
     $("#library-view-albums").onclick = () => { setView("albums"); $("#library-search").click(); };
@@ -1504,33 +1512,52 @@ const views = {
       const panel = el.querySelector("#metadata-album");
       const first = pageTracks.find(track => selectedTracks.has(track.id)) || {};
       panel.innerHTML = `<form class="card"><h3>Tag selected tracks as one album</h3>
-        <p>Suggestions include albums already in your library, then MusicBrainz and iTunes. Nothing is written until you choose fields and confirm.</p>
+        <p>Choose where to look for album metadata. Your library is searched first; offline mode never contacts a catalog. Nothing is written until you choose fields and confirm.</p>
         <div class="row">
           <label>Album <input type="text" name="album" value="${esc(first.album || "")}"></label>
           <label>Artist <input type="text" name="artist" value="${esc(first.album_artist || first.artist || "")}"></label>
+          <label>Lookup source <select name="source">${albumSourceOptions(settings.catalog.album_source)}</select></label>
           <button type="submit" class="action">Find album matches</button>
         </div><p role="status" class="hint" data-album-status></p>
+        <div data-album-notice role="alert" style="overflow-wrap:anywhere"></div>
+        <button type="button" class="action ghost" data-album-offline hidden>Search library only</button>
+        <p class="hint">If both catalogs fail, check the NAS connection or enable IPv4-only catalog connections in Settings.
+        You can also use Edit album tags on an album page without a catalog lookup.</p>
         <div data-album-results></div></form>`;
       const form = panel.querySelector("form");
+      const notice = form.querySelector("[data-album-notice]");
+      const offline = form.querySelector("[data-album-offline]");
+      offline.onclick = () => {
+        form.elements.namedItem("source").value = "library";
+        form.requestSubmit();
+      };
       form.onsubmit = async event => {
         event.preventDefault();
         const status = form.querySelector("[data-album-status]");
         const results = form.querySelector("[data-album-results]");
         const submit = form.querySelector('button[type="submit"]');
+        const source = form.elements.namedItem("source").value;
         submit.disabled = true;
-        status.textContent = "Searching your library and catalogs… You can continue working in the library.";
+        notice.textContent = "";
+        offline.hidden = true;
+        status.textContent = source === "library" ? "Searching your library without contacting a catalog..." :
+          "Searching your library and selected catalogs... You can continue working in the library.";
         results.innerHTML = "";
         try {
           const payload = await post("/api/metadata/album-suggest", {
             track_ids: [...selectedTracks],
             album: form.elements.namedItem("album").value.trim(),
             artist: form.elements.namedItem("artist").value.trim(),
+            source,
           });
           if (!form.isConnected) return;
-          status.textContent = `${payload.tracks.length} tracks · ${payload.suggestions.length} suggestions` +
-            (payload.warnings?.length ? ` · ${payload.warnings.join(" ")}` : "");
+          status.textContent = `${payload.tracks.length} tracks · ${payload.suggestions.length} suggestions`;
+          notice.textContent = (payload.warnings || []).join(" ");
+          offline.hidden = !payload.warnings?.length || source === "library";
           if (!payload.suggestions.length) {
-            results.innerHTML = "<p>No album suggestions were found. File tags were not changed.</p>";
+            results.innerHTML = source === "library" ?
+              "<p>No matching album metadata was found in your library. Try an online source or use Edit album tags on an album page. File tags were not changed.</p>" :
+              "<p>No album suggestions were found. Try a different source or adjust the artist and album. File tags were not changed.</p>";
             return;
           }
           let suggestionIndex = 0;
@@ -1584,7 +1611,12 @@ const views = {
             };
           };
           draw();
-        } catch (e) { status.textContent = e.message; }
+        } catch (e) {
+          if (!form.isConnected) return;
+          status.textContent = "Album search failed. Your files were not changed.";
+          notice.textContent = e.message;
+          offline.hidden = source === "library";
+        }
         finally { submit.disabled = false; }
       };
       panel.scrollIntoView({behavior: "smooth", block: "start"});
@@ -1915,6 +1947,15 @@ const views = {
       <div class="card" style="margin-top:14px"><h3>MusicBrainz</h3>
         ${field("brainz", "contact", "Contact email (required by MusicBrainz)")}
       </div>
+      <div class="card" style="margin-top:14px"><h3>Album lookup sources and connections</h3>
+        <p>Choose the default for Find album matches. You can change the source for each search.</p>
+        <label class="hint" for="set-catalog-album_source">Default album lookup source</label>
+        <div class="row"><select id="set-catalog-album_source">${albumSourceOptions(s.catalog.album_source)}</select></div>
+        ${field("catalog", "ipv4_only", "Use IPv4-only catalog connections")}
+        <p class="hint">Applies to album and track metadata searches. Normally, address-related connection failures
+        automatically retry once over IPv4. Enable this if IPv6 is unreliable on the NAS. Proxy settings and TLS verification are preserved.</p>
+        <p class="hint">Library-only searches and manual tag edits work offline. Changing providers cannot repair a disconnected NAS.</p>
+      </div>
       <div class="card" style="margin-top:14px"><h3>Organize</h3>
         ${field("organize", "template", "Filename template")}
         ${field("organize", "template_multidisc", "Multi-disc template")}
@@ -1953,7 +1994,7 @@ const views = {
         old_name: r.dataset.old, name: r.querySelector(".i-name").value,
         url: r.querySelector(".i-url").value, api_key: r.querySelector(".i-key").value,
         categories: r.querySelector(".i-cat").value })) };
-      for (const sec of ["sabnzbd", "brainz", "organize", "doctor", "duplicates", "artwork"]) {
+      for (const sec of ["sabnzbd", "brainz", "catalog", "organize", "doctor", "duplicates", "artwork"]) {
         body[sec] = {};
         for (const key of Object.keys(s[sec])) {
           if (key.endsWith("_set")) continue;

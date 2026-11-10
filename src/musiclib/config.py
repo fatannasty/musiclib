@@ -48,6 +48,10 @@ replace_small = false
 [brainz]
 contact = "you@example.com"
 
+[catalog]
+album_source = "all"
+ipv4_only = false
+
 [sabnzbd]
 url = "http://localhost:8080"
 api_key = ""
@@ -121,6 +125,7 @@ def _default_config(library: str) -> Dict[str, Any]:
             "replace_small": False,
         },
         "brainz": {"contact": "you@example.com"},
+        "catalog": {"album_source": "all", "ipv4_only": False},
         "sabnzbd": {"url": "http://localhost:8080", "api_key": "", "complete_dir": ""},
         "indexers": [],
     }
@@ -139,6 +144,7 @@ class Config:
     sabnzbd: Dict[str, Any] = field(default_factory=dict)
     indexers: List[Dict[str, str]] = field(default_factory=list)
     config_path: Optional[Path] = None
+    catalog: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "Config":
@@ -175,6 +181,7 @@ class Config:
             duplicates=config["duplicates"],
             artwork=config["artwork"],
             brainz=config["brainz"],
+            catalog=config["catalog"],
             sabnzbd=config["sabnzbd"],
             indexers=config.get("indexers", []),
             config_path=used,
@@ -207,6 +214,7 @@ class Config:
                 "duplicates": self.duplicates,
                 "artwork": self.artwork,
                 "brainz": self.brainz,
+                "catalog": self.catalog,
                 "sabnzbd": self.sabnzbd,
             },
             self.indexers,

@@ -274,7 +274,8 @@ def test_provider_failure_has_actionable_api_error(lib_env, monkeypatch, error):
         response = client.post("/api/metadata/lookup", json={"track_id": env.db.all_tracks()[0].id})
         assert response.status_code == 502
         assert "MusicBrainz lookup failed" in response.json()["detail"]
-        assert str(error) in response.json()["detail"]
+        assert error.args[0] in response.json()["detail"]
+        assert "caused by: None" not in response.json()["detail"]
     assert path.read_bytes() == before
 
 
@@ -600,6 +601,146 @@ def test_album_suggestions_rank_existing_library_albums(lib_env, monkeypatch):
     assert suggestions[0]["in_library"] == 2
     assert any(item["source"] == "MusicBrainz" for item in suggestions)
     assert Path(tracks[0].path).read_bytes() == before
+
+
+@pytest.mark.parametrize(("source", "expected"), [
+    ("all", ["MusicBrainz", "iTunes"]), ("musicbrainz", ["MusicBrainz"]),
+    ("itunes", ["iTunes"]), ("library", []),
+])
+def test_album_source_choices_contact_only_selected_catalogs(lib_env, monkeypatch, source, expected):
+    env = lib_env
+    path = env.library / "song.mp3"
+    make_mp3(path, tags={"title": "Song", "artist": "Artist", "album": "Album"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.all_tracks()[0]
+    before = path.read_bytes()
+    called = []
+
+    def provider(name):
+        def search(*args, **kwargs):
+            called.append(name)
+            return []
+        return search
+
+    monkeypatch.setattr(review_module, "search_musicbrainz_releases", provider("MusicBrainz"))
+    monkeypatch.setattr(review_module, "search_itunes_albums", provider("iTunes"))
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/album-suggest", json={
+            "track_ids": [track.id], "source": source,
+        })
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == source
+    assert payload["suggestions"][0]["source"] == "Your library"
+    assert payload["warnings"] == []
+    assert sorted(called) == sorted(expected)
+    assert path.read_bytes() == before
+
+
+def test_album_source_default_override_and_invalid_selection(lib_env, monkeypatch):
+    env = lib_env
+    path = env.library / "song.mp3"
+    make_mp3(path, tags={"title": "Song", "artist": "Artist", "album": "Album"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.all_tracks()[0]
+    env.config.catalog["album_source"] = "itunes"
+    called = []
+
+    def no_musicbrainz(*args, **kwargs):
+        pytest.fail("A disabled catalog must not be contacted")
+
+    def itunes(*args, **kwargs):
+        called.append(kwargs)
+        return []
+
+    monkeypatch.setattr(review_module, "search_musicbrainz_releases", no_musicbrainz)
+    monkeypatch.setattr(review_module, "search_itunes_albums", itunes)
+    with TestClient(create_app(env.config)) as client:
+        assert client.post("/api/metadata/album-suggest", json={
+            "track_ids": [track.id],
+        }).json()["source"] == "itunes"
+        assert len(called) == 1
+        assert client.post("/api/metadata/album-suggest", json={
+            "track_ids": [track.id], "source": "library",
+        }).json()["source"] == "library"
+        assert len(called) == 1
+        assert client.post("/api/metadata/album-suggest", json={
+            "track_ids": [track.id], "source": "unknown",
+        }).status_code == 422
+        assert len(called) == 1
+
+
+def test_library_only_no_matches_is_not_a_network_failure(lib_env, monkeypatch):
+    env = lib_env
+    make_mp3(env.library / "song.mp3", tags={"title": "Song", "artist": "Artist"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.all_tracks()[0]
+
+    def offline(*args, **kwargs):
+        pytest.fail("Library-only searches must work without network calls")
+
+    monkeypatch.setattr(review_module, "search_musicbrainz_releases", offline)
+    monkeypatch.setattr(review_module, "search_itunes_albums", offline)
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/album-suggest", json={
+            "track_ids": [track.id], "artist": "No match", "album": "No match", "source": "library",
+        })
+    assert response.status_code == 200
+    assert response.json()["suggestions"] == []
+    assert response.json()["warnings"] == []
+
+
+def test_ipv4_setting_reaches_both_album_and_track_searches(lib_env, monkeypatch):
+    env = lib_env
+    make_mp3(env.library / "song.mp3", tags={"title": "Song", "artist": "Artist", "album": "Album"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.all_tracks()[0]
+    env.config.catalog["ipv4_only"] = True
+    options = []
+
+    def albums(*args, **kwargs):
+        options.append(kwargs)
+        return []
+
+    def recording(*args, **kwargs):
+        options.append(kwargs)
+        return []
+
+    monkeypatch.setattr(review_module, "search_musicbrainz_releases", albums)
+    monkeypatch.setattr(review_module, "search_itunes_albums", albums)
+    monkeypatch.setattr(review_module, "lookup_track", recording)
+    with TestClient(create_app(env.config)) as client:
+        assert client.post("/api/metadata/album-suggest", json={"track_ids": [track.id]}).status_code == 200
+        assert client.post("/api/metadata/lookup", json={"track_id": track.id}).status_code == 200
+    assert len(options) == 3
+    assert all(option["ipv4_only"] is True for option in options)
+
+
+def test_album_lookup_keeps_other_catalog_results_when_one_fails(lib_env, monkeypatch):
+    env = lib_env
+    path = env.library / "song.mp3"
+    make_mp3(path, tags={"title": "Song", "artist": "Original"})
+    Scanner(env.config, env.db, workers=1).scan()
+    track = env.db.all_tracks()[0]
+    before = path.read_bytes()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("MusicBrainz album lookup failed: Cannot connect from the NAS/container")
+
+    monkeypatch.setattr(review_module, "search_musicbrainz_releases", fail)
+    monkeypatch.setattr(review_module, "search_itunes_albums", lambda *args, **kwargs: [{
+        "source": "iTunes", "confidence": 75, "cover_url": None, "cover_fallback": None,
+        "fields": {"album": "Found album", "album_artist": "Found artist"},
+    }])
+    with TestClient(create_app(env.config)) as client:
+        response = client.post("/api/metadata/album-suggest", json={
+            "track_ids": [track.id], "album": "Found album", "artist": "Found artist",
+        })
+    assert response.status_code == 200
+    assert response.json()["suggestions"][0]["source"] == "iTunes"
+    assert len(response.json()["warnings"]) == 1
+    assert "MusicBrainz" in response.json()["warnings"][0]
+    assert path.read_bytes() == before
 
 
 def test_album_apply_writes_only_chosen_fields(lib_env, monkeypatch):
