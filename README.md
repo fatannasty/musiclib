@@ -117,6 +117,10 @@ strategy = "tags"            # hash | tags | fingerprint
 [brainz]
 contact = "you@example.com"  # MusicBrainz requires a real contact
 
+[catalog]
+album_source = "all"        # all | musicbrainz | itunes | library
+ipv4_only = false           # force IPv4 for interactive metadata searches
+
 [sabnzbd]
 url = "http://localhost:8080"
 api_key = "your-sabnzbd-api-key"
@@ -294,8 +298,9 @@ are written after confirmation. Tag editing does not embed artwork; use
 **Change artwork** to upload a cover or **Cover Art** for automatic downloads.
 Lookup failures display the provider error so
 network or service problems can be distinguished from an empty search. Interactive
-requests use four-second connection/read timeouts without a long automatic retry
-sequence. If one provider fails, available matches are shown with a warning instead
+requests use four-second connection/read timeouts. Address/route connection errors
+retry once using IPv4; timeouts, rate limits, and HTTP service errors are not
+automatically retried. If one provider fails, available matches are shown with a warning instead
 of hiding the failure. MusicBrainz requests remain rate limited.
 
 Catalog searches run separately from library changes: you can edit tags, scan,
@@ -312,8 +317,25 @@ field selection. Files without search terms are reported separately and can be
 looked up individually. Per-track tagging does not rename or move files.
 
 To retag a whole album at once, select up to 200 tracks and choose **Tag selected
-as one album**. Suggestions prefer albums already in your library, then MusicBrainz
-and iTunes. Only album-level fields (album, album artist, artist, year, genre,
+as one album**. Choose **Library + both catalogs**, **Library + MusicBrainz**,
+**Library + iTunes**, or **Your library only (offline)**. Only the selected online
+providers are contacted; local matches remain first. The offline option makes no
+catalog requests. Set a default in **Settings → Album lookup sources and
+connections**, or override it for each search. If a catalog fails, use **Search
+library only** without losing your album/artist search terms, or use **Edit album
+tags** on an album page for manual corrections.
+
+The same settings include **Use IPv4-only catalog connections**, which applies
+to interactive album and track metadata searches (including bulk track lookups).
+It avoids the initial automatic IPv4/IPv6 attempt when a NAS has broken IPv6
+routing. Environment proxy routing and TLS verification are retained; no global
+socket or Docker network settings are changed. An unavailable address can also
+mean a wider NAS routing or connection-resource problem: changing catalogs cannot
+repair a disconnected container. Check the NAS/container network if all online
+sources keep failing. These options do not change Cover Art, Missing Music, or
+Usenet requests.
+
+Only album-level fields (album, album artist, artist, year, genre,
 release ID) can be written to every selected file. Nothing is selected or written
 until you choose fields and confirm. Optionally rename just those files with the
 current Organize templates after tags are saved. Files moved or changed while

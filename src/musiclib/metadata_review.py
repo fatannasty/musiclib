@@ -13,6 +13,7 @@ import musicbrainzngs
 import mutagen
 
 from .brainz import configure_musicbrainz, search_recordings, search_releases
+from .catalog_http import catalog_error, catalog_get
 from .config import Config
 from .db import Database
 from .duplicates import normalize
@@ -23,6 +24,7 @@ from .scanner import Scanner, ScanReport, file_hash, scan_worker
 CAA_FRONT = "https://coverartarchive.org/release/{mbid}/front-250"
 ITUNES_SEARCH = "https://itunes.apple.com/search"
 logger = logging.getLogger(__name__)
+ALBUM_SOURCES = ("all", "musicbrainz", "itunes", "library")
 
 EDITABLE_FIELDS = (
     "title", "artist", "album", "album_artist", "year",
@@ -179,21 +181,24 @@ def _itunes_candidate(item: Dict[str, Any], track: Any) -> Optional[Dict[str, An
     }
 
 
-def search_itunes(title: str, artist: str, track: Any) -> List[Dict[str, Any]]:
+def search_itunes(
+    title: str, artist: str, track: Any, ipv4_only: bool = False,
+) -> List[Dict[str, Any]]:
     term = " ".join(part for part in (artist, title) if part).strip()
     if not term:
         return []
     try:
-        response = httpx.get(
+        response = catalog_get(
             ITUNES_SEARCH,
             params={"term": term, "entity": "song", "limit": 5},
             headers={"User-Agent": "musiclib/0.1"},
             timeout=4.0,
+            ipv4_only=ipv4_only,
         )
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, OSError, ValueError, TypeError) as exc:
-        raise RuntimeError(f"iTunes lookup failed: {exc}") from exc
+        raise RuntimeError(f"iTunes lookup failed: {catalog_error(exc)}") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         raise RuntimeError("iTunes returned an unexpected response.")
     candidates = []
@@ -206,16 +211,18 @@ def search_itunes(title: str, artist: str, track: Any) -> List[Dict[str, Any]]:
     return candidates
 
 
-def search_musicbrainz(title: str, artist: str, track: Any) -> List[Dict[str, Any]]:
+def search_musicbrainz(
+    title: str, artist: str, track: Any, ipv4_only: bool = False,
+) -> List[Dict[str, Any]]:
     terms = {}
     if title:
         terms["recording"] = title
     if artist:
         terms["artist"] = artist
     try:
-        response = search_recordings(limit=6, **terms)
+        response = search_recordings(limit=6, **terms, **({"ipv4_only": True} if ipv4_only else {}))
     except musicbrainzngs.MusicBrainzError as exc:
-        raise RuntimeError(f"MusicBrainz lookup failed: {exc}") from exc
+        raise RuntimeError(f"MusicBrainz lookup failed: {catalog_error(exc)}") from exc
     if not isinstance(response, dict) or not isinstance(response.get("recording-list", []), list):
         raise RuntimeError("MusicBrainz returned an unexpected response.")
     return [
@@ -251,6 +258,7 @@ def _merge_candidates(
 def lookup_track(
     track: Any, title: Optional[str] = None, artist: Optional[str] = None,
     warnings: Optional[List[str]] = None,
+    ipv4_only: bool = False,
 ) -> List[Dict[str, Any]]:
     search_title = ((track.title if title is None else title) or "").strip()
     search_artist = ((track.artist if artist is None else artist) or "").strip()
@@ -260,8 +268,9 @@ def lookup_track(
     musicbrainz_hits: List[Dict[str, Any]] = []
     itunes_hits: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=2) as pool:
-        musicbrainz_future = pool.submit(search_musicbrainz, search_title, search_artist, track)
-        itunes_future = pool.submit(search_itunes, search_title, search_artist, track)
+        options = {"ipv4_only": True} if ipv4_only else {}
+        musicbrainz_future = pool.submit(search_musicbrainz, search_title, search_artist, track, **options)
+        itunes_future = pool.submit(search_itunes, search_title, search_artist, track, **options)
         try:
             musicbrainz_hits = musicbrainz_future.result()
         except RuntimeError as exc:
@@ -317,7 +326,9 @@ def _most_common(values: List[Any]) -> Any:
     return max(counted, key=counted.get)
 
 
-def search_musicbrainz_releases(artist: str, album: str) -> List[Dict[str, Any]]:
+def search_musicbrainz_releases(
+    artist: str, album: str, ipv4_only: bool = False,
+) -> List[Dict[str, Any]]:
     terms = {}
     if album:
         terms["release"] = album
@@ -326,9 +337,9 @@ def search_musicbrainz_releases(artist: str, album: str) -> List[Dict[str, Any]]
     if not terms:
         return []
     try:
-        response = search_releases(limit=6, **terms)
+        response = search_releases(limit=6, **terms, **({"ipv4_only": True} if ipv4_only else {}))
     except musicbrainzngs.MusicBrainzError as exc:
-        raise RuntimeError(f"MusicBrainz album lookup failed: {exc}") from exc
+        raise RuntimeError(f"MusicBrainz album lookup failed: {catalog_error(exc)}") from exc
     if not isinstance(response, dict) or not isinstance(response.get("release-list"), list):
         raise RuntimeError("MusicBrainz returned an unexpected album response.")
     suggestions = []
@@ -360,21 +371,24 @@ def search_musicbrainz_releases(artist: str, album: str) -> List[Dict[str, Any]]
     return suggestions
 
 
-def search_itunes_albums(artist: str, album: str) -> List[Dict[str, Any]]:
+def search_itunes_albums(
+    artist: str, album: str, ipv4_only: bool = False,
+) -> List[Dict[str, Any]]:
     term = " ".join(part for part in (artist, album) if part).strip()
     if not term:
         return []
     try:
-        response = httpx.get(
+        response = catalog_get(
             ITUNES_SEARCH,
             params={"term": term, "entity": "album", "limit": 5},
             headers={"User-Agent": "musiclib/0.1"},
             timeout=4.0,
+            ipv4_only=ipv4_only,
         )
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, OSError, ValueError, TypeError) as exc:
-        raise RuntimeError(f"iTunes album lookup failed: {exc}") from exc
+        raise RuntimeError(f"iTunes album lookup failed: {catalog_error(exc)}") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         raise RuntimeError("iTunes returned an unexpected album response.")
     suggestions = []
@@ -425,7 +439,10 @@ class MetadataReview:
         if not os.path.isfile(track.path):
             raise ValueError("Track file is missing from disk.")
         warnings: List[str] = []
-        candidates = lookup_track(track, title=title, artist=artist, warnings=warnings)
+        candidates = lookup_track(
+            track, title=title, artist=artist, warnings=warnings,
+            ipv4_only=bool(self.config.catalog.get("ipv4_only", False)),
+        )
         return {**self._save_review(track, candidates), "warnings": warnings}
 
     def _save_review(self, track: Track, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -578,7 +595,11 @@ class MetadataReview:
         track_ids: List[int],
         album: Optional[str] = None,
         artist: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> Dict[str, Any]:
+        source = self.config.catalog.get("album_source", "all") if source is None else source
+        if source not in ALBUM_SOURCES:
+            raise ValueError("Choose all catalogs, MusicBrainz, iTunes, or your library only.")
         tracks = self._tracks_for_album(track_ids)
         album_guess = (album or "").strip() or _most_common([track.album for track in tracks]) or ""
         artist_guess = (
@@ -630,15 +651,21 @@ class MetadataReview:
         library.sort(key=lambda item: (-item["confidence"], -item["in_library"]))
         catalogs: List[Dict[str, Any]] = []
         warnings = []
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            brainz_future = pool.submit(search_musicbrainz_releases, artist_guess, album_guess)
-            itunes_future = pool.submit(search_itunes_albums, artist_guess, album_guess)
-            for future in (brainz_future, itunes_future):
-                try:
-                    catalogs.extend(future.result())
-                except RuntimeError as exc:
-                    warnings.append(str(exc))
-                    logger.warning("%s", exc)
+        providers = []
+        if source in ("all", "musicbrainz"):
+            providers.append(search_musicbrainz_releases)
+        if source in ("all", "itunes"):
+            providers.append(search_itunes_albums)
+        if providers:
+            with ThreadPoolExecutor(max_workers=len(providers)) as pool:
+                options = {"ipv4_only": True} if self.config.catalog.get("ipv4_only", False) else {}
+                futures = [pool.submit(provider, artist_guess, album_guess, **options) for provider in providers]
+                for future in futures:
+                    try:
+                        catalogs.extend(future.result())
+                    except RuntimeError as exc:
+                        warnings.append(str(exc))
+                        logger.warning("%s", exc)
         if not library and not catalogs and warnings:
             raise RuntimeError("; ".join(warnings))
         catalogs.sort(key=lambda item: item["confidence"], reverse=True)
@@ -653,6 +680,7 @@ class MetadataReview:
                 for track in tracks
             ],
             "query": {"album": album_guess, "artist": artist_guess},
+            "source": source,
             "suggestions": library[:8] + catalogs[:8],
             "warnings": warnings,
         }

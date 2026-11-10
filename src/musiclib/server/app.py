@@ -20,7 +20,13 @@ from ..doctor import Doctor
 from ..duplicates import DuplicateFinder
 from ..fingerprint import compute_all, fpcalc_available
 from ..fsops import is_inside, move_no_replace
-from ..metadata_review import ALBUM_FIELDS, EDITABLE_FIELDS, TRACK_FIELDS, MetadataReview
+from ..metadata_review import (
+    ALBUM_FIELDS,
+    ALBUM_SOURCES,
+    EDITABLE_FIELDS,
+    TRACK_FIELDS,
+    MetadataReview,
+)
 from ..models import audio_format
 from ..rename import Renamer
 from ..restore_review import RestoreReview
@@ -111,6 +117,7 @@ class AlbumSuggestBody(BaseModel):
     track_ids: List[int]
     album: Optional[str] = None
     artist: Optional[str] = None
+    source: Optional[Literal["all", "musicbrainz", "itunes", "library"]] = None
 
 
 class AlbumTrackSnapshot(BaseModel):
@@ -174,11 +181,12 @@ class SettingsBody(BaseModel):
     duplicates: Optional[Dict[str, Any]] = None
     artwork: Optional[Dict[str, Any]] = None
     brainz: Optional[Dict[str, Any]] = None
+    catalog: Optional[Dict[str, Any]] = None
     sabnzbd: Optional[Dict[str, Any]] = None
     indexers: Optional[List[Dict[str, Any]]] = None
 
 
-EDITABLE_SECTIONS = ("organize", "doctor", "duplicates", "artwork", "brainz", "sabnzbd")
+EDITABLE_SECTIONS = ("organize", "doctor", "duplicates", "artwork", "brainz", "catalog", "sabnzbd")
 SECRET_KEYS = ("api_key",)
 
 
@@ -571,7 +579,7 @@ def create_app(config: Config) -> FastAPI:
     def metadata_album_suggest(body: AlbumSuggestBody) -> Dict[str, Any]:
         try:
             return MetadataReview(config, db).suggest_album(
-                body.track_ids, album=body.album, artist=body.artist
+                body.track_ids, album=body.album, artist=body.artist, source=body.source,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -1063,6 +1071,8 @@ def create_app(config: Config) -> FastAPI:
                     continue
                 merged[key] = _coerce(value, current[key])
             updates[section] = merged
+        if "catalog" in updates and updates["catalog"].get("album_source", "all") not in ALBUM_SOURCES:
+            raise HTTPException(400, "Choose a valid default album lookup source.")
         new_indexers = None
         if body.indexers is not None:
             new_indexers = []

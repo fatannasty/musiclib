@@ -12,6 +12,7 @@ from xml.etree.ElementTree import ParseError
 import httpx
 import musicbrainzngs
 
+from .catalog_http import catalog_error, catalog_get
 from .config import Config
 from .db import Database
 from .duplicates import normalize
@@ -48,7 +49,9 @@ def musicbrainz_request(timeout: Optional[float] = None):
         _request_lock.release()
 
 
-def _search_catalog(entity: str, limit: int, terms: Dict[str, str]) -> Dict[str, Any]:
+def _search_catalog(
+    entity: str, limit: int, terms: Dict[str, str], ipv4_only: bool = False,
+) -> Dict[str, Any]:
     # Preserve musicbrainzngs' non-strict field search without accepting Lucene operators.
     parts = []
     for name, value in terms.items():
@@ -60,11 +63,12 @@ def _search_catalog(entity: str, limit: int, terms: Dict[str, str]) -> Dict[str,
         raise ValueError("At least one search term is required.")
     try:
         with musicbrainz_request(timeout=4.0):
-            response = httpx.get(
+            response = catalog_get(
                 f"https://musicbrainz.org/ws/2/{entity}/",
                 params={"query": query, "limit": limit, "fmt": "xml"},
                 headers={"User-Agent": _user_agent},
                 timeout=4.0,
+                ipv4_only=ipv4_only,
             )
             response.raise_for_status()
         payload = musicbrainzngs.mbxml.parse_message(response.content)
@@ -72,15 +76,15 @@ def _search_catalog(entity: str, limit: int, terms: Dict[str, str]) -> Dict[str,
             raise musicbrainzngs.ResponseError("MusicBrainz returned an unexpected catalog response.")
         return payload
     except (httpx.HTTPError, OSError, ParseError) as exc:
-        raise musicbrainzngs.NetworkError(f"Catalog request failed: {exc}") from exc
+        raise musicbrainzngs.NetworkError(f"Catalog request failed: {catalog_error(exc)}") from exc
 
 
-def search_recordings(limit: int = 6, **terms: str) -> Dict[str, Any]:
-    return _search_catalog("recording", limit, terms)
+def search_recordings(limit: int = 6, *, ipv4_only: bool = False, **terms: str) -> Dict[str, Any]:
+    return _search_catalog("recording", limit, terms, ipv4_only=ipv4_only)
 
 
-def search_releases(limit: int = 6, **terms: str) -> Dict[str, Any]:
-    return _search_catalog("release", limit, terms)
+def search_releases(limit: int = 6, *, ipv4_only: bool = False, **terms: str) -> Dict[str, Any]:
+    return _search_catalog("release", limit, terms, ipv4_only=ipv4_only)
 
 
 @dataclass
