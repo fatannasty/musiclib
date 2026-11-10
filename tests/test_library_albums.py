@@ -3,9 +3,32 @@ from conftest import JPEG_600x400, make_flac, make_mp3
 from fastapi.testclient import TestClient
 from test_jobs_api import wait_job
 
-from musiclib.models import Track
+from musiclib.models import Album, Track
 from musiclib.scanner import Scanner
 from musiclib.server.app import create_app
+
+
+def test_startup_repairs_stale_album_summaries_without_scanning_or_modifying_music(lib_env, monkeypatch):
+    path = lib_env.library / "song.mp3"
+    make_mp3(path, tags={"title": "Song", "artist": "Artist", "album": "Current"})
+    Scanner(lib_env.config, lib_env.db, workers=1).scan()
+    lib_env.db.upsert_album(Album(
+        album_artist="Artist", album="Old identity", have_tracks=1,
+        missing_tracks='[{"disc":1,"position":1,"title":"Not current"}]',
+    ))
+    before = path.read_bytes()
+
+    def no_scan(*args, **kwargs):
+        pytest.fail("Catalog reconciliation must not scan or rewrite audio")
+
+    monkeypatch.setattr(Scanner, "scan", no_scan)
+    with TestClient(create_app(lib_env.config)) as client:
+        summaries = client.get("/api/albums").json()
+        assert [(a["album"], a["have_tracks"]) for a in summaries] == [("Current", 1)]
+        stats = client.get("/api/stats").json()
+        assert stats["albums"] == 1
+        assert stats["albums_missing_tracks"] == 0
+    assert path.read_bytes() == before
 
 
 def test_album_page_groups_tracks_and_unknowns(lib_env):
@@ -115,6 +138,9 @@ def test_album_duplicates_are_scoped_recoverable_and_leave_organization_separate
         assert env.db.get_track(keeper).path == next(t.path for t in tracks if t.id == keeper)
         assert len(client.get("/api/trash").json()["items"]) == len(tracks) - 1
         assert client.get("/api/stats").json()["dupe_groups"] == len(client.get("/api/dupes").json())
+        summaries = client.get("/api/albums").json()
+        assert len(summaries) == 1
+        assert summaries[0]["have_tracks"] == 4 - (len(tracks) - 1)
         assert client.post("/api/dupes/selected-apply", json=body).status_code == 409
 
 

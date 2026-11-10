@@ -7,6 +7,7 @@ from conftest import ALBUM_A, make_flac
 
 import musiclib.brainz as brainz_module
 from musiclib.brainz import Brainz, ExpectedTrack
+from musiclib.models import Track
 from musiclib.scanner import Scanner
 
 
@@ -71,6 +72,58 @@ def test_refresh_albums_with_mocked_musicbrainz(lib_env, monkeypatch):
     again = brainz.albums_with_gaps()
     assert len(again) == 1
     assert [t.title for t in again[0].missing] == ["Gamma"]
+
+
+def test_changed_local_tracks_recheck_gaps_without_resolving_unchanged_release(lib_env, monkeypatch):
+    env = lib_env
+    _seed_album(env, ["Alpha", "Beta"])
+    brainz = Brainz(env.config, env.db)
+    monkeypatch.setattr(brainz, "resolve_release", lambda *args: ("resolved", 2001, 1))
+    expected = [ExpectedTrack(1, i, title) for i, title in enumerate(["Alpha", "Beta", "Gamma"], 1)]
+    monkeypatch.setattr(brainz, "tracklist", lambda mbid: expected)
+    brainz.refresh_albums()
+    assert len(brainz.albums_with_gaps()) == 1
+    track = env.db.all_tracks()[0]
+    env.db.update_track_columns(track.id, title="Gamma", track_no=3)
+    Scanner(env.config, env.db).rebuild_albums()
+    assert brainz.albums_with_gaps() == []
+
+    def no_resolve(*args):
+        pytest.fail("The verified release should survive local track edits")
+
+    monkeypatch.setattr(brainz, "resolve_release", no_resolve)
+    gaps = brainz.refresh_albums()
+    assert [t.title for t in gaps[0].missing] == ["Alpha"]
+
+
+def test_unknown_album_artist_compares_its_actual_tracks(lib_env):
+    lib_env.db.upsert_track(Track(
+        path="/music/song", album="Album", title="Song", track_no=1,
+    ))
+    Scanner(lib_env.config, lib_env.db).rebuild_albums()
+    missing, extra = Brainz(lib_env.config, lib_env.db)._compare(
+        lib_env.db.albums_all()[0], [ExpectedTrack(1, 1, "Song")],
+    )
+    assert missing == extra == []
+
+
+@pytest.mark.parametrize("release", [None, "new-release"])
+def test_failed_forced_comparison_does_not_keep_gaps_from_previous_release(lib_env, monkeypatch, release):
+    env = lib_env
+    _seed_album(env, ["Alpha"])
+    album = env.db.albums_all()[0]
+    album.mbid_verified = True
+    album.expected_tracks = 2
+    album.missing_tracks = '[{"disc":1,"position":2,"title":"Previous gap"}]'
+    env.db.upsert_album(album)
+    brainz = Brainz(env.config, env.db)
+    monkeypatch.setattr(brainz, "resolve_release", lambda *args: (release, 2001, 1) if release else None)
+    monkeypatch.setattr(brainz, "tracklist", lambda *args: [])
+    assert brainz.refresh_albums(force=True) == []
+    assert brainz.albums_with_gaps() == []
+    stored = env.db.albums_all()[0]
+    assert stored.mbid_release == release
+    assert stored.expected_tracks is None
 
 
 @pytest.mark.parametrize("entity", ["recording", "release"])

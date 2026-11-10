@@ -177,18 +177,24 @@ class Brainz:
             if not album.mbid_release or not album.mbid_verified or force:
                 resolved = self.resolve_release(album.album_artist, album.album)
                 if resolved:
+                    if album.mbid_release != resolved[0]:
+                        album.expected_tracks = None
+                        album.missing_tracks = None
                     album.mbid_release, year, _ = resolved
                     album.year = album.year or year
                     album.mbid_verified = True
                 else:
                     album.mbid_verified = True
                     album.mbid_release = None
+                    album.expected_tracks = None
+                    album.missing_tracks = None
                     self.db.upsert_album(album)
                     if progress:
                         progress(index, len(albums), f"{album.album_artist} — {album.album}")
                     continue
             expected = self.tracklist(album.mbid_release)
             if not expected:
+                album.missing_tracks = None
                 self.db.upsert_album(album)
                 if progress:
                     progress(index, len(albums), f"{album.album_artist} — {album.album}")
@@ -212,7 +218,8 @@ class Brainz:
     ) -> Tuple[List[ExpectedTrack], List[str]]:
         rows = self.db.query(
             "SELECT track_no, disc_no, title FROM tracks WHERE "
-            "LOWER(album_artist)=LOWER(?) AND LOWER(album)=LOWER(?) "
+            "LOWER(COALESCE(NULLIF(album_artist,''),'Unknown Artist'))=LOWER(?) "
+            "AND LOWER(album)=LOWER(?) "
             "AND status IN ('ok','suspect')",
             (album.album_artist, album.album),
         )
