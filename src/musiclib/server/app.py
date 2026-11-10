@@ -101,11 +101,17 @@ class AlbumSuggestBody(BaseModel):
     artist: Optional[str] = None
 
 
+class AlbumTrackSnapshot(BaseModel):
+    path: str
+    file_hash: str
+
+
 class AlbumApplyBody(BaseModel):
     track_ids: List[int]
     fields: List[str]
     values: Dict[str, Any]
     rename: bool = False
+    snapshots: Optional[Dict[int, AlbumTrackSnapshot]] = None
 
 
 class AlbumEditBody(BaseModel):
@@ -380,7 +386,7 @@ def create_app(config: Config) -> FastAPI:
         return list(EDITABLE_FIELDS)
 
     @app.post("/api/metadata/lookup")
-    @jobs.operation
+    @jobs.lookup_operation
     def metadata_lookup(body: MetadataLookupBody) -> Dict[str, Any]:
         try:
             return MetadataReview(config, db).propose(
@@ -421,7 +427,7 @@ def create_app(config: Config) -> FastAPI:
                 jobs.update("Looking up catalog suggestions", index + 1, total, str(track_id))
             return {"reviews": reviews, "errors": errors}
 
-        return {"job_id": jobs.start("metadata-lookup", run)}
+        return {"job_id": jobs.start("metadata-lookup", run, read_only=True)}
 
     @app.post("/api/metadata/apply-bulk")
     def metadata_apply_bulk(body: MetadataBulkApplyBody) -> Dict[str, str]:
@@ -473,7 +479,7 @@ def create_app(config: Config) -> FastAPI:
         return start_reviewed_apply(body, limit=200)
 
     @app.post("/api/metadata/album-suggest")
-    @jobs.operation
+    @jobs.lookup_operation
     def metadata_album_suggest(body: AlbumSuggestBody) -> Dict[str, Any]:
         try:
             return MetadataReview(config, db).suggest_album(
@@ -481,6 +487,8 @@ def create_app(config: Config) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(502, str(exc)) from exc
 
     @app.post("/api/metadata/album-apply")
     def metadata_album_apply(body: AlbumApplyBody) -> Dict[str, str]:
@@ -490,11 +498,17 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(400, "Select one or more album fields to apply.")
         if all(body.values.get(field) in (None, "") for field in body.fields):
             raise HTTPException(400, "The selected album has no values for the chosen fields.")
+        if body.snapshots is not None and set(body.snapshots) != set(body.track_ids):
+            raise HTTPException(400, "Search snapshots must cover exactly the selected tracks.")
+        snapshots = (
+            {key: (value.path, value.file_hash) for key, value in body.snapshots.items()}
+            if body.snapshots is not None else None
+        )
 
         def run(job: Dict[str, Any]) -> Dict[str, Any]:
             jobs.update("Applying album tags", 0, len(body.track_ids))
             result = MetadataReview(config, db).apply_album(
-                body.track_ids, body.fields, body.values, rename=body.rename
+                body.track_ids, body.fields, body.values, rename=body.rename, snapshots=snapshots
             )
             jobs.update("Applying album tags", len(body.track_ids), len(body.track_ids))
             return result

@@ -1,7 +1,11 @@
 import json
 
+import httpx
+import musicbrainzngs
+import pytest
 from conftest import ALBUM_A, make_flac
 
+import musiclib.brainz as brainz_module
 from musiclib.brainz import Brainz, ExpectedTrack
 from musiclib.scanner import Scanner
 
@@ -67,3 +71,83 @@ def test_refresh_albums_with_mocked_musicbrainz(lib_env, monkeypatch):
     again = brainz.albums_with_gaps()
     assert len(again) == 1
     assert [t.title for t in again[0].missing] == ["Gamma"]
+
+
+@pytest.mark.parametrize("entity", ["recording", "release"])
+def test_interactive_catalog_transport_preserves_search_and_xml_results(lib_env, monkeypatch, entity):
+    calls = []
+    xml = (
+        '<metadata xmlns="http://musicbrainz.org/ns/mmd-2.0#" '
+        'xmlns:ext="http://musicbrainz.org/ns/ext#-2.0">'
+        f'<{entity}-list count="1"><{entity} id="id-1" ext:score="90">'
+        f'<title>Song</title></{entity}></{entity}-list></metadata>'
+    )
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        return httpx.Response(200, content=xml, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(brainz_module, "_last_request", None)
+    monkeypatch.setattr(brainz_module.httpx, "get", get)
+    brainz_module.configure_musicbrainz(lib_env.config)
+    search = brainz_module.search_recordings if entity == "recording" else brainz_module.search_releases
+    result = search(artist='A "B" AND C', **{entity: "Song: (Live)\\Remix"})
+    assert result[f"{entity}-list"][0]["id"] == "id-1"
+    assert result[f"{entity}-list"][0]["ext:score"] == "90"
+    assert len(calls) == 1
+    url, options = calls[0]
+    assert url == f"https://musicbrainz.org/ws/2/{entity}/"
+    assert options["timeout"] == 4.0
+    assert options["params"] == {
+        "query": rf'artist:(a \"b\" and c) {entity}:(song\: \(live\)\\remix)',
+        "limit": 6, "fmt": "xml",
+    }
+    assert "musiclib/0.1" in options["headers"]["User-Agent"]
+    assert lib_env.config.brainz["contact"] in options["headers"]["User-Agent"]
+
+
+@pytest.mark.parametrize("failure", ["timeout", "503", "invalid-xml", "invalid-response"])
+def test_interactive_catalog_failure_is_not_retried(monkeypatch, failure):
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(url)
+        if failure == "timeout":
+            raise httpx.ReadTimeout("too slow")
+        status = 503 if failure == "503" else 200
+        content = b"not xml" if failure == "invalid-xml" else b"<metadata/>"
+        return httpx.Response(status, content=content, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(brainz_module, "_last_request", None)
+    monkeypatch.setattr(brainz_module.httpx, "get", get)
+    with pytest.raises(musicbrainzngs.MusicBrainzError):
+        brainz_module.search_recordings(recording="Song")
+    assert len(calls) == 1
+
+
+def test_interactive_catalog_wait_for_busy_musicbrainz_is_bounded(monkeypatch):
+    class BusyLock:
+        def acquire(self, *, timeout):
+            assert timeout == 4.0
+            return False
+
+    def no_network(*args, **kwargs):
+        pytest.fail("A busy MusicBrainz lane must not make a network request")
+
+    monkeypatch.setattr(brainz_module, "_request_lock", BusyLock())
+    monkeypatch.setattr(brainz_module.httpx, "get", no_network)
+    with pytest.raises(musicbrainzngs.NetworkError, match="MusicBrainz is busy"):
+        brainz_module.search_releases(release="Album")
+
+
+def test_musicbrainz_rate_limit_is_shared_between_legacy_and_interactive_requests(monkeypatch):
+    clock = iter([10.0, 10.25, 11.0])
+    sleeps = []
+    monkeypatch.setattr(brainz_module, "_last_request", None)
+    monkeypatch.setattr(brainz_module.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(brainz_module.time, "sleep", sleeps.append)
+    with brainz_module.musicbrainz_request():
+        pass
+    with brainz_module.musicbrainz_request(timeout=4.0):
+        pass
+    assert sleeps == [0.75]

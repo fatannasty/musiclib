@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -13,7 +14,7 @@ import httpx
 import musicbrainzngs
 import mutagen
 
-from .brainz import configure_musicbrainz
+from .brainz import configure_musicbrainz, search_recordings, search_releases
 from .config import Config
 from .db import Database
 from .duplicates import normalize
@@ -23,6 +24,7 @@ from .scanner import Scanner, ScanReport, file_hash, scan_worker
 
 CAA_FRONT = "https://coverartarchive.org/release/{mbid}/front-250"
 ITUNES_SEARCH = "https://itunes.apple.com/search"
+logger = logging.getLogger(__name__)
 
 EDITABLE_FIELDS = (
     "title", "artist", "album", "album_artist", "year",
@@ -180,10 +182,10 @@ def search_itunes(title: str, artist: str, track: Any) -> List[Dict[str, Any]]:
         )
         response.raise_for_status()
         payload = response.json()
-    except (httpx.HTTPError, OSError, ValueError, TypeError):
-        return []
+    except (httpx.HTTPError, OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"iTunes lookup failed: {exc}") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
-        return []
+        raise RuntimeError("iTunes returned an unexpected response.")
     candidates = []
     for item in payload["results"]:
         if not isinstance(item, dict):
@@ -201,7 +203,7 @@ def search_musicbrainz(title: str, artist: str, track: Any) -> List[Dict[str, An
     if artist:
         terms["artist"] = artist
     try:
-        response = musicbrainzngs.search_recordings(limit=6, **terms)
+        response = search_recordings(limit=6, **terms)
     except musicbrainzngs.MusicBrainzError as exc:
         raise RuntimeError(f"MusicBrainz lookup failed: {exc}") from exc
     if not isinstance(response, dict) or not isinstance(response.get("recording-list", []), list):
@@ -237,13 +239,14 @@ def _merge_candidates(
 
 
 def lookup_track(
-    track: Any, title: Optional[str] = None, artist: Optional[str] = None
+    track: Any, title: Optional[str] = None, artist: Optional[str] = None,
+    warnings: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     search_title = ((track.title if title is None else title) or "").strip()
     search_artist = ((track.artist if artist is None else artist) or "").strip()
     if not search_title and not search_artist:
         raise ValueError("Enter a title or artist to search. File tags are unchanged.")
-    musicbrainz_error = None
+    errors = []
     musicbrainz_hits: List[Dict[str, Any]] = []
     itunes_hits: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -252,11 +255,18 @@ def lookup_track(
         try:
             musicbrainz_hits = musicbrainz_future.result()
         except RuntimeError as exc:
-            musicbrainz_error = exc
-        itunes_hits = itunes_future.result()
+            errors.append(str(exc))
+        try:
+            itunes_hits = itunes_future.result()
+        except RuntimeError as exc:
+            errors.append(str(exc))
+    for error in errors:
+        logger.warning("%s", error)
+    if warnings is not None:
+        warnings.extend(errors)
     if not musicbrainz_hits and not itunes_hits:
-        if musicbrainz_error:
-            raise musicbrainz_error
+        if errors:
+            raise RuntimeError("; ".join(errors))
         return []
     return _merge_candidates(musicbrainz_hits, itunes_hits)
 
@@ -308,11 +318,11 @@ def search_musicbrainz_releases(artist: str, album: str) -> List[Dict[str, Any]]
     if not terms:
         return []
     try:
-        response = musicbrainzngs.search_releases(limit=6, **terms)
-    except musicbrainzngs.MusicBrainzError:
-        return []
+        response = search_releases(limit=6, **terms)
+    except musicbrainzngs.MusicBrainzError as exc:
+        raise RuntimeError(f"MusicBrainz album lookup failed: {exc}") from exc
     if not isinstance(response, dict) or not isinstance(response.get("release-list"), list):
-        return []
+        raise RuntimeError("MusicBrainz returned an unexpected album response.")
     suggestions = []
     for release in _dict_list(response.get("release-list")):
         title = release.get("title")
@@ -355,10 +365,10 @@ def search_itunes_albums(artist: str, album: str) -> List[Dict[str, Any]]:
         )
         response.raise_for_status()
         payload = response.json()
-    except (httpx.HTTPError, OSError, ValueError, TypeError):
-        return []
+    except (httpx.HTTPError, OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"iTunes album lookup failed: {exc}") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
-        return []
+        raise RuntimeError("iTunes returned an unexpected album response.")
     suggestions = []
     for item in payload["results"]:
         if not isinstance(item, dict) or not isinstance(item.get("collectionName"), str):
@@ -406,8 +416,9 @@ class MetadataReview:
             raise ValueError("Track is outside the configured library.")
         if not os.path.isfile(track.path):
             raise ValueError("Track file is missing from disk.")
-        candidates = lookup_track(track, title=title, artist=artist)
-        return self._save_review(track, candidates)
+        warnings: List[str] = []
+        candidates = lookup_track(track, title=title, artist=artist, warnings=warnings)
+        return {**self._save_review(track, candidates), "warnings": warnings}
 
     def _save_review(self, track: Track, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
         cursor = self.db.execute(
@@ -569,11 +580,18 @@ class MetadataReview:
             })
         library.sort(key=lambda item: (-item["confidence"], -item["in_library"]))
         catalogs: List[Dict[str, Any]] = []
+        warnings = []
         with ThreadPoolExecutor(max_workers=2) as pool:
             brainz_future = pool.submit(search_musicbrainz_releases, artist_guess, album_guess)
             itunes_future = pool.submit(search_itunes_albums, artist_guess, album_guess)
-            catalogs.extend(brainz_future.result())
-            catalogs.extend(itunes_future.result())
+            for future in (brainz_future, itunes_future):
+                try:
+                    catalogs.extend(future.result())
+                except RuntimeError as exc:
+                    warnings.append(str(exc))
+                    logger.warning("%s", exc)
+        if not library and not catalogs and warnings:
+            raise RuntimeError("; ".join(warnings))
         catalogs.sort(key=lambda item: item["confidence"], reverse=True)
         return {
             "tracks": [
@@ -581,11 +599,13 @@ class MetadataReview:
                     "id": track.id, "path": track.path, "title": track.title,
                     "artist": track.artist, "album": track.album,
                     "album_artist": track.album_artist, "year": track.year,
+                    "file_hash": track.file_hash or "",
                 }
                 for track in tracks
             ],
             "query": {"album": album_guess, "artist": artist_guess},
             "suggestions": library[:8] + catalogs[:8],
+            "warnings": warnings,
         }
 
     def apply_album(
@@ -594,11 +614,14 @@ class MetadataReview:
         fields: List[str],
         values: Dict[str, Any],
         rename: bool = False,
+        snapshots: Optional[Dict[int, Tuple[str, str]]] = None,
     ) -> Dict[str, Any]:
         if not fields or set(fields) - set(ALBUM_FIELDS):
             raise ValueError("Select one or more album fields to apply.")
         if not 1 <= len(track_ids) <= 200 or len(set(track_ids)) != len(track_ids):
             raise ValueError("Select between 1 and 200 distinct tracks.")
+        if snapshots is not None and set(snapshots) != set(track_ids):
+            raise ValueError("Search snapshots must cover exactly the selected tracks.")
         tags_to_write = {
             TAG_KEYS[field]: values.get(field)
             for field in fields if values.get(field) not in (None, "")
@@ -616,6 +639,12 @@ class MetadataReview:
                     raise ValueError("Track is outside the configured library.")
                 if not os.path.isfile(track.path):
                     raise ValueError("Track file is missing from disk.")
+                if snapshots is not None and (
+                    not track.file_hash
+                    or snapshots[track_id] != (track.path, track.file_hash)
+                    or file_hash(Path(track.path)) != track.file_hash
+                ):
+                    raise ValueError("File changed since album search. Run a fresh search.")
                 result = write_audio_tags(Path(track.path), tags_to_write)
                 Scanner(self.config, self.db)._store_result(result, ScanReport(), row_exists=True)
                 applied.append({"track_id": track.id, "path": track.path})
