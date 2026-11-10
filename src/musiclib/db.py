@@ -269,7 +269,7 @@ class Database:
         rows = self.query(
             "SELECT g.*, cover.id AS cover_track_id, cover.file_hash AS cover_hash FROM (" + grouped + ") AS g "
             "LEFT JOIN tracks AS cover ON cover.path=g.cover_path "
-            "ORDER BY g.album_artist COLLATE NOCASE, g.album COLLATE NOCASE "
+            "ORDER BY g.album_artist COLLATE NOCASE, g.album COLLATE NOCASE, g.album_artist, g.album "
             "LIMIT ? OFFSET ?",
             params + [limit, offset],
         )
@@ -439,7 +439,9 @@ class Database:
         )
         issues = self.query_one("SELECT COUNT(*) AS n FROM issues")["n"]
         dupes = self.query_one(
-            "SELECT COUNT(*) AS n FROM dupe_groups WHERE resolved=0"
+            "SELECT COUNT(*) AS n FROM dupe_groups g WHERE resolved=0 AND "
+            "(SELECT COUNT(*) FROM dupe_members m JOIN tracks t ON t.id=m.track_id "
+            "WHERE m.group_id=g.id AND t.status IN ('ok', 'suspect')) >= 2"
         )["n"]
         albums_missing_art = self.query_one(
             "SELECT COUNT(*) AS n FROM albums WHERE art_status IN ('missing', 'none')"

@@ -60,6 +60,16 @@ runs at a time. Interrupted jobs are marked for review on restart. The Library t
 supports catalog search and filters; Recovery lists trashed files and restores
 them only when the original path is still free.
 
+Use **Stop job** in Activity to request a cooperative stop. The job remains
+**stopping** and keeps its operation lock until the worker reaches a safe
+checkpoint; it is then saved as **cancelled**, with the last processed count.
+Queued work can stop before it begins. Current file/album work, network requests,
+in-flight decoder workers, and necessary catalog refreshes may finish first.
+Waiting decoder tasks are cancelled rather than all being processed. Completed
+tag edits and moves are not rolled back; completed trash moves remain recoverable.
+Refresh the library and create a fresh preview before retrying. Stopped jobs are
+not automatically resumed and do not have a complete result list.
+
 ## Listen to tracks
 
 Use **Play** in Library track lists, album pages, Duplicates, or Bad Files to
@@ -96,6 +106,14 @@ Best version is chosen by a quality score: lossless beats lossy, higher
 bitrate/sample-rate/bit-depth wins, complete tags and embedded art add up, broken
 files sink. Ties prefer the shorter, shallower path. In the web dashboard you can
 override the keeper per group before applying.
+
+**Duplicates** has top-of-page controls for selecting the current page or **all
+groups across pages**, plus a selection count and clear action. Confirming
+**Trash copies in selected groups** preserves one chosen keeper per group and
+leaves unapproved groups alone. File paths and hashes are checked against the
+review and again on disk; changed copies or missing keepers block removal.
+Errors are listed in Activity. Recoverable duplicate moves use the same verified,
+no-overwrite trash mechanism as selected Library trash.
 
 ## Configuration
 
@@ -159,6 +177,31 @@ Library opens on an **Albums** grid grouped from scanned tags (artist, year, tra
 count, and cover when a MusicBrainz ID or embedded art exists). Open an album to
 see its tracks, already selected so you can edit tags or **Find catalog matches**. Switch to **Tracks**
 for the file table and per-track lookup.
+
+Choose **50, 100, 150, or 200 Albums per load**. Scrolling near the bottom appends
+the next batch instead of replacing existing albums; **Load more albums** also
+works with a keyboard or without automatic scroll detection. Album selections
+survive appended batches and search filters until cleared or successfully merged.
+Changing the load size resets the displayed list, not the selection.
+
+To combine albums, select their album-card checkboxes and choose **Merge selected
+albums** (up to 200 tracks per batch). This works across folders. Enter the target
+album name and album artist, then preview the current/new values for every file
+and confirm the saved tag review. Those two grouping fields are required for a
+merge; other fields remain opt-in. Track artists, titles, numbers, and artwork
+are preserved unless explicitly selected. This joins catalog groups through tags;
+it does not concatenate audio, delete copies, or move files. In Tracks view,
+**Merge selected tracks into an album** supports selections across track pages.
+After saving, **Preview organization of updated files** offers a separate,
+fixed-target rename review using the album templates.
+
+On an album page, select its tracks and choose **Review album duplicates**.
+Review the suggested groups, listen, and choose a keeper for each approved group.
+**Trash approved copies** moves only those copies to recoverable trash, with
+snapshot and keeper checks. Bad tracks are excluded from duplicate comparison.
+The album-scoped comparison does not replace the main Duplicates review list.
+After cleanup, **Preview organization of remaining tracks** lets you review exact
+destinations before renaming. Tracks view also offers **Review selected duplicates**.
 
 On an album page, **Edit album tags** lets you correct up to 200 selected tracks
 without a catalog lookup. Check only the fields you want to replace (album, album
@@ -316,8 +359,8 @@ No fields are selected automatically; changing a candidate clears that track's
 field selection. Files without search terms are reported separately and can be
 looked up individually. Per-track tagging does not rename or move files.
 
-To retag a whole album at once, select up to 200 tracks and choose **Tag selected
-as one album**. Choose **Library + both catalogs**, **Library + MusicBrainz**,
+To retag a whole album at once, select up to 200 tracks and choose **Find album
+matches**. Choose **Library + both catalogs**, **Library + MusicBrainz**,
 **Library + iTunes**, or **Your library only (offline)**. Only the selected online
 providers are contacted; local matches remain first. The offline option makes no
 catalog requests. Set a default in **Settings → Album lookup sources and
@@ -345,6 +388,28 @@ before applying to those files.
 On Bad Files, **Trash selected** moves the files you check even if a check has not
 just finished. Permission or lock errors are reported per file and do not abort the
 rest of the batch. **Trash all bad files** still skips warnings.
+Top-of-page **Select all matching files** includes every page under the current
+severity/type filters and selects each file once even if it has several issues.
+Changing filters clears the selection. Large confirmed selections run as one
+background job in bounded batches; the old 200-file per-request limit no longer
+blocks this workflow.
+
+### Workflow review and cleanup
+
+The Library now separates catalog lookup, reviewed manual merging, duplicate
+cleanup, and organization instead of hiding those operations behind one tagging
+label. Track-only controls are hidden on the album grid. Duplicate group rendering,
+organization-preview launching, and selection request validation are shared
+rather than separately implemented for each entry point.
+
+Recovery and confirmation reviews are deliberate safety features, not redundant
+screens. Cover Art handles automatic downloads separately from reviewed uploads;
+Missing Music and Usenet are complementary optional workflows, not duplicate
+Library views. They remain available rather than being removed without usage
+evidence. Potential follow-ups are metadata-edit undo, resuming stopped batches,
+reconciling legacy Missing Music summaries after manual regrouping, optional-tab
+visibility, and splitting the large dashboard script into modules. None of those
+is silently implied by merging albums or stopping a job.
 
 Bulk lookups and writes run in Activity with per-file progress and saved results.
 Use **View results → Review suggestions** on a completed `metadata-lookup` job to

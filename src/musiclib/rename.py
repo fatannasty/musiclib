@@ -126,11 +126,14 @@ class Renamer:
 
     def plan(
         self, tracks: Optional[List[Track]] = None, album_mode: bool = False,
+        progress: Optional[Callable[[str, int, int, str], None]] = None,
     ) -> RenameReport:
         tracks = self.db.all_tracks() if tracks is None else tracks
         tracks = [t for t in tracks if t.status in ("ok", "suspect")]
         report = RenameReport()
-        for track in tracks:
+        for index, track in enumerate(tracks):
+            if progress:
+                progress("Planning folder and filename changes", index, len(tracks), track.path)
             source = str(Path(track.path).resolve())
             if not os.path.exists(source):
                 report.skipped.append((track.path, "file missing on disk"))
@@ -278,13 +281,18 @@ class Renamer:
     def _move_no_replace(self, source: str, target: str) -> None:
         move_no_replace(source, target)
 
-    def apply(self, report: Optional[RenameReport] = None) -> RenameReport:
+    def apply(
+        self, report: Optional[RenameReport] = None,
+        progress: Optional[Callable[[str, int, int, str], None]] = None,
+    ) -> RenameReport:
         report = report or self.plan()
         pending = list(report.moves)
         while pending:
             progressed = False
             deferred: List[MovePlan] = []
             for move in pending:
+                if progress:
+                    progress("Moving and renaming files", report.moved, len(report.moves), move.source)
                 if os.path.exists(move.target):
                     occupant = self._occupant(move)
                     if occupant and any(m.source == move.target for m in pending + deferred):
@@ -309,6 +317,8 @@ class Renamer:
                     progressed = True
             if not progressed:
                 for move in deferred:
+                    if progress:
+                        progress("Moving and renaming files", report.moved, len(report.moves), move.source)
                     move.target = self._bump(move)
                     try:
                         self._move(move.source, move.target)
@@ -319,6 +329,8 @@ class Renamer:
                         report.errors.append((move.source, str(exc)))
                 break
             pending = deferred
+        if progress:
+            progress("File organization complete", len(report.moves), len(report.moves), "")
         if self.config.organize.get("cleanup_empty_dirs", True):
             remove_empty_dirs(self.library)
         return report

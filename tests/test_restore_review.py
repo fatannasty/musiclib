@@ -35,6 +35,26 @@ def trashed_tracks(env, count=3):
     return entries
 
 
+def test_stopping_restore_refreshes_completed_files_but_leaves_the_rest_trashed(lib_env):
+    from concurrent.futures import CancelledError
+    entries = trashed_tracks(lib_env)
+    reviewer = RestoreReview(lib_env.config, lib_env.db)
+    preview = reviewer.preview([entry["id"] for entry in entries])
+
+    def stop_before_second(phase, completed, total, current):
+        if completed == 1:
+            raise CancelledError()
+
+    with pytest.raises(CancelledError):
+        reviewer.apply(preview["review_id"], progress=stop_before_second)
+    restored = lib_env.db.get_track(entries[0]["track_id"])
+    assert restored.status == "ok"
+    assert restored.title == "Song 0"
+    assert lib_env.db.albums_all()[0].have_tracks == 1
+    assert Path(entries[1]["moved_to"]).is_file()
+    assert not Path(entries[1]["path"]).exists()
+
+
 @pytest.mark.parametrize("copy_fallback", [False, True])
 def test_reviewed_restore_survives_restart_and_uses_only_saved_targets(lib_env, monkeypatch, copy_fallback):
     env = lib_env

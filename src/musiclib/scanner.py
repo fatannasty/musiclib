@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
@@ -221,10 +221,14 @@ class Scanner:
         self.db = db
         self.workers = workers or max(4, (os.cpu_count() or 4) - 1)
 
-    def iter_audio_files(self, root: Union[str, Path]) -> List[str]:
+    def iter_audio_files(
+        self, root: Union[str, Path], check_cancelled: Optional[Callable[[], None]] = None,
+    ) -> List[str]:
         files: List[str] = []
         trash = str(Path(self.config.trash_dir).resolve())
         for dirpath, dirnames, filenames in os.walk(root):
+            if check_cancelled:
+                check_cancelled()
             dirnames[:] = [
                 d for d in dirnames
                 if not d.startswith(".") and str(Path(dirpath, d).resolve()) != trash
@@ -242,10 +246,11 @@ class Scanner:
         rescan: bool = False,
         progress: Optional[Callable[[int, str], None]] = None,
         progress_state: Optional[Callable[[int, int, str], None]] = None,
+        check_cancelled: Optional[Callable[[], None]] = None,
     ) -> ScanReport:
         root = str(Path(root or self.config.library).expanduser())
         report = ScanReport()
-        paths = self.iter_audio_files(root)
+        paths = self.iter_audio_files(root, check_cancelled=check_cancelled)
         report.scanned = len(paths)
         existing = {
             row["path"]: row
@@ -256,6 +261,8 @@ class Scanner:
         known_paths = set(existing)
         pending: List[str] = []
         for path in paths:
+            if check_cancelled:
+                check_cancelled()
             try:
                 stat = os.stat(path)
             except OSError:
@@ -272,14 +279,21 @@ class Scanner:
         if pending:
             with ProcessPoolExecutor(max_workers=self.workers) as pool:
                 futures = {pool.submit(scan_worker, p): p for p in pending}
-                for future in as_completed(futures):
-                    result = future.result()
-                    done += 1
-                    self._store_result(result, report, row_exists=result["path"] in known_paths)
-                    if progress:
-                        progress(done, result["path"])
-                    if progress_state:
-                        progress_state(done, len(pending), result["path"])
+                try:
+                    for future in as_completed(futures):
+                        result = future.result()
+                        done += 1
+                        self._store_result(result, report, row_exists=result["path"] in known_paths)
+                        if progress:
+                            progress(done, result["path"])
+                        if progress_state:
+                            progress_state(done, len(pending), result["path"])
+                except BaseException as exc:
+                    for future in futures:
+                        future.cancel()
+                    if isinstance(exc, CancelledError):
+                        self.rebuild_albums(root)
+                    raise
 
         for path in known_paths - set(paths):
             if path.startswith(root) and existing[path]["status"] != "deleted":

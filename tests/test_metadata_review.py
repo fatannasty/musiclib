@@ -743,6 +743,88 @@ def test_album_lookup_keeps_other_catalog_results_when_one_fails(lib_env, monkey
     assert path.read_bytes() == before
 
 
+def test_merge_across_folders_preserves_track_identity_then_reviews_organization(lib_env):
+    env = lib_env
+    for index in range(2):
+        make_flac(env.library / f"source-{index}" / "song.flac", tags={
+            "TITLE": f"Song {index}", "ARTIST": f"Singer {index}",
+            "ALBUM": f"Part {index}", "ALBUMARTIST": f"Old artist {index}",
+            "TRACKNUMBER": f"{index + 1}/2", "DISCNUMBER": "1/1",
+        })
+    Scanner(env.config, env.db, workers=1).scan()
+    tracks = sorted(env.db.all_tracks(), key=lambda track: track.path)
+    ids = [track.id for track in tracks]
+    fields = ["album", "album_artist"]
+    with TestClient(create_app(env.config)) as client:
+        selected = client.post("/api/tracks/selected", json={"track_ids": ids}).json()
+        assert [track["id"] for track in selected] == ids
+        preview = client.post("/api/metadata/album-edit/preview", json={
+            "track_ids": ids, "fields": fields,
+            "values": {"album": "Joined", "album_artist": "Shared artist"},
+        }).json()
+        assert len(preview["reviews"]) == 2
+        job_id = client.post("/api/metadata/album-edit/apply", json={"reviews": [
+            {"review_id": review["review_id"], "candidate_index": 0, "fields": fields}
+            for review in preview["reviews"]
+        ]}).json()["job_id"]
+        assert wait_job(client, job_id)["summary"]["applied"] == 2
+        albums = client.get("/api/albums/page").json()
+        assert albums["total"] == 1
+        assert albums["items"][0]["album"] == "Joined"
+        assert albums["items"][0]["track_count"] == 2
+        for index, original in enumerate(tracks):
+            current = env.db.get_track(original.id)
+            assert current.path == original.path
+            assert (current.title, current.artist) == (f"Song {index}", f"Singer {index}")
+            assert (current.track_no, current.track_total) == (index + 1, 2)
+            assert (current.disc_no, current.disc_total) == (1, 1)
+        rename_id = client.post("/api/rename/preview-selected", json={"track_ids": ids}).json()["job_id"]
+        assert wait_job(client, rename_id)["summary"]["ready"] == 2
+        assert all(Path(track.path).is_file() for track in tracks)
+        apply_id = client.post("/api/rename/apply-reviewed", json={
+            "preview_job_id": rename_id,
+        }).json()["job_id"]
+        assert wait_job(client, apply_id)["summary"]["moved"] == 2
+        moved = [env.db.get_track(track.id) for track in tracks]
+        assert len({str(Path(track.path).parent) for track in moved}) == 1
+        assert all(Path(track.path).is_file() for track in moved)
+        assert all(not Path(track.path).exists() for track in tracks)
+
+
+def test_stopping_bulk_tag_writes_keeps_completed_edits_and_skips_remaining(lib_env, monkeypatch):
+    env = lib_env
+    for index in range(2):
+        make_mp3(env.library / f"{index}.mp3", tags={"title": "Song", "album": "Original"})
+    Scanner(env.config, env.db, workers=1).scan()
+    ids = [track.id for track in sorted(env.db.all_tracks(), key=lambda track: track.path)]
+    entered, finish = threading.Event(), threading.Event()
+    original_apply = MetadataReview.apply
+
+    def apply_one(self, *args, **kwargs):
+        result = original_apply(self, *args, **kwargs)
+        entered.set()
+        assert finish.wait(5)
+        return result
+
+    monkeypatch.setattr(MetadataReview, "apply", apply_one)
+    with TestClient(create_app(env.config)) as client:
+        preview = client.post("/api/metadata/album-edit/preview", json={
+            "track_ids": ids, "fields": ["album"], "values": {"album": "Updated"},
+        }).json()
+        try:
+            job_id = client.post("/api/metadata/album-edit/apply", json={"reviews": [
+                {"review_id": review["review_id"], "candidate_index": 0, "fields": ["album"]}
+                for review in preview["reviews"]
+            ]}).json()["job_id"]
+            assert entered.wait(5)
+            assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+        finally:
+            finish.set()
+        assert wait_job(client, job_id)["status"] == "cancelled"
+        assert env.db.get_track(ids[0]).album == "Updated"
+        assert env.db.get_track(ids[1]).album == "Original"
+
+
 def test_album_apply_writes_only_chosen_fields(lib_env, monkeypatch):
     env = lib_env
     for index in range(2):

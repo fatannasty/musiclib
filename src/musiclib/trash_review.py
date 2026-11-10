@@ -66,6 +66,7 @@ class TrashReview:
 
     def preview(
         self, track_ids: List[int], progress: Optional[Callable[..., None]] = None,
+        reason: str = "library:selected",
     ) -> Dict[str, Any]:
         if not 1 <= len(track_ids) <= 200 or len(set(track_ids)) != len(track_ids):
             raise ValueError("Select between 1 and 200 distinct tracks.")
@@ -89,6 +90,7 @@ class TrashReview:
                 snapshot.update(
                     source=source, target=target, file_hash=file_hash(source),
                     catalog_hash=track.file_hash, size=os.stat(source).st_size,
+                    deletion_reason=reason,
                 )
                 reason = self._target_problem(source, target)
                 if reason:
@@ -133,7 +135,7 @@ class TrashReview:
             # Persist recovery before removing the source, including for interrupted moves.
             deletion_id = self.db.record_deletion(
                 snapshot["path"], snapshot["size"], snapshot["file_hash"],
-                "library:selected", target,
+                snapshot.get("deletion_reason", "library:selected"), target,
             )
             self._source(snapshot["track_id"], snapshot)
 

@@ -3,12 +3,15 @@ from __future__ import annotations
 import re
 import string
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import Config
 from .db import Database
-from .fsops import delete_file, trash_file
+from .fsops import delete_file, is_inside
 from .models import LOSSLESS_FORMATS, Track
+from .scanner import file_hash
+from .trash_review import TrashReview
 
 _PUNCT_TABLE = str.maketrans("", "", string.punctuation)
 _REMOVE_FEAT_RE = re.compile(r"\s*(?:feat|ft|featuring)\.?\s+.*$", re.IGNORECASE)
@@ -105,6 +108,7 @@ class DupeReport:
     trashed: int = 0
     deleted: int = 0
     reclaimed_bytes: int = 0
+    failures: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def pick_keep(members: List[DupeMember]) -> DupeMember:
@@ -125,10 +129,14 @@ class DuplicateFinder:
     def find(
         self, strategy: Optional[str] = None, fingerprint_pass: Optional[bool] = None,
         progress_state: Optional[Callable[[str, int, int, str], None]] = None,
+        tracks: Optional[List[Track]] = None,
+        persist: bool = True,
     ) -> List[DupeGroup]:
         strategy = (strategy or self.config.duplicates.get("strategy", "tags")).lower()
-        tracks = [t for t in self.db.all_tracks() if t.status in ("ok", "suspect")]
-        for track in tracks:
+        tracks = [t for t in (self.db.all_tracks() if tracks is None else tracks) if t.status in ("ok", "suspect")]
+        for index, track in enumerate(tracks):
+            if progress_state:
+                progress_state("Scoring duplicate candidates", index, len(tracks), track.path)
             score = score_track(track)
             if score != track.quality_score:
                 self.db.update_track_columns(track.id, quality_score=score)
@@ -158,6 +166,8 @@ class DuplicateFinder:
                 )
                 by_tags.setdefault(key, []).append(track)
         for group in by_tags.values():
+            if progress_state:
+                progress_state("Comparing track tags", 0, len(tracks), group[0].path)
             group.sort(key=lambda t: (t.duration or 0))
             clusters: List[List[Track]] = []
             for track in group:
@@ -198,10 +208,10 @@ class DuplicateFinder:
                 if progress_state:
                     progress_state("Comparing audio fingerprints", i + 1, len(candidates), a.path)
 
-        return self._build_groups(union, tracks)
+        return self._build_groups(union, tracks, persist=persist)
 
     def _build_groups(
-        self, union: _UnionFind, tracks: List[Track]
+        self, union: _UnionFind, tracks: List[Track], persist: bool = True,
     ) -> List[DupeGroup]:
         by_id = {t.id: t for t in tracks}
         groups: List[DupeGroup] = []
@@ -214,7 +224,11 @@ class DuplicateFinder:
             key = f"keep:{keep.track.id}"
             group = DupeGroup(key=key, members=members, keep=keep)
             groups.append(group)
-        self._persist(groups)
+        if persist:
+            self._persist(groups)
+        else:
+            for index, group in enumerate(groups, start=1):
+                group.group_id = index
         return groups
 
     def _persist(self, groups: List[DupeGroup]) -> None:
@@ -285,6 +299,7 @@ class DuplicateFinder:
         groups: List[DupeGroup],
         hard_delete: bool = False,
         keep_ids: Optional[Dict[int, int]] = None,
+        progress_state: Optional[Callable[[str, int, int, str], None]] = None,
     ) -> DupeReport:
         keep_ids = keep_ids or {}
         available = {group.group_id: group for group in groups}
@@ -293,8 +308,23 @@ class DuplicateFinder:
             if group is None or keep_id not in {m.track.id for m in group.members}:
                 raise ValueError("keeper must belong to an unresolved duplicate group")
         report = DupeReport(groups=groups)
+        total = sum(len(group.members) - 1 for group in groups)
+        done = 0
         for group in groups:
+            if progress_state:
+                progress_state("Checking duplicate keepers", done, total, "")
             keep_id = keep_ids.get(group.group_id) if group.group_id else None
+            keeper = next(
+                (m for m in group.members if m.track.id == keep_id), group.keep,
+            )
+            if keeper is None:
+                raise ValueError("Choose a keeper before removing copies.")
+            try:
+                for member in group.members:
+                    self._check_member(member.track)
+            except (OSError, ValueError) as exc:
+                report.failures.append({"path": member.track.path, "error": str(exc)})
+                continue
             for member in group.members:
                 if keep_id is not None:
                     member.action = "keep" if member.track.id == keep_id else "loser"
@@ -303,33 +333,59 @@ class DuplicateFinder:
                 if member.action != "loser":
                     continue
                 track = member.track
+                if progress_state:
+                    progress_state("Trashing duplicate copies", done, total, track.path)
                 try:
+                    self._check_member(keeper.track)
+                    self._check_member(track)
                     if hard_delete:
                         delete_file(track.path)
                         self.db.record_deletion(
                             track.path, track.size, track.file_hash,
-                            f"duplicate of {group.keep.track.path if group.keep else '?'}",
+                            f"duplicate of {keeper.track.path}",
                             None,
                         )
                         report.deleted += 1
                     else:
-                        dest = trash_file(track.path, self.config.trash_dir)
-                        self.db.record_deletion(
-                            track.path, track.size, track.file_hash,
-                            f"duplicate of {group.keep.track.path if group.keep else '?'}",
-                            dest,
+                        reviewer = TrashReview(self.config, self.db)
+                        preview = reviewer.preview(
+                            [track.id], reason=f"duplicate of {keeper.track.path}",
                         )
-                        report.trashed += 1
+                        snapshot = preview["tracks"][0]
+                        if not preview["ready"] or snapshot["file_hash"] != track.file_hash:
+                            raise ValueError(snapshot["reason"] or "File changed since duplicate review.")
+                        self._check_member(keeper.track)
+                        result = reviewer.apply(preview["review_id"])
+                        report.trashed += len(result["trashed"])
+                        if result["errors"]:
+                            raise ValueError(result["errors"][0]["error"])
                     report.reclaimed_bytes += track.size
                     self.db.update_track_columns(track.id, status="deleted")
-                except FileNotFoundError:
-                    self.db.update_track_columns(track.id, status="deleted")
+                except (OSError, ValueError) as exc:
+                    report.failures.append({"path": track.path, "error": str(exc)})
+                done += 1
             if group.group_id:
-                final_keep = next(
-                    (m.track.id for m in group.members if m.action == "keep"), None
+                resolved = all(
+                    m.action == "keep" or self.db.get_track(m.track.id).status == "deleted"
+                    for m in group.members
                 )
                 self.db.execute(
-                    "UPDATE dupe_groups SET resolved=1, keep_id=? WHERE id=?",
-                    (final_keep, group.group_id),
+                    "UPDATE dupe_groups SET resolved=?, keep_id=? WHERE id=?",
+                    (int(resolved), keeper.track.id, group.group_id),
                 )
+        if progress_state:
+            progress_state("Duplicate cleanup complete", done, total, "")
         return report
+
+    def _check_member(self, track: Track) -> None:
+        current = self.db.get_track(track.id)
+        if (
+            current is None or current.status not in ("ok", "suspect")
+            or current.path != track.path or current.file_hash != track.file_hash
+            or not track.file_hash
+            or not is_inside(track.path, self.config.library) or Path(track.path).is_symlink()
+            or is_inside(track.path, self.config.trash_dir)
+            or not Path(track.path).is_file()
+            or file_hash(track.path) != track.file_hash
+        ):
+            raise ValueError("A duplicate or its keeper moved, changed, or is unavailable. Scan and review again.")
