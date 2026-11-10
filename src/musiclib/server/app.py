@@ -18,10 +18,11 @@ from ..db import Database
 from ..doctor import Doctor
 from ..duplicates import DuplicateFinder
 from ..fingerprint import compute_all, fpcalc_available
-from ..fsops import is_inside
+from ..fsops import is_inside, move_no_replace
 from ..metadata_review import ALBUM_FIELDS, EDITABLE_FIELDS, TRACK_FIELDS, MetadataReview
 from ..rename import Renamer
 from ..scanner import Scanner
+from ..trash_review import TrashReview
 from ..usenet import Sabnzbd, SabnzbdError, search_all
 from .jobs import JobRegistry
 
@@ -129,6 +130,10 @@ class TrackEditBody(BaseModel):
 
 
 class RenamePreviewBody(BaseModel):
+    track_ids: List[int]
+
+
+class TrashPreviewBody(BaseModel):
     track_ids: List[int]
 
 
@@ -662,16 +667,10 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(404, "trashed file is missing from disk")
         if os.path.lexists(target):
             raise HTTPException(409, "original path is occupied; move the existing file before restoring")
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        linked = False
         try:
-            os.link(source, target, follow_symlinks=False)
-            linked = True
-            os.unlink(source)
+            move_no_replace(source, target)
         except OSError as exc:
-            if linked and os.path.exists(source):
-                os.unlink(target)
-            if not linked and isinstance(exc, FileExistsError):
+            if isinstance(exc, FileExistsError):
                 raise HTTPException(409, "original path became occupied during restore") from exc
             raise HTTPException(500, f"could not restore file: {exc}") from exc
         try:
@@ -684,6 +683,42 @@ def create_app(config: Config) -> FastAPI:
                 500, f"file restored to {target}, but database history update failed: {exc}"
             ) from exc
         return {"restored": target}
+
+    @app.post("/api/trash/preview-selected")
+    def trash_preview_selected(body: TrashPreviewBody) -> Dict[str, str]:
+        if not 1 <= len(body.track_ids) <= 200 or len(set(body.track_ids)) != len(body.track_ids):
+            raise HTTPException(400, "Select between 1 and 200 distinct tracks.")
+        return {"job_id": jobs.start(
+            "trash-preview",
+            lambda job: TrashReview(config, db).preview(body.track_ids, progress=jobs.update),
+        )}
+
+    @app.get("/api/trash/reviews/{review_id}")
+    def trash_review_status(review_id: str) -> Dict[str, str]:
+        try:
+            return {"status": TrashReview(config, db).status(review_id)}
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/trash/apply-reviewed")
+    def trash_apply_reviewed(body: ReviewedApplyBody) -> Dict[str, str]:
+        preview_job = jobs.get(body.preview_job_id)
+        if not preview_job or preview_job["kind"] != "trash-preview":
+            raise HTTPException(400, "Choose a saved selected-track trash preview.")
+        if preview_job["status"] != "done":
+            raise HTTPException(400, "The trash preview has not completed successfully.")
+        preview = jobs.result(body.preview_job_id)
+        if not preview["ready"]:
+            raise HTTPException(400, "This preview has no files ready to trash.")
+        try:
+            if TrashReview(config, db).status(preview["review_id"]) != "review":
+                raise ValueError("This trash preview was already used. Create a fresh preview.")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"job_id": jobs.start(
+            "trash-reviewed",
+            lambda job: TrashReview(config, db).apply(preview["review_id"], progress=jobs.update),
+        )}
 
     @app.post("/api/rename")
     @jobs.operation

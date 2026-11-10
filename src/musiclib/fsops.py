@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import tempfile
@@ -21,6 +22,50 @@ def atomic_edit(path: Path, edit: Callable[[Path], T]) -> T:
         return result
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def move_no_replace(
+    source: str, target: str, verify: Optional[Callable[[str], None]] = None,
+) -> None:
+    source_stat = os.stat(source, follow_symlinks=False)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    created: Optional[os.stat_result] = None
+    removed = False
+
+    def owns_destination() -> bool:
+        if created is None:
+            return False
+        try:
+            current = os.stat(target, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        return (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino)
+
+    try:
+        try:
+            os.link(source, target, follow_symlinks=False)
+            created = source_stat
+        except OSError as exc:
+            if exc.errno not in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP, errno.EMLINK):
+                raise
+            # NAS mounts may forbid links even when copying and removing files is allowed.
+            with open(source, "rb") as src, open(target, "xb") as dest:
+                created = os.fstat(dest.fileno())
+                shutil.copyfileobj(src, dest)
+                dest.flush()
+                os.fsync(dest.fileno())
+            if not owns_destination():
+                raise OSError("Destination changed during the move. The source was not removed.") from None
+            shutil.copystat(source, target)
+        if verify is not None:
+            verify(target)
+        if not owns_destination():
+            raise OSError("Destination changed during the move. The source was not removed.")
+        os.unlink(source)
+        removed = True
+    finally:
+        if not removed and owns_destination():
+            os.unlink(target)
 
 
 def unique_path(path: Path) -> Path:
