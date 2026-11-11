@@ -2269,7 +2269,7 @@ const views = {
       if (token === null) return;
       const searchPanel = el.querySelector("#metadata-search");
       el.querySelector("#metadata-review").innerHTML = "";
-      searchPanel.innerHTML = `<form class="card"><h3>Search music catalogs</h3>
+      searchPanel.innerHTML = `<form class="card"><h3>Search or identify track metadata</h3>
         <p class="path">${esc(track.path)}</p>
         <p class="hint">Enter or correct a title or artist, even if the file has no tags. Compare MusicBrainz, iTunes, or Deezer suggestions. Scores are provider/search estimates, not proof of the same recording. Searching does not change files.</p>
         <div class="row">
@@ -2277,35 +2277,53 @@ const views = {
           <label>Artist <input type="text" name="artist" value="${esc(track.artist || "")}"></label>
           <label>Source <select name="source">${trackSourceOptions("all")}</select></label>
           <button type="submit" class="action" data-lookup-operation>Search catalogs</button>
-        </div><p role="status" class="hint" data-search-status></p></form>`;
+          <button type="button" class="action ghost" data-audio-identify data-lookup-operation ${settings.acoustid.api_key_set ? "" : "disabled"}>Identify from audio</button>
+        </div>
+        <p class="hint">Identify from audio uses the sound, not these search terms. It sends a fingerprint and duration to AcoustID, then retrieves MusicBrainz recording details; it does not upload the audio file.
+          ${settings.acoustid.api_key_set ? "Review any match before saving tags." : "Add an AcoustID application API key in Settings to enable it."}
+          It can take up to two minutes to fingerprint a file. No album edition is assumed.</p>
+        <p role="status" class="hint" data-search-status></p></form>`;
       const form = searchPanel.querySelector("form");
       const submit = form.querySelector('button[type="submit"]');
+      const identify = form.querySelector("[data-audio-identify]");
       const status = form.querySelector("[data-search-status]");
-      form.onsubmit = async event => {
-        event.preventDefault();
+      let searching = false, reviewed = false;
+      const search = async audio => {
+        if (searching || !workspace.owns(token)) return;
         const title = form.elements.namedItem("title").value.trim();
         const artist = form.elements.namedItem("artist").value.trim();
-        if (!title && !artist) {
+        if (!audio && !title && !artist) {
           status.textContent = "Enter at least a title or artist.";
           return;
         }
+        if (reviewed && !confirm("Discard the current metadata suggestions and unsaved choices to run a new lookup?")) return;
+        searching = true; reviewed = false;
         submit.disabled = true;
+        identify.disabled = true;
         workspace.busy(token, true); workspace.stage(token, "preview");
-        status.textContent = "Searching selected catalogs… You can continue working in the library.";
+        status.textContent = audio ? "Fingerprinting audio and looking up recordings… No tags are being changed."
+          : "Searching selected catalogs… You can continue working in the library.";
         el.querySelector("#metadata-review").innerHTML = "";
         try {
-          const review = await post("/api/metadata/lookup", {track_id: track.id, title, artist, source: form.elements.namedItem("source").value});
+          const review = await (audio
+            ? post("/api/metadata/identify", {track_id: track.id})
+            : post("/api/metadata/lookup", {track_id: track.id, title, artist, source: form.elements.namedItem("source").value}));
           if (!workspace.owns(token)) return;
           status.textContent = "";
+          reviewed = true;
           workspace.stage(token, "confirm");
           renderMetadataReview(review, $("#metadata-review"), null, token);
         } catch (e) {
           if (form.isConnected) status.textContent = e.message;
         } finally {
           workspace.busy(token, false);
+          searching = false;
           submit.disabled = false;
+          identify.disabled = !settings.acoustid.api_key_set;
         }
       };
+      form.onsubmit = event => { event.preventDefault(); return search(false); };
+      identify.onclick = () => search(true);
       scrollReview();
     };
     const coverMarkup = candidate => {
@@ -2334,6 +2352,7 @@ const views = {
         panel.innerHTML = `<div class="card"><h3>Review metadata suggestions</h3>
           ${warnings}
           <p>Source: ${esc(candidate.source)} · confidence ${candidate.confidence}/100. Suggestions do not change your files until you select fields and apply.</p>
+          ${candidate.evidence ? `<p class="hint">${esc(candidate.evidence)}</p>` : ""}
           <p class="path">${esc(review.track.path)}</p>
           <div class="match-grid">${review.candidates.map((item, index) =>
             `<label class="match-card ${index === candidateIndex ? "selected" : ""}">
@@ -2977,6 +2996,15 @@ const views = {
       <div class="card" style="margin-top:14px"><h3>MusicBrainz</h3>
         ${field("brainz", "contact", "Contact email (required by MusicBrainz)")}
       </div>
+      <div class="card" style="margin-top:14px"><h3>Audio identification (AcoustID)</h3>
+        ${field("acoustid", "api_key", "Application API key", { secret: true })}
+        <label class="hint"><input type="checkbox" id="set-acoustid-clear"> Remove the saved AcoustID key</label>
+        <p class="hint">Optional. Register an application at <a href="https://acoustid.org/new-application" target="_blank" rel="noopener noreferrer">acoustid.org</a> and use its application API key, not a user API key.
+        Then open Library → Tracks → Lookup → Identify from audio. Only explicitly requested tracks are fingerprinted.
+        A fingerprint and duration go to AcoustID; recording IDs go to MusicBrainz. Audio files are not uploaded.
+        Your key is saved in the NAS configuration, never returned by Settings or saved in browsing memory.
+        Matches require reviewed field selection and confirmation; album editions and track numbers are not guessed.</p>
+      </div>
       <div class="card" style="margin-top:14px"><h3>Album lookup sources and connections</h3>
         <p>Choose the default for Find album matches. You can change the source for each search.</p>
         <label class="hint" for="set-catalog-album_source">Default album lookup source</label>
@@ -3032,7 +3060,7 @@ const views = {
         old_name: r.dataset.old, name: r.querySelector(".i-name").value,
         url: r.querySelector(".i-url").value, api_key: r.querySelector(".i-key").value,
         categories: r.querySelector(".i-cat").value })) };
-      for (const sec of ["sabnzbd", "brainz", "catalog", "organize", "doctor", "duplicates", "artwork"]) {
+      for (const sec of ["sabnzbd", "brainz", "catalog", "acoustid", "organize", "doctor", "duplicates", "artwork"]) {
         body[sec] = {};
         for (const key of Object.keys(s[sec])) {
           if (key.endsWith("_set")) continue;
@@ -3040,6 +3068,7 @@ const views = {
           if (v !== undefined) body[sec][key] = v;
         }
       }
+      body.acoustid.clear_api_key = $("#set-acoustid-clear").checked;
       try { await api("/api/settings", { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
         toast("Settings saved"); render(); } catch (e) { toast(e.message, true); }
     };

@@ -48,7 +48,7 @@ def catalog_error(error: BaseException) -> str:
     return str(error)
 
 
-def _ipv4_get(url: str, **kwargs: Any) -> httpx.Response:
+def _ipv4_request(method: str, url: str, **kwargs: Any) -> httpx.Response:
     parsed = urlsplit(url)
     proxies = getproxies()
     proxy = None
@@ -59,7 +59,15 @@ def _ipv4_get(url: str, **kwargs: Any) -> httpx.Response:
     transport = httpx.HTTPTransport(local_address="0.0.0.0", proxy=proxy, retries=0)
     # Supply the proxy on this transport so environment mounts cannot bypass its IPv4 binding.
     with httpx.Client(transport=transport, trust_env=False) as client:
-        return client.get(url, **kwargs)
+        return client.request(method, url, **kwargs)
+
+
+def _ipv4_get(url: str, **kwargs: Any) -> httpx.Response:
+    return _ipv4_request("GET", url, **kwargs)
+
+
+def _ipv4_post(url: str, **kwargs: Any) -> httpx.Response:
+    return _ipv4_request("POST", url, **kwargs)
 
 
 def catalog_get(url: str, *, ipv4_only: bool = False, **kwargs: Any) -> httpx.Response:
@@ -72,3 +80,15 @@ def catalog_get(url: str, *, ipv4_only: bool = False, **kwargs: Any) -> httpx.Re
             raise
         logger.warning("Catalog connection to %s failed; retrying once over IPv4", urlsplit(url).hostname)
         return _ipv4_get(url, **kwargs)
+
+
+def catalog_post(url: str, *, ipv4_only: bool = False, **kwargs: Any) -> httpx.Response:
+    if ipv4_only:
+        return _ipv4_post(url, **kwargs)
+    try:
+        return httpx.post(url, **kwargs)
+    except (httpx.ConnectError, OSError) as exc:
+        if not address_error(exc):
+            raise
+        logger.warning("Catalog connection to %s failed; retrying once over IPv4", urlsplit(url).hostname)
+        return _ipv4_post(url, **kwargs)

@@ -271,6 +271,35 @@ function reviewRoot() {
   return {root, close, title, status, slots, steps};
 }
 
+test("settings saves audio keys and explicit removal without exposing the saved key", async () => {
+  const {context, document, run} = dashboard(), panel = new Element(), requests = [];
+  const settings = {
+    library: "/music", sabnzbd: {}, brainz: {}, catalog: {album_source: "all"},
+    acoustid: {api_key: "", api_key_set: true}, organize: {}, doctor: {},
+    duplicates: {strategy: "tags", schedule_hours: 0}, artwork: {}, indexers: [],
+  };
+  context.api = async (url, options) => {
+    if (!options) return settings;
+    requests.push({url, body: JSON.parse(options.body)});
+    return {saved: true};
+  };
+  context.render = () => {};
+  await run("views.settings")(panel);
+  assert.match(panel.innerHTML, /type="password" id="set-acoustid-api_key"/);
+  assert.match(panel.innerHTML, /saved — leave blank to keep/);
+  document.querySelector("#set-acoustid-api_key").value = "replacement-key";
+  document.querySelector("#set-acoustid-clear").checked = false;
+  await document.querySelector("#set-save").onclick();
+  assert.equal(requests[0].url, "/api/settings");
+  assert.deepEqual(requests[0].body.acoustid, {
+    api_key: "replacement-key", clear_api_key: false,
+  });
+  document.querySelector("#set-acoustid-api_key").value = "";
+  document.querySelector("#set-acoustid-clear").checked = true;
+  await document.querySelector("#set-save").onclick();
+  assert.deepEqual(requests[1].body.acoustid, {api_key: "", clear_api_key: true});
+});
+
 test("declining replacement preserves the existing review and its choices", () => {
   const {context} = dashboard();
   const {root, slots, title} = reviewRoot();

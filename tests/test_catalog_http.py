@@ -109,7 +109,8 @@ def test_ipv4_transport_preserves_proxy_routing_and_request_options(monkeypatch,
         def __exit__(self, *args):
             return None
 
-        def get(self, url, **kwargs):
+        def request(self, method, url, **kwargs):
+            observed["method"] = method
             observed["request"] = (url, kwargs)
             return httpx.Response(200)
 
@@ -126,6 +127,56 @@ def test_ipv4_transport_preserves_proxy_routing_and_request_options(monkeypatch,
         "local_address": "0.0.0.0", "proxy": None if bypass else "http://proxy.test:8080", "retries": 0,
     }
     assert observed["client"] == {"transport": transport, "trust_env": False}
+    assert observed["method"] == "GET"
     assert observed["request"] == ("https://itunes.apple.com/search", {
         "params": {"term": "Album"}, "headers": {"User-Agent": "musiclib/test"}, "timeout": 4.0,
     })
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_catalog_post_preserves_form_body_during_ipv4_recovery(monkeypatch, forced):
+    calls = []
+
+    def automatic(url, **kwargs):
+        calls.append(("auto", url, kwargs))
+        raise OSError(errno.ENETUNREACH, "Network is unreachable")
+
+    def ipv4(url, **kwargs):
+        calls.append(("ipv4", url, kwargs))
+        return httpx.Response(200, json={"status": "ok", "results": []})
+
+    monkeypatch.setattr(catalog.httpx, "post", automatic)
+    monkeypatch.setattr(catalog, "_ipv4_post", ipv4)
+    data = {"client": "test-key", "fingerprint": "encoded", "duration": "180"}
+    catalog.catalog_post("https://api.acoustid.org/v2/lookup", data=data, timeout=10,
+                         ipv4_only=forced)
+    assert [call[0] for call in calls] == (["ipv4"] if forced else ["auto", "ipv4"])
+    assert all(call[1:] == ("https://api.acoustid.org/v2/lookup", {"data": data, "timeout": 10})
+               for call in calls)
+
+
+def test_ipv4_post_uses_post_method_and_preserves_form_body(monkeypatch):
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return httpx.Response(200)
+
+    monkeypatch.setattr(catalog, "_ipv4_request", request)
+    catalog.catalog_post("https://api.acoustid.org/v2/lookup", data={"client": "test"},
+                         ipv4_only=True)
+    assert calls == [("POST", "https://api.acoustid.org/v2/lookup", {"data": {"client": "test"}})]
+
+
+def test_catalog_post_does_not_retry_timeouts(monkeypatch):
+    calls = []
+
+    def timeout(*args, **kwargs):
+        calls.append(args)
+        raise httpx.ReadTimeout("too slow")
+
+    monkeypatch.setattr(catalog.httpx, "post", timeout)
+    monkeypatch.setattr(catalog, "_ipv4_post", timeout)
+    with pytest.raises(httpx.ReadTimeout):
+        catalog.catalog_post("https://api.acoustid.org/v2/lookup", data={"client": "test"})
+    assert len(calls) == 1

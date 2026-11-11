@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 import shutil
 import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -13,6 +15,37 @@ from .models import Track
 
 def fpcalc_available() -> Optional[str]:
     return shutil.which("fpcalc")
+
+
+def compute_encoded_fingerprint(path: str) -> Dict:
+    executable = fpcalc_available()
+    if not executable:
+        raise ValueError("Audio identification needs fpcalc. It is included in the Docker image.")
+    try:
+        proc = subprocess.run(
+            [executable, "-json", "-length", "120", path],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Audio fingerprinting timed out. No tags were changed.") from exc
+    except OSError as exc:
+        raise RuntimeError("Could not run fpcalc. Check its installation and file permissions.") from exc
+    if proc.returncode != 0:
+        raise RuntimeError("fpcalc could not decode this file. Check it in Bad Files.")
+    try:
+        payload = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise RuntimeError("fpcalc returned an invalid fingerprint response.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("fpcalc returned an invalid fingerprint response.")
+    fingerprint, duration = payload.get("fingerprint"), payload.get("duration")
+    if (
+        not isinstance(fingerprint, str) or not fingerprint
+        or not isinstance(duration, (int, float)) or isinstance(duration, bool)
+        or not math.isfinite(duration) or duration < 1
+    ):
+        raise RuntimeError("fpcalc returned no usable fingerprint or duration.")
+    return {"fingerprint": fingerprint, "duration": int(duration)}
 
 
 def _popcount(value: int) -> int:

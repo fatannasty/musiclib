@@ -54,6 +54,9 @@ contact = "you@example.com"
 album_source = "all"
 ipv4_only = false
 
+[acoustid]
+api_key = ""
+
 [sabnzbd]
 url = "http://localhost:8080"
 api_key = ""
@@ -131,6 +134,7 @@ def _default_config(library: str) -> Dict[str, Any]:
         },
         "brainz": {"contact": "you@example.com"},
         "catalog": {"album_source": "all", "ipv4_only": False},
+        "acoustid": {"api_key": ""},
         "sabnzbd": {"url": "http://localhost:8080", "api_key": "", "complete_dir": ""},
         "indexers": [],
     }
@@ -150,6 +154,7 @@ class Config:
     indexers: List[Dict[str, str]] = field(default_factory=list)
     config_path: Optional[Path] = None
     catalog: Dict[str, Any] = field(default_factory=dict)
+    acoustid: Dict[str, Any] = field(default_factory=lambda: {"api_key": ""})
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "Config":
@@ -187,6 +192,7 @@ class Config:
             artwork=config["artwork"],
             brainz=config["brainz"],
             catalog=config["catalog"],
+            acoustid=config["acoustid"],
             sabnzbd=config["sabnzbd"],
             indexers=config.get("indexers", []),
             config_path=used,
@@ -220,6 +226,7 @@ class Config:
                 "artwork": self.artwork,
                 "brainz": self.brainz,
                 "catalog": self.catalog,
+                "acoustid": self.acoustid,
                 "sabnzbd": self.sabnzbd,
             },
             self.indexers,
