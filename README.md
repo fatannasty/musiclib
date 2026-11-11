@@ -62,6 +62,22 @@ visible; expand **More library details** for duplicate, issue, and album counts.
 Short entrance and hover animations provide feedback without looping decoration.
 The dashboard respects your device's reduced-motion setting, including review scrolling.
 
+Workspace memory is saved in this browser: the current tab, last applied Library
+search and filters, Albums/Tracks view, album batch size, track page, and browsing
+scroll positions. Returning to Library or refreshing restores that context.
+Album browsing loads additional batches as needed to reach the saved position;
+scrolling, typing, or clicking interrupts automatic position restoration.
+Unavailable genre/format filters are cleared with a notice, and a track page that
+no longer exists is moved to the last available page. Positions are best-effort
+when the collection, window size, or temporary results have changed.
+
+Review drafts, album-detail pages, file selections, credentials, playback, and
+pending operations are not saved or automatically reopened. Leaving an unfinished
+review still asks for confirmation. Use **Settings → Clear saved browsing** to
+reset browsing preferences without changing the theme, server settings, or files.
+If browser storage is unavailable, browsing preferences still work within the
+current page session and a notice explains that they cannot be saved.
+
 Album summaries are reconciled from healthy and flagged catalog tracks when the
 dashboard starts and before each library-changing operation releases its lock,
 including failed or stopped jobs with completed changes. Merges and tag edits

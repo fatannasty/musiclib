@@ -25,11 +25,12 @@ class Element {
   hasAttribute(key) { return this.attributes.has(key); }
   removeAttribute(key) { this.attributes.delete(key); }
   replaceChildren() { this.children = []; }
+  querySelectorAll() { return []; }
 }
 
 function dashboard({storage, reducedMotion = false} = {}) {
   const nodes = new Map();
-  const saved = new Map(), warnings = [], notices = [];
+  const saved = new Map(), warnings = [], notices = [], scrolls = [], events = new Map();
   const document = {
     documentElement: new Element(),
     addEventListener() {},
@@ -41,18 +42,180 @@ function dashboard({storage, reducedMotion = false} = {}) {
   };
   const context = vm.createContext({
     document, window: {
-      addEventListener() {},
+      addEventListener: (name, handler) => events.set(name, handler),
+      scrollY: 0, innerHeight: 800, history: {},
+      scrollTo: options => scrolls.push(options),
       matchMedia: () => ({matches: reducedMotion}),
-      localStorage: storage || {getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value)},
+      localStorage: storage || {
+        getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value),
+        removeItem: key => saved.delete(key),
+      },
     },
     console: {...console, warn: (...args) => warnings.push(args)}, setTimeout, clearTimeout,
+    requestAnimationFrame: callback => callback(),
     confirm: () => true,
   });
   vm.runInContext(appearance, context);
   vm.runInContext(source, context);
   context.toast = (...args) => notices.push(args);
-  return {context, nodes, document, saved, warnings, notices, run: script => vm.runInContext(script, context)};
+  return {context, nodes, document, saved, warnings, notices, scrolls, events,
+    run: script => vm.runInContext(script, context)};
 }
+
+test("workspace memory restores validated browsing fields without restoring reviews or selections", () => {
+  const {context, saved, run} = dashboard();
+  saved.set("musiclib.workspace.v1", JSON.stringify({
+    version: 1, tab: "library",
+    library: {query: "Session", genre: "Jazz", format: "mp3", status: "suspect", view: "tracks",
+      batch: 150, trackOffset: 100, selectedTracks: [1, 2]},
+    scroll: {library: 2400}, libraryReview: {kind: "trash", jobId: "old"}, api_key: "not-persisted",
+  }));
+  context.loadBrowsing();
+  assert.equal(run("state.tab"), "library");
+  assert.equal(run("state.libraryView"), "tracks");
+  assert.equal(run("state.libraryBatch"), 150);
+  assert.equal(run("browsing.library.trackOffset"), 100);
+  assert.equal(run("browsing.scroll.library"), 2400);
+  assert.equal(run("state.libraryReview"), undefined);
+  context.saveBrowsing();
+  const memory = JSON.parse(saved.get("musiclib.workspace.v1"));
+  assert.equal(memory.library.query, "Session");
+  assert.equal(memory.library.genre, "Jazz");
+  assert.equal(memory.library.format, "mp3");
+  assert.equal(memory.library.status, "suspect");
+  assert.doesNotMatch(JSON.stringify(memory), /selectedTracks|libraryReview|api_key/);
+});
+
+test("invalid workspace values cannot select unknown tabs, run actions, or request unbounded restoration", () => {
+  const {context} = dashboard();
+  const value = context.validateBrowsing({
+    version: 1, tab: "__proto__",
+    library: {query: 45, genre: "x".repeat(257), status: "deleted", batch: 50000, view: "trash",
+      trackOffset: -50},
+    scroll: {library: Infinity, settings: "1000", overview: -1},
+  });
+  assert.equal(value.tab, "overview");
+  assert.equal(value.library.query, "");
+  assert.equal(value.library.genre, "");
+  assert.equal(value.library.status, "");
+  assert.equal(value.library.batch, 50);
+  assert.equal(value.library.view, "albums");
+  assert.equal(value.library.trackOffset, 0);
+  assert.equal(value.scroll.library, 0);
+  assert.equal(value.scroll.settings, 0);
+});
+
+test("unreadable saved workspace reports a reset without breaking startup preferences", () => {
+  for (const raw of ["{not json", '{"version":99}', "null"]) {
+    const {context, saved, run, notices, warnings} = dashboard();
+    saved.set("musiclib.workspace.v1", raw);
+    assert.doesNotThrow(() => context.loadBrowsing());
+    assert.equal(run("state.tab"), "overview");
+    assert.equal(warnings.length, 1);
+    assert.match(notices[0][0], /could not be restored/);
+    context.saveBrowsing();
+    assert.equal(JSON.parse(saved.get("musiclib.workspace.v1")).version, 1);
+  }
+});
+
+test("unavailable workspace storage reports once and preserves browsing state for this visit", () => {
+  for (const failure of ["read", "write"]) {
+    let writes = 0;
+    const {context, notices, run} = dashboard({storage: {
+      getItem(key) {
+        if (key === "musiclib.workspace.v1" && failure === "read") throw Error("Storage blocked");
+      },
+      setItem() { writes++; throw Error("Storage full"); },
+    }});
+    context.loadBrowsing();
+    run('browsing.library.query = "Jazz"; browsing.tab = "library"');
+    context.saveBrowsing(); context.saveBrowsing();
+    assert.equal(run("browsing.library.query"), "Jazz");
+    assert.equal(notices.length, 1);
+    assert.match(notices[0][0], /only for this visit/);
+    assert.equal(writes, failure === "read" ? 0 : 1);
+  }
+});
+
+test("clearing browsing memory leaves the theme and unrelated browser data alone", () => {
+  const {context, saved, run} = dashboard();
+  saved.set("musiclib.theme", "dark");
+  saved.set("unrelated", "keep");
+  saved.set("musiclib.workspace.v1", '{"version":1,"tab":"library"}');
+  context.loadBrowsing();
+  context.forgetBrowsing();
+  assert.equal(saved.has("musiclib.workspace.v1"), false);
+  assert.equal(saved.get("musiclib.theme"), "dark");
+  assert.equal(saved.get("unrelated"), "keep");
+  assert.equal(run("browsing.library.query"), "");
+  assert.equal(run("state.libraryBatch"), 50);
+});
+
+test("scroll capture uses the displayed tab and never replaces browsing position with a review or album detail", () => {
+  const {context, run} = dashboard();
+  run('state.currentTab="library"; state.tab="settings"; window.scrollY=1600');
+  context.captureBrowsingPosition();
+  assert.equal(run("browsing.scroll.library"), 1600);
+  for (const reason of [
+    "state.libraryDetail=true", "state.libraryDetail=false; state.libraryWorkspace={active:true}",
+    "state.libraryWorkspace=null; state.rendering=true", "state.rendering=false; state.restoringScroll=true",
+  ]) {
+    run(reason + "; window.scrollY=9999");
+    context.captureBrowsingPosition();
+    assert.equal(run("browsing.scroll.library"), 1600);
+  }
+});
+
+test("scroll restoration waits for Library loading and yields to newer navigation or user input", async () => {
+  for (const interrupt of ["none", "user", "navigation"]) {
+    const {context, run, scrolls} = dashboard();
+    let finish;
+    context.loadMore = () => new Promise(resolve => { finish = resolve; });
+    run('state.currentTab="library"; state.renderGeneration=1; browsing.scroll.library=2300; state.loadBrowsingScroll=loadMore');
+    const restored = context.restoreBrowsingPosition(1);
+    assert.equal(scrolls.length, 0);
+    if (interrupt === "user") run("state.cancelScrollRestore=true");
+    if (interrupt === "navigation") run("state.renderGeneration=2; state.restoringScroll=false");
+    finish();
+    await restored;
+    assert.equal(scrolls.length, interrupt === "none" ? 1 : 0);
+    if (scrolls.length) {
+      assert.equal(scrolls[0].top, 2300);
+      assert.equal(scrolls[0].behavior, "instant");
+    }
+    assert.equal(run("state.restoringScroll"), false);
+  }
+});
+
+test("restored track pages clamp to the last available page when the collection shrinks", async () => {
+  const {context} = dashboard(), container = new Element();
+  const prev = new Element(), next = new Element(), requests = [], offsets = [];
+  container.querySelector = selector => selector === ".prev" ? prev : next;
+  await context.pagedTable(container, async offset => {
+    requests.push(offset);
+    return {total: 101, items: offset < 101 ? [{id: 101}] : []};
+  }, ["Track"], row => `<tr><td>${row.id}</td></tr>`, () => {}, {
+    offset: 250, onOffset: offset => offsets.push(offset),
+  });
+  assert.deepEqual(requests, [250, 100]);
+  assert.deepEqual(offsets, [100]);
+  assert.match(container.innerHTML, /101–101 of 101/);
+});
+
+test("stale track search responses cannot overwrite a newer search or its remembered page", async () => {
+  const {context} = dashboard(), container = new Element();
+  let finish, current = true, remembered = false;
+  const pending = context.pagedTable(container, () => new Promise(resolve => { finish = resolve; }),
+    ["Track"], () => "<tr><td>Old search</td></tr>", () => {}, {
+      current: () => current, onOffset: () => { remembered = true; },
+    });
+  current = false;
+  container.innerHTML = "New search";
+  finish({total: 1, items: [{id: 1}]});
+  await pending;
+  assert.equal(container.innerHTML, "New search");
+  assert.equal(remembered, false);
+});
 
 test("appearance starts light, saves toggles, and restores dark mode before dashboard rendering", () => {
   const {context, document, saved} = dashboard();
@@ -120,6 +283,43 @@ test("declining replacement preserves the existing review and its choices", () =
   assert.deepEqual(slots[0].children, ["unsaved tag"]);
   assert.equal(title.textContent, "Edit tags");
   assert.equal(workspace.leave(), false);
+});
+
+test("declining navigation preserves both the review draft and saved Library location", async () => {
+  const {context, run, saved} = dashboard();
+  const {root, slots} = reviewRoot();
+  const workspace = context.createReviewWorkspace(root);
+  const token = workspace.begin("manual", "Edit tags");
+  slots[0].children.push("unsaved album name");
+  context.testWorkspace = workspace;
+  run('state.currentTab="library"; state.libraryWorkspace=testWorkspace; browsing.tab="library"; browsing.scroll.library=1600');
+  context.saveBrowsing();
+  const before = saved.get("musiclib.workspace.v1");
+  context.confirm = () => false;
+  run('state.tab="settings"; window.scrollY=2500');
+  await context.render();
+  assert.equal(run("state.tab"), "library");
+  assert.equal(workspace.owns(token), true);
+  assert.deepEqual(slots[0].children, ["unsaved album name"]);
+  assert.equal(saved.get("musiclib.workspace.v1"), before);
+});
+
+test("rapid navigation saves only accepted tabs and ignores an older pending render", async () => {
+  const {context, run, saved} = dashboard(), pending = [], rendered = [];
+  context.loadStats = () => new Promise(resolve => pending.push(resolve));
+  context.recordRender = name => rendered.push(name);
+  run('views.overview=async()=>recordRender("overview"); views.settings=async()=>recordRender("settings")');
+  const first = context.render();
+  run('state.tab="settings"');
+  const second = context.render();
+  pending[1]();
+  await second;
+  pending[0]();
+  await first;
+  assert.deepEqual(rendered, ["settings"]);
+  assert.equal(JSON.parse(saved.get("musiclib.workspace.v1")).tab, "settings");
+  assert.equal(run("state.currentTab"), "settings");
+  assert.equal(run("state.rendering"), false);
 });
 
 test("replacement clears old panels and invalidates late asynchronous results", () => {
