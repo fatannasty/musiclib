@@ -315,6 +315,92 @@ const pageDescriptions = {
   settings: "Configure your library and connected services.",
 };
 const state = { tab: "overview", jobs: [], libraryView: "albums", libraryBatch: 50 };
+const BROWSING_KEY = "musiclib.workspace.v1";
+const defaultBrowsing = () => ({
+  version: 1, tab: "overview",
+  library: {query: "", genre: "", format: "", status: "", view: "albums", batch: 50, trackOffset: 0},
+  scroll: Object.fromEntries(TABS.map(([id]) => [id, 0])),
+});
+let browsing = defaultBrowsing(), browsingStorageBlocked = false;
+function validateBrowsing(value) {
+  const clean = defaultBrowsing();
+  if (!value || value.version !== 1) throw new Error("Unrecognized saved workspace format.");
+  if (TABS.some(([id]) => id === value.tab)) clean.tab = value.tab;
+  const library = value.library || {};
+  for (const [key, max] of [["query", 4096], ["genre", 256], ["format", 32]]) {
+    if (typeof library[key] === "string" && library[key].length <= max) clean.library[key] = library[key];
+  }
+  if (["", "suspect", "bad"].includes(library.status)) clean.library.status = library.status;
+  if (["albums", "tracks"].includes(library.view)) clean.library.view = library.view;
+  if ([50, 100, 150, 200].includes(library.batch)) clean.library.batch = library.batch;
+  if (Number.isSafeInteger(library.trackOffset) && library.trackOffset >= 0 &&
+      library.trackOffset <= 1000000000 && library.trackOffset % 50 === 0) {
+    clean.library.trackOffset = library.trackOffset;
+  }
+  for (const [id] of TABS) {
+    const position = value.scroll?.[id];
+    if (Number.isFinite(position) && position >= 0 && position <= 10000000) clean.scroll[id] = position;
+  }
+  return clean;
+}
+function browsingStorageError(error) {
+  if (browsingStorageBlocked) return;
+  browsingStorageBlocked = true;
+  console.warn("Musiclib could not access saved browsing preferences.", error);
+  toast("Your browser could not save workspace memory. Browsing preferences will last only for this visit.", true);
+}
+function loadBrowsing() {
+  let saved;
+  try { saved = window.localStorage.getItem(BROWSING_KEY); }
+  catch (error) { browsingStorageError(error); }
+  if (saved) {
+    try { browsing = validateBrowsing(JSON.parse(saved)); }
+    catch (error) {
+      console.warn("Musiclib reset an invalid saved workspace.", error);
+      toast("The saved workspace could not be restored. Default browsing settings are in use.", true);
+    }
+  }
+  state.tab = browsing.tab;
+  state.libraryView = browsing.library.view;
+  state.libraryBatch = browsing.library.batch;
+}
+function saveBrowsing() {
+  if (browsingStorageBlocked) return;
+  try { window.localStorage.setItem(BROWSING_KEY, JSON.stringify(validateBrowsing(browsing))); }
+  catch (error) { browsingStorageError(error); }
+}
+function captureBrowsingPosition() {
+  if (!state.currentTab || state.rendering || state.restoringScroll) return;
+  if (state.currentTab === "library" && (state.libraryDetail || state.libraryWorkspace?.active)) return;
+  browsing.scroll[state.currentTab] = Math.max(0, window.scrollY);
+}
+async function restoreBrowsingPosition(generation) {
+  const tab = state.currentTab, target = browsing.scroll[tab] || 0;
+  if (state.libraryWorkspace?.active) return;
+  state.restoringScroll = true;
+  try {
+    if (tab === "library" && state.loadBrowsingScroll) await state.loadBrowsingScroll(target);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    if (generation === state.renderGeneration && !state.cancelScrollRestore) {
+      window.scrollTo({top: target, behavior: "instant"});
+    }
+  } finally {
+    if (generation === state.renderGeneration) state.restoringScroll = false;
+  }
+}
+function forgetBrowsing() {
+  try { window.localStorage.removeItem(BROWSING_KEY); }
+  catch (error) {
+    console.warn("Musiclib could not clear saved browsing preferences.", error);
+    toast("Could not clear saved workspace. Check your browser storage permissions.", true);
+    return;
+  }
+  browsing = defaultBrowsing();
+  browsing.tab = state.tab;
+  state.libraryView = "albums"; state.libraryBatch = 50;
+  browsingStorageBlocked = false;
+  toast("Saved browsing preferences cleared. Library will open with default filters.");
+}
 const activeJob = job => ["queued", "running", "stopping"].includes(job.status);
 const jobNames = {
   scan: "Scan library", doctor: "Check audio files", duplicates: "Find duplicates",
@@ -409,6 +495,7 @@ document.addEventListener("click", event => blockLockedAction(event, event.targe
 document.addEventListener("submit", event =>
   blockLockedAction(event, event.submitter || event.target.querySelector('[type="submit"]')), true);
 window.addEventListener("beforeunload", event => {
+  captureBrowsingPosition(); saveBrowsing();
   if (!state.libraryWorkspace?.unfinished) return;
   event.preventDefault(); event.returnValue = "";
 });
@@ -614,12 +701,17 @@ const elapsed = job => {
   const seconds = Math.max(0, Math.floor((job.finished || Date.now() / 1000) - job.started));
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 };
-async function pagedTable(container, load, headers, row, onPage = () => {}) {
-  let offset = 0;
+async function pagedTable(container, load, headers, row, onPage = () => {}, options = {}) {
+  let offset = options.offset || 0, generation = 0;
   const draw = async () => {
+    const request = ++generation;
     try {
       const page = await load(offset);
-      if (!container.isConnected) return;
+      if (!container.isConnected || request !== generation || (options.current && !options.current())) return;
+      if (offset > 0 && offset >= page.total) {
+        offset = Math.max(0, Math.floor((page.total - 1) / 50) * 50);
+        return draw();
+      }
       container.innerHTML = `<div class="table-scroll"><table><thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead>
         <tbody>${page.items.map(row).join("")}</tbody></table></div>
         <div class="pager"><button class="action ghost prev" ${offset === 0 ? "disabled" : ""}>Previous</button>
@@ -628,7 +720,11 @@ async function pagedTable(container, load, headers, row, onPage = () => {}) {
       container.querySelector(".prev").onclick = () => { offset = Math.max(0, offset - 50); draw(); };
       container.querySelector(".next").onclick = () => { offset += 50; draw(); };
       onPage(page.items);
-    } catch (e) { container.textContent = e.message; toast(e.message, true); }
+      options.onOffset?.(offset);
+    } catch (e) {
+      if (!container.isConnected || request !== generation || (options.current && !options.current())) return;
+      container.textContent = e.message; toast(e.message, true);
+    }
   };
   await draw();
 }
@@ -1167,6 +1263,7 @@ const views = {
     const workspace = createReviewWorkspace($("#library-workspace"), () => { state.libraryReview = null; });
     state.libraryWorkspace = workspace;
     const beginReview = (kind, title) => {
+      captureBrowsingPosition(); saveBrowsing();
       const token = workspace.begin(kind, title);
       if (token !== null) {
         state.libraryReview = {kind};
@@ -1186,7 +1283,8 @@ const views = {
     };
     const albumKey = album => JSON.stringify([album.album_artist, album.album]);
     let pageTracks = [];
-    let albumOffset = 0, albumTotal = 0, albumGeneration = 0, albumLoading = false;
+    let albumOffset = 0, albumTotal = 0, albumGeneration = 0, albumLoading = false, librarySearch = 0;
+    let albumLoadFailed = false;
     let albumFilters = {};
     const updateAlbumSelection = () => {
       $("#album-selection-count").textContent = `${selectedAlbums.size} albums selected`;
@@ -1223,7 +1321,9 @@ const views = {
     };
     const setView = view => {
       state.libraryObserver?.disconnect();
+      if (state.libraryView !== view) { albumGeneration++; albumLoading = false; librarySearch++; }
       state.libraryView = view;
+      state.libraryDetail = false;
       $("#library-view-albums").className = `action ${view === "albums" ? "" : "ghost"}`;
       $("#library-view-tracks").className = `action ${view === "tracks" ? "" : "ghost"}`;
       $("#library-albums").style.display = view === "albums" ? "" : "none";
@@ -1236,7 +1336,7 @@ const views = {
     const watchAlbumScroll = () => {
       state.libraryObserver?.disconnect();
       const sentinel = el.querySelector("[data-album-more]");
-      if (!sentinel || sentinel.hidden || !("IntersectionObserver" in window)) return;
+      if (!sentinel || sentinel.hidden || albumLoadFailed || state.rendering || !("IntersectionObserver" in window)) return;
       state.libraryObserver = new IntersectionObserver(entries => {
         if (!el.isConnected) { state.libraryObserver.disconnect(); return; }
         if (entries.some(entry => entry.isIntersecting) && !albumLoading &&
@@ -1250,6 +1350,7 @@ const views = {
       const container = $("#library-albums");
       const pageEl = $("#library-album-page");
       if (append && (albumLoading || albumOffset >= albumTotal)) return;
+      albumLoadFailed = false;
       if (!append) {
         albumGeneration++;
         state.libraryObserver?.disconnect();
@@ -1269,10 +1370,14 @@ const views = {
       const params = new URLSearchParams({...albumFilters, offset: String(albumOffset)});
       const more = container.querySelector("[data-album-more]");
       const load = container.querySelector("[data-load-albums]");
+      load.onclick = () => searchAlbums(albumOffset > 0);
       albumLoading = true; load.disabled = true;
       try {
         const page = await api(`/api/albums/page?${params}`);
-        if (!container.isConnected || generation !== albumGeneration) return;
+        if (!container.isConnected || generation !== albumGeneration || state.libraryView !== "albums") return false;
+        if (!page.items.length && albumOffset < page.total) {
+          throw new Error("The album list changed while loading. Retry or run a fresh search.");
+        }
         albumOffset += page.items.length; albumTotal = page.total;
         const fresh = page.items.filter(album => !loadedAlbums.has(albumKey(album)));
         fresh.forEach(album => loadedAlbums.set(albumKey(album), album));
@@ -1301,25 +1406,31 @@ const views = {
         watchAlbumScroll();
       } catch (e) {
         if (!container.isConnected || generation !== albumGeneration) return;
+        albumLoadFailed = true;
         state.libraryObserver?.disconnect();
         container.querySelector("[data-album-count]").textContent = `Cannot load albums: ${e.message}`;
         more.hidden = false;
         load.textContent = "Retry loading albums";
         toast(e.message, true);
+        return false;
       } finally {
         if (generation === albumGeneration) { albumLoading = false; load.disabled = false; }
       }
-      load.onclick = () => searchAlbums(albumOffset > 0);
+      return true;
     };
     const openAlbum = async (albumArtist, album) => {
+      captureBrowsingPosition(); saveBrowsing();
       if (!workspace.leave()) return;
+      state.cancelScrollRestore = true;
+      const request = ++librarySearch;
       const params = new URLSearchParams({
         album_artist: albumArtist, album, status: $("#library-status").value,
       });
       try {
         const detail = await api(`/api/albums/detail?${params}`);
-        if (!el.isConnected) return;
+        if (!el.isConnected || request !== librarySearch || state.libraryView !== "albums") return;
         state.libraryObserver?.disconnect();
+        state.libraryDetail = true;
         $("#library-albums").style.display = "none";
         const pageEl = $("#library-album-page");
         pageTracks = detail.tracks;
@@ -1358,7 +1469,9 @@ const views = {
           if (!workspace.leave()) return;
           pageEl.innerHTML = ""; $("#library-albums").style.display = "";
           $("#library-track-tools").style.display = "none";
+          state.libraryDetail = false;
           pageTracks = []; selectedTracks.clear(); updateSelection(); watchAlbumScroll();
+          window.scrollTo({top: browsing.scroll.library, behavior: "instant"});
         };
         pageEl.querySelector("[data-dupes-album]").onclick = () =>
           reviewAlbumDuplicates(detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id));
@@ -1968,11 +2081,21 @@ const views = {
     if (!el.isConnected) return;
     $("#library-genre").insertAdjacentHTML("beforeend", genreRows.map(g => `<option>${esc(g)}</option>`).join(""));
     $("#library-format").insertAdjacentHTML("beforeend", formatRows.map(f => `<option>${esc(f)}</option>`).join(""));
+    $("#library-query").value = browsing.library.query;
+    $("#library-status").value = browsing.library.status;
+    for (const [key, available] of [["genre", genreRows], ["format", formatRows]]) {
+      if (browsing.library[key] && !available.includes(browsing.library[key])) {
+        browsing.library[key] = "";
+        browsing.library.trackOffset = 0; browsing.scroll.library = 0;
+        toast(`The saved ${key} filter is no longer available. Showing all ${key === "genre" ? "genres" : "formats"}.`);
+      }
+      $(`#library-${key}`).value = browsing.library[key];
+    }
     $("#library-view-albums").onclick = () => { setView("albums"); $("#library-search").click(); };
     $("#library-view-tracks").onclick = () => { setView("tracks"); $("#library-search").click(); };
     $("#library-batch").onchange = () => {
       state.libraryBatch = Number($("#library-batch").value);
-      if (state.libraryView === "albums") searchAlbums();
+      $("#library-search").click();
     };
     $("#album-select-loaded").onclick = () => {
       loadedAlbums.forEach((album, key) => selectedAlbums.set(key, album)); updateAlbumSelection();
@@ -2005,13 +2128,24 @@ const views = {
       finally { button.disabled = false; }
     };
     setView(state.libraryView);
-    $("#library-search").onclick = () => {
-      if (state.libraryView === "albums") return searchAlbums(0);
+    const searchLibrary = (restore = false) => {
+      const request = ++librarySearch;
+      state.libraryDetail = false;
+      if (!restore) {
+        state.cancelScrollRestore = true;
+        browsing.scroll.library = 0;
+      }
       const filters = {
         query: $("#library-query").value, genre: $("#library-genre").value,
-        format: $("#library-format").value, status: $("#library-status").value, limit: 50,
+        format: $("#library-format").value, status: $("#library-status").value,
       };
-      return pagedTable($("#library-table"), offset => post("/api/tracks/page", {...filters, offset}),
+      browsing.library = {
+        ...filters, view: state.libraryView, batch: state.libraryBatch,
+        trackOffset: restore ? browsing.library.trackOffset : 0,
+      };
+      saveBrowsing();
+      if (state.libraryView === "albums") return searchAlbums();
+      return pagedTable($("#library-table"), offset => post("/api/tracks/page", {...filters, limit: 50, offset}),
         ["Select", "Artist", "Album", "Title", "Genre", "Format", "Status", "Path", "Listen / Metadata"],
         t => `<tr><td><input type="checkbox" data-select-track="${t.id}" aria-label="Select ${esc(t.title || t.path)}"></td>
           <td>${esc(t.artist)}</td><td>${esc(t.album)}</td><td>${esc(t.title)}</td>
@@ -2027,8 +2161,13 @@ const views = {
             selectTrack(Number(input.dataset.selectTrack), input.checked); updateSelection();
           });
           updateSelection();
+        }, {
+          offset: browsing.library.trackOffset,
+          current: () => request === librarySearch && state.libraryView === "tracks",
+          onOffset: offset => { browsing.library.trackOffset = offset; saveBrowsing(); },
         });
     };
+    $("#library-search").onclick = () => searchLibrary();
     const renderMetadataSearch = track => {
       const token = beginReview("track-lookup", "Look up track metadata");
       if (token === null) return;
@@ -2390,8 +2529,19 @@ const views = {
     $("#library-query").onkeydown = event => {
       if (event.key === "Enter") { event.preventDefault(); $("#library-search").click(); }
     };
-    await $("#library-search").onclick();
+    await searchLibrary(true);
     if (!el.isConnected) return;
+    state.loadBrowsingScroll = async target => {
+      if (state.libraryView !== "albums") return;
+      while (!state.cancelScrollRestore && el.isConnected && albumOffset < albumTotal &&
+          document.documentElement.scrollHeight - window.innerHeight < target) {
+        const previousOffset = albumOffset;
+        if (!await searchAlbums(true)) break;
+        if (albumOffset <= previousOffset) break;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+    };
+    state.resumeLibraryScroll = watchAlbumScroll;
     state.openLibraryReview = async (kind, jobId) => {
       const loaders = {rename: loadRenameReview, artwork: loadArtworkReview, trash: loadTrashReview,
         "bulk-lookup": loadBulkReview};
@@ -2619,7 +2769,11 @@ const views = {
         gaps.map(g => `<tr><td>${esc(g.artist)}</td><td>${esc(g.album)}</td><td>${g.missing.map(esc).join("<br>")}</td>
         <td><button class="action ghost" data-q="${esc(g.artist + " - " + g.album)}">Fetch via Usenet</button></td></tr>`).join("") + `</tbody></table>`;
       el.querySelectorAll("[data-q]").forEach(btn => {
-        btn.onclick = () => { state.tab = "usenet"; render(); $("#usenet-q").value = btn.dataset.q; $("#btn-usearch").click(); };
+        btn.onclick = async () => {
+          state.tab = "usenet"; await render();
+          if (state.currentTab !== "usenet") return;
+          $("#usenet-q").value = btn.dataset.q; $("#btn-usearch").click();
+        };
       });
       loadStats();
     };
@@ -2687,6 +2841,10 @@ const views = {
         <button class="action ghost i-del">Remove</button>
       </div></div>`;
     el.innerHTML = `
+      <div class="card"><h3>Workspace memory</h3>
+        <p>This browser remembers your tab, applied Library search and filters, view, batch size and browsing position.
+        Review drafts, file selections, playback and credentials are never included.</p>
+        <button type="button" class="action ghost" id="forget-browsing">Clear saved browsing</button></div>
       <div class="card"><h3>SABnzbd</h3>
         ${field("sabnzbd", "url", "URL (e.g. http://NAS_IP:8080)")}
         ${field("sabnzbd", "api_key", "API key", { secret: true })}
@@ -2730,6 +2888,7 @@ const views = {
       </div>
       <div class="row" style="margin-top:14px"><button class="action" id="set-save">Save settings</button>
         <span class="hint">Library: ${esc(s.library)} (change via MUSIC_DIR volume mapping)</span></div>`;
+    $("#forget-browsing").onclick = forgetBrowsing;
     const bindDel = () => el.querySelectorAll(".i-del").forEach(b => b.onclick = () => b.closest(".idx").remove());
     bindDel();
     $("#idx-add").onclick = () => {
@@ -2761,24 +2920,44 @@ const views = {
 };
 
 async function render() {
+  captureBrowsingPosition();
   if (!leaveLibraryReview()) { state.tab = "library"; return; }
+  const generation = state.renderGeneration = (state.renderGeneration || 0) + 1;
+  const tab = state.tab;
+  state.currentTab = tab;
+  state.rendering = true; state.restoringScroll = false; state.cancelScrollRestore = false;
+  state.loadBrowsingScroll = null; state.resumeLibraryScroll = null; state.libraryDetail = false;
+  browsing.tab = tab; saveBrowsing();
   state.libraryWorkspace = null;
   state.openLibraryReview = null;
   state.libraryObserver?.disconnect();
   try { await loadStats(); } catch (e) { toast(e.message, true); }
+  if (generation !== state.renderGeneration) return;
   const nav = $("#nav");
   nav.innerHTML = TABS.map(([id, label]) =>
-    `<button class="${state.tab === id ? "active" : ""}" ${state.tab === id ? 'aria-current="page"' : ""} data-tab="${id}">${label}</button>`).join("");
+    `<button class="${tab === id ? "active" : ""}" ${tab === id ? 'aria-current="page"' : ""} data-tab="${id}">${label}</button>`).join("");
   nav.querySelectorAll("[data-tab]").forEach(b => {
     b.onclick = () => { state.tab = b.dataset.tab; render(); };
   });
   const main = $("#main");
-  main.innerHTML = TABS.map(([id]) => `<section id="tab-${id}" class="${state.tab === id ? "active" : ""}"></section>`).join("");
-  const el = $(`#tab-${state.tab}`);
-  const tab = state.tab;
-  try { await views[state.tab](el); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-  el.insertAdjacentHTML("afterbegin", `<div class="page-heading"><h2>${esc(TABS.find(([id]) => id === tab)[1])}</h2><p>${esc(pageDescriptions[tab])}</p></div>`);
-  applyJobLocks(el);
+  main.innerHTML = TABS.map(([id, label]) => `<section id="tab-${id}" class="${tab === id ? "active" : ""}">
+    <div class="page-heading"><h2>${esc(label)}</h2><p>${esc(pageDescriptions[id])}</p></div>
+    <div data-view-content></div></section>`).join("");
+  const el = $(`#tab-${tab} [data-view-content]`);
+  try {
+    await views[tab](el);
+    if (!el.isConnected || generation !== state.renderGeneration) return;
+    applyJobLocks(el);
+    await restoreBrowsingPosition(generation);
+  } catch (e) {
+    if (!el.isConnected || generation !== state.renderGeneration) return;
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  } finally {
+    if (generation === state.renderGeneration) {
+      state.rendering = false;
+      state.resumeLibraryScroll?.();
+    }
+  }
 }
 async function watchActivity() {
   await refreshActivity();
@@ -2787,6 +2966,20 @@ async function watchActivity() {
 async function startDashboard() {
   updateThemeToggle();
   $("#theme-toggle").onclick = toggleTheme;
+  if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
+  loadBrowsing();
+  let scrollTimer;
+  window.addEventListener("scroll", () => {
+    if (state.rendering || state.restoringScroll) return;
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(() => { captureBrowsingPosition(); saveBrowsing(); }, 250);
+  }, {passive: true});
+  window.addEventListener("pagehide", () => {
+    clearTimeout(scrollTimer); captureBrowsingPosition(); saveBrowsing();
+  });
+  for (const event of ["wheel", "touchstart", "pointerdown", "keydown"]) {
+    window.addEventListener(event, () => { state.cancelScrollRestore = true; }, {passive: true});
+  }
   $("#activity-details").ontoggle = () => { if ($("#activity-details").open) refreshActivity(); };
   new MutationObserver(() => applyJobLocks($("#main"))).observe($("#main"), {childList: true, subtree: true});
   await refreshActivity();
