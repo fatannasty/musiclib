@@ -18,6 +18,8 @@ from musiclib.server.app import create_app
 
 @pytest.fixture(autouse=True)
 def _empty_itunes(monkeypatch):
+    monkeypatch.setattr("musiclib.metadata_review.search_deezer", lambda *args, **kwargs: [])
+    monkeypatch.setattr("musiclib.metadata_review.search_deezer_albums", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         "musiclib.metadata_review.httpx.get",
         lambda *args, **kwargs: httpx.Response(

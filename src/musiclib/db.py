@@ -132,6 +132,10 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
         self.albums_dirty = True
+        if "evidence" not in {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(dupe_groups)")
+        }:
+            self._conn.execute("ALTER TABLE dupe_groups ADD COLUMN evidence TEXT")
         deletion_columns = {
             row["name"] for row in self._conn.execute("PRAGMA table_info(deletions)")
         }

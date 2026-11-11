@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import lru_cache
 from typing import Callable, Dict, List, Optional
 
 from .config import Config
@@ -49,18 +50,40 @@ def compute_fingerprint(path: str, length: int = 90) -> Dict:
     return {"path": path, "fingerprint": ",".join(str(w) for w in words), "duration": duration}
 
 
-def similarity(fp_a: str, fp_b: str) -> float:
-    words_a = [int(w) for w in fp_a.split(",")]
-    words_b = [int(w) for w in fp_b.split(",")]
+@lru_cache(maxsize=2048)
+def _words(fingerprint: str) -> tuple:
+    return tuple(int(word) & 0xFFFFFFFF for word in fingerprint.split(",") if word)
+
+
+def similarity(fp_a: str, fp_b: str, minimum: float = 0.0) -> float:
+    words_a, words_b = _words(fp_a), _words(fp_b)
     if not words_a or not words_b:
+        return 0.0
+    if len(set(words_a)) < 4 or len(set(words_b)) < 4:
         return 0.0
     length = min(len(words_a), len(words_b))
     if length < 8:
         return 0.0
-    total_bits = 0
-    for i in range(length):
-        total_bits += _popcount(words_a[i] ^ words_b[i])
-    return 1.0 - (total_bits / (length * 32))
+    best = 0.0
+    offsets = [0] + [offset for shift in range(1, min(16, length // 5) + 1)
+                     for offset in (shift, -shift)]
+    for offset in offsets:
+        start_a, start_b = max(0, offset), max(0, -offset)
+        overlap = min(len(words_a) - start_a, len(words_b) - start_b)
+        if overlap < max(8, int(length * .8)):
+            continue
+        total_bits = 0
+        allowed_bits = (1 - max(best, minimum)) * overlap * 32 + 1e-9
+        for a, b in zip(words_a[start_a:start_a + overlap], words_b[start_b:start_b + overlap]):
+            total_bits += _popcount(a ^ b)
+            if total_bits > allowed_bits:
+                break
+        if total_bits > allowed_bits:
+            continue
+        best = max(best, 1.0 - total_bits / (overlap * 32))
+        if best == 1.0 or (minimum and best >= minimum):
+            break
+    return best
 
 
 def fingerprint_missing(config: Config, db: Database) -> List[Track]:
@@ -91,7 +114,7 @@ def compute_all(
                 if result["fingerprint"]:
                     db.update_track_columns(
                         track.id, fingerprint=result["fingerprint"],
-                        duration=result["duration"] or track.duration,
+                        duration=track.duration if track.duration is not None else result["duration"],
                     )
                     computed += 1
                 if progress:

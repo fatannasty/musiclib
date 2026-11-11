@@ -10,6 +10,19 @@ from musiclib.scanner import Scanner
 from musiclib.server.app import create_app
 
 
+def test_missing_selected_file_is_skipped_not_claimed_as_trashed(lib_env):
+    path = make_mp3(lib_env.library / "gone.mp3", tags={"title": "Gone"})
+    Scanner(lib_env.config, lib_env.db, workers=1).scan()
+    track = lib_env.db.all_tracks()[0]
+    os.unlink(path)
+    outcomes = []
+    report = Doctor(lib_env.config, lib_env.db).trash_tracks([track.id], outcome=outcomes.append)
+    assert report.trashed == 0
+    assert report.skipped == 1
+    assert outcomes[-1]["status"] == "skipped"
+    assert "already missing" in outcomes[-1]["reason"]
+
+
 def test_doctor_flags_low_bitrate_and_short_files(lib_env):
     env = lib_env
     make_mp3(

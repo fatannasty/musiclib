@@ -208,11 +208,17 @@ class Renamer:
     def apply_selected(
         self, preview: Dict[str, Any],
         progress: Optional[Callable[[str, int, int, str], None]] = None,
+        outcome: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         if preview["templates"] != {"album": self.template, "multidisc": self.template_multidisc}:
             raise ValueError("Organize templates changed. Create a new rename preview.")
         moves = [dict(move) for move in preview["moves"] if move["status"] == "ready"]
         errors, moved = [], 0
+        if outcome:
+            for move in preview["moves"]:
+                outcome({**move, "status": "pending" if move["status"] == "ready" else "skipped"})
+            for skipped in preview["skipped_files"]:
+                outcome({**skipped, "status": "skipped"})
         for index, move in enumerate(moves, start=1):
             if progress:
                 progress("Renaming reviewed files", index - 1, len(moves), move["source"])
@@ -240,12 +246,16 @@ class Renamer:
                         f"File moved to {move['target']}, but catalog update failed: {exc}. Run Scan."
                     ) from exc
                 move.update(status="done", reason="")
+                if outcome:
+                    outcome({**move, "status": "completed", "reason": "Moved to the reviewed destination."})
             except (OSError, ValueError, sqlite3.Error) as exc:
                 move.update(status="error", reason=str(exc))
                 errors.append({
                     "track_id": move["track_id"], "source": move["source"],
                     "target": move["target"], "error": str(exc),
                 })
+                if outcome:
+                    outcome({**move, "status": "failed", "error": str(exc)})
             if progress:
                 progress("Renaming reviewed files", index, len(moves), move["source"])
         return {
@@ -284,8 +294,20 @@ class Renamer:
     def apply(
         self, report: Optional[RenameReport] = None,
         progress: Optional[Callable[[str, int, int, str], None]] = None,
+        outcome: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> RenameReport:
         report = report or self.plan()
+        def record(move: MovePlan, status: str) -> None:
+            if outcome:
+                outcome({"track_id": move.track.id, "path": move.source, "target": move.target,
+                         "status": status, "reason": move.reason or (
+                             "Moved to destination." if status == "completed" else "Awaiting organization."),
+                         **({"error": move.reason} if status == "failed" else {})})
+        if outcome:
+            for path, reason in report.skipped:
+                outcome({"path": path, "status": "skipped", "reason": reason})
+        for move in report.moves:
+            record(move, "pending")
         pending = list(report.moves)
         while pending:
             progressed = False
@@ -303,6 +325,7 @@ class Renamer:
                         move.status = "conflict"
                         move.reason = "target occupied"
                         report.errors.append((move.source, "target occupied: " + move.target))
+                        record(move, "failed")
                         continue
                 try:
                     self._move(move.source, move.target)
@@ -315,6 +338,7 @@ class Renamer:
                     move.reason = str(exc)
                     report.errors.append((move.source, str(exc)))
                     progressed = True
+                record(move, "completed" if move.status == "done" else "failed")
             if not progressed:
                 for move in deferred:
                     if progress:
@@ -326,7 +350,10 @@ class Renamer:
                         move.status = "done"
                         report.moved += 1
                     except (OSError, sqlite3.Error) as exc:
+                        move.status = "error"
+                        move.reason = str(exc)
                         report.errors.append((move.source, str(exc)))
+                    record(move, "completed" if move.status == "done" else "failed")
                 break
             pending = deferred
         if progress:

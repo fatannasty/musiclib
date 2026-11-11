@@ -267,6 +267,7 @@ body.player-open #toast { bottom: 260px; }
 <aside class="activity" aria-label="Library activity">
   <div class="activity-heading"><h2>Activity</h2><span id="activity-lock" class="hint"></span></div>
   <div id="activity-current">Loading activity...</div>
+  <div id="activity-summary" role="status"></div>
   <div class="job-line"><p id="activity-notice" role="status"></p>
     <button class="action ghost" id="activity-dismiss" hidden>Dismiss notice</button></div>
   <details id="activity-details"><summary>Details, history and results</summary>
@@ -502,10 +503,14 @@ window.addEventListener("beforeunload", event => {
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const albumSourceOptions = selected => [
-  ["all", "Library + both catalogs"],
+  ["all", "Library + all three catalogs"],
   ["musicbrainz", "Library + MusicBrainz"],
   ["itunes", "Library + iTunes"],
+  ["deezer", "Library + Deezer"],
   ["library", "Your library only (offline)"],
+].map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("");
+const trackSourceOptions = selected => [
+  ["all", "All three catalogs"], ["musicbrainz", "MusicBrainz"], ["itunes", "iTunes"], ["deezer", "Deezer"],
 ].map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("");
 const fmtBytes = (b) => {
   if (b == null) return "-";
@@ -682,7 +687,13 @@ async function pollJob(id, label) {
   toast(`${label}: running...`);
   while (true) {
     const job = await api(`/api/jobs/${id}`);
-    if (job.status === "done") { await refreshActivity(); toast(`${label}: done`); return job; }
+    if (job.status === "done") {
+      await refreshActivity();
+      const failures = Math.max((job.outcomes?.failed || 0) + (job.outcomes?.stopped || 0),
+        job.summary?.failed || 0, job.summary?.errors || 0);
+      toast(failures ? `${label}: finished with ${failures} items needing attention. See Activity details.` : `${label}: done`, !!failures);
+      return job;
+    }
     if (job.status === "error") { await refreshActivity(); throw new Error(job.error); }
     if (job.status === "cancelled") {
       await refreshActivity();
@@ -745,13 +756,28 @@ async function collectPages(load) {
 function duplicateGroupMarkup(g, approved, scope) {
   const keep = g.members.find(m => m.id === g.keep_id);
   return `<div class="group" data-gid="${g.group_id}">
-    <div class="head"><label><input type="checkbox" data-approve="${g.group_id}" ${approved ? "checked" : ""}> Approve group</label>
-    <span>${esc(keep?.artist)} — ${esc(keep?.title)} · ${g.members.length} copies</span></div>
-    <div class="table-scroll"><table><thead><tr><th>Keep</th><th>Quality</th><th>Score</th><th>Path</th><th>Listen</th></tr></thead><tbody>${g.members.map(m =>
+    <div class="head"><label><input type="checkbox" data-approve="${g.group_id}" ${approved ? "checked" : ""}> Include this group for cleanup</label>
+    <span>${esc(keep?.artist)} — ${esc(keep?.title)} · ${g.members.length} possible copies</span></div>
+    <p class="hint">Choose one file to KEEP. All other files in this group will move to recoverable trash only if you include this group and confirm.</p>
+    <div class="table-scroll"><table><thead><tr><th>Keep</th><th>Planned action</th><th>Track / album</th><th>Quality / duration</th><th>Match evidence</th><th>Path</th><th>Listen</th></tr></thead><tbody>${g.members.map(m =>
       `<tr><td><input aria-label="Keep ${esc(m.path)}" type="radio" name="keep-${scope}-${g.group_id}" data-keep="${g.group_id}:${m.id}" ${m.id === g.keep_id ? "checked" : ""}></td>
-      <td>${esc(m.format)} ${esc(m.bitrate)} kbps</td><td>${esc(m.quality_score)}</td><td class="path">${esc(m.path)}</td><td>${playButton(m.id, m.title || m.path)}</td></tr>`
+      <td data-copy-action="${m.id}"><b>${m.id === g.keep_id ? "KEEP" : "Move to trash"}</b></td>
+      <td>${esc(m.artist)} — ${esc(m.title)}<p class="hint">${esc(m.album)}</p></td>
+      <td>${esc(m.format)} ${esc(m.bitrate)} kbps · ${m.duration == null ? "unknown duration" : `${Number(m.duration).toFixed(1)}s`}</td>
+      <td>${esc((m.evidence || []).join("; ") || "Previously found candidate — compare by listening")}</td>
+      <td class="path">${esc(m.path)}</td><td>${playButton(m.id, m.title || m.path)}</td></tr>`
     ).join("")}</tbody></table></div></div>`;
 }
+document.addEventListener("change", event => {
+  const radio = event.target.closest("[data-keep]");
+  if (!radio) return;
+  const keepId = Number(radio.dataset.keep.split(":")[1]);
+  radio.closest(".group").querySelectorAll("[data-copy-action]").forEach(cell => {
+    cell.textContent = Number(cell.dataset.copyAction) === keepId ? "KEEP" : "Move to trash";
+  });
+});
+const outcomeSummary = job => Object.entries(job.outcomes || {}).map(([status, count]) =>
+  `${count} ${status === "pending" ? "waiting" : status}`).join(" · ");
 async function showJobResults(job) {
   const container = $("#activity-results");
   $("#activity-details").open = true;
@@ -771,7 +797,7 @@ async function showJobResults(job) {
     "trash-preview": ["tracks"], "trash-reviewed": ["trashed", "errors"],
     "restore-preview": ["entries"], "restore-reviewed": ["restored", "errors", "scan_errors"],
   }[job.kind] || [];
-  container.querySelector(".sections").innerHTML = sections.map(([key, value]) =>
+  container.querySelector(".sections").innerHTML = job.outcomes ? "" : sections.map(([key, value]) =>
     `<span class="tag dim">${esc(friendlyLabel(key))}: ${esc(key === "reclaimed_bytes" ? fmtBytes(value) : value)}</span>`).join("") +
     lists.filter(key => job.summary?.[key] !== 0).map(key =>
       `<button class="action ghost" data-section="${key}">${esc(friendlyLabel(key))}</button>`).join("");
@@ -781,6 +807,52 @@ async function showJobResults(job) {
       offset => api(`/api/jobs/${job.id}/results/${button.dataset.section}?offset=${offset}`),
       ["File / item", "Outcome / details"], resultRow);
   });
+  if (job.outcomes) {
+    const outcomes = document.createElement("div");
+    outcomes.className = "row";
+    outcomes.innerHTML = `<span>${esc(outcomeSummary(job))}</span>
+      <label>Show <select data-outcome-filter aria-label="File outcome filter">
+      ${["", "completed", "failed", "skipped", "stopped", "pending"].filter(status => !status || job.outcomes[status]).map(status =>
+        `<option value="${status}">${status ? friendlyLabel(status) : "All file outcomes"}</option>`).join("")}</select></label>`;
+    const filter = outcomes.querySelector("[data-outcome-filter]");
+    let outcomeRequest = 0;
+    filter.onchange = () => {
+      const request = ++outcomeRequest, status = filter.value;
+      return pagedTable(container.querySelector(".results-page"),
+        offset => api(`/api/jobs/${job.id}/items?offset=${offset}&status=${status}`),
+        ["File", "Outcome / reason"], resultRow, () => {}, {
+          current: () => request === outcomeRequest,
+        });
+    };
+    container.querySelector(".sections").append(outcomes);
+    if ((job.outcomes.failed || job.outcomes.stopped) && !activeJob(job) && job.kind !== "restore-reviewed") {
+      const retry = document.createElement("button");
+      retry.className = "action ghost"; retry.textContent = "Review failed / unfinished files";
+      retry.onclick = async () => {
+        if (!leaveLibraryReview()) return;
+        try {
+          const selection = await api(`/api/jobs/${job.id}/retry-selection`);
+          state.retrySelection = selection;
+          state.libraryView = "tracks"; state.tab = "library";
+          await render();
+          toast(`${selection.tracks.length} files selected for a NEW review. Nothing was reapplied.${selection.unavailable ? ` ${selection.unavailable} unavailable files excluded.` : ""}`);
+        } catch (e) { toast(e.message, true); }
+      };
+      container.querySelector(".sections").append(retry);
+      if (job.kind === "duplicates") {
+        const discover = document.createElement("button");
+        discover.className = "action ghost"; discover.textContent = "Retry audio discovery (no files removed)";
+        discover.onclick = async () => {
+          try {
+            await runTask("duplicates", {fingerprint: true});
+            if (!leaveLibraryReview()) return;
+            state.tab = "dupes"; await render();
+          } catch (e) { toast(e.message, true); }
+        };
+        container.querySelector(".sections").append(discover);
+      }
+    }
+  }
   const reviewKinds = {
     "metadata-lookup": ["bulk-lookup", "Review suggestions"],
     "rename-preview": ["rename", "Review organization"],
@@ -813,8 +885,10 @@ async function showJobResults(job) {
     };
     container.querySelector(".sections").append(button);
   }
+  const outcomeFilter = container.querySelector("[data-outcome-filter]");
   const first = container.querySelector("[data-section]");
-  if (first) first.click();
+  if (outcomeFilter) outcomeFilter.onchange();
+  else if (first) first.click();
   else container.querySelector(".results-page").textContent = "No file-level details to display.";
 }
 function resultRow(item) {
@@ -829,7 +903,7 @@ function resultRow(item) {
       item.members ? `${item.members.length} duplicate copies` :
       item.candidates ? `${item.candidates.length} suggestions` : "See technical details");
   return `<tr><td class="path">${esc(file)}${item.target ? `<p>→ ${esc(item.target)}</p>` : ""}</td>
-    <td>${esc(detail)}<details><summary>Technical details</summary>
+    <td>${item.status ? `<b>${esc(friendlyLabel(item.status))}</b> · ` : ""}${esc(detail)}<details><summary>Technical details</summary>
     <pre class="path" style="white-space:pre-wrap">${esc(JSON.stringify(item, null, 2))}</pre></details></td></tr>`;
 }
 function renderCurrentJobs(activeJobs) {
@@ -881,6 +955,17 @@ async function refreshActivity() {
     if (request !== state.activityRequest) return;
     state.jobs = jobs;
     renderCurrentJobs(state.jobs.filter(activeJob));
+    const recent = state.jobs.find(job => !activeJob(job));
+    const summary = $("#activity-summary");
+    if (recent && !state.jobs.some(activeJob)) {
+      const line = outcomeSummary(recent) || recent.error ||
+        (recent.status === "cancelled" ? "Stopped. Completed changes remain." :
+          Object.entries(recent.summary || {}).filter(([, value]) => typeof value === "number").slice(0, 4)
+            .map(([key, value]) => `${value} ${friendlyLabel(key)}`).join(" · ") || "Complete");
+      summary.innerHTML = `<p>${esc(jobName(recent))}: ${esc(line)} ${recent.status === "done" || recent.outcomes ? '<button class="action ghost" data-recent-result>View details</button>' : ""}</p>`;
+      const details = summary.querySelector("[data-recent-result]");
+      if (details) details.onclick = () => showJobResults(recent);
+    } else summary.innerHTML = "";
     applyJobLocks();
     const failed = state.jobs.find(job => job.status === "error" && !state.dismissedErrors?.has(job.id));
     $("#activity-notice").textContent = failed ? `${jobName(failed)} failed: ${failed.error}` : "";
@@ -896,8 +981,8 @@ async function refreshActivity() {
       await pagedTable(history,
         async offset => ({ items: state.jobs.slice(offset, offset + 50), total: state.jobs.length }),
         ["Task", "Status", "Elapsed", "Result"],
-        job => `<tr><td>${esc(jobName(job))}</td><td>${esc(job.status === "cancelled" ? "Stopped" : friendlyLabel(job.status))}</td><td>${elapsed(job)}</td><td>${job.error ? esc(job.error) :
-          job.status === "done" ? `<button class="action ghost" data-result="${job.id}">View results</button>` :
+        job => `<tr><td>${esc(jobName(job))}${job.origin === "schedule" ? " (scheduled)" : ""}</td><td>${esc(job.status === "cancelled" ? "Stopped" : friendlyLabel(job.status))}</td><td>${elapsed(job)}</td><td>${job.error ? `<p>${esc(job.error)}</p>` : ""}${job.outcomes ? `<p>${esc(outcomeSummary(job))}</p>` : ""}${
+          job.status === "done" || job.outcomes ? `<button class="action ghost" data-result="${job.id}">View results</button>` :
           job.status === "cancelled" ? `Stopped at ${job.completed}${job.total == null ? "" : ` / ${job.total}`}. Completed changes remain.` :
           "In progress"}</td></tr>`,
         () => history.querySelectorAll("[data-result]").forEach(button => {
@@ -975,12 +1060,14 @@ const views = {
   },
 
   async dupes(el) {
+    const schedule = await api("/api/dupes/schedule");
     el.innerHTML = `<div class="row">
       <button class="action" id="btn-find" data-operation>Find duplicates</button>
       <button class="action danger" id="btn-apply" data-operation style="display:none">Trash copies in selected groups</button>
-      <label class="check"><input type="checkbox" id="opt-fingerprint"> compare audio fingerprints (slower)</label>
-      <span class="hint">Select groups to approve removal, then choose the keeper. Unselected groups are untouched.</span>
-    </div><div class="row">
+      <label class="check"><input type="checkbox" id="opt-fingerprint" checked> compare audio fingerprints (slower; finds differently tagged copies)</label>
+      <span class="hint">Choose the file to KEEP in each included group. Other copies move to recoverable trash; unselected groups are untouched.</span>
+    </div><p class="hint">${schedule.hours ? `Automatic discovery every ${schedule.hours === 24 ? "day" : "week"}; next due ${esc(new Date(schedule.next_run * 1000).toLocaleString())}.` : "Automatic discovery is off. Enable daily or weekly scans in Settings."}
+      Automatic runs only find candidates—never delete files. Review live, remix, and compilation versions carefully.</p><div class="row">
       <button class="action ghost" id="dupe-select-page">Select this page</button>
       <button class="action ghost" id="dupe-select-all">Select all groups</button>
       <button class="action ghost" id="dupe-clear">Clear selection</button>
@@ -996,7 +1083,9 @@ const views = {
     const reviewed = new Map();
     let currentGroups = [];
     const updateGroups = () => {
-      $("#dupe-selected").textContent = `${reviewed.size} groups selected; one keeper per group stays untouched`;
+      const copies = [...reviewed.values()].reduce((count, group) => count + group.members.length - 1, 0);
+      $("#dupe-selected").textContent = `${reviewed.size} keepers stay; ${copies} extra copies will move to recoverable trash`;
+      $("#btn-apply").textContent = `Move ${copies} extra copies to trash (keep ${reviewed.size})`;
       $("#btn-apply").style.display = reviewed.size ? "" : "none";
       el.querySelectorAll("[data-approve]").forEach(input => {
         input.checked = reviewed.has(Number(input.dataset.approve));
@@ -1065,7 +1154,8 @@ const views = {
       reviewed.clear(); $("#btn-apply").style.display = "none"; await drawDupes();
     };
     $("#btn-apply").onclick = async () => {
-      if (!reviewed.size || !confirm(`Trash copies in ${reviewed.size} selected groups? Keepers remain untouched.`)) return;
+      const copies = [...reviewed.values()].reduce((count, group) => count + group.members.length - 1, 0);
+      if (!reviewed.size || !confirm(`KEEP ${reviewed.size} chosen files and move ${copies} OTHER copies to recoverable trash? You can restore them in Recovery.`)) return;
       const body = { keep_ids: {}, member_ids: {}, snapshots: {}, group_ids: [...reviewed.keys()], hard_delete: false };
       reviewed.forEach(g => {
         body.keep_ids[g.group_id] = g.keep_id; body.member_ids[g.group_id] = g.members.map(m => m.id);
@@ -1228,7 +1318,9 @@ const views = {
       <details class="action-menu"><summary>Catalog lookup</summary><div class="menu-items">
         <button class="action ghost" id="metadata-album-bulk" data-lookup-operation>Find album matches</button>
         <button class="action ghost" id="metadata-lookup-bulk" data-lookup-operation>Look up each track</button>
-      </div></details><p class="hint">Up to 200 tracks per review; individual lookups up to 100. Preview before applying.</p></div>
+      </div></details><label>Track lookup source <select id="track-lookup-source">${trackSourceOptions("all")}</select></label>
+      <p class="hint">Up to 200 tracks per review; individual lookups up to 100. Preview before applying.</p></div>
+    <div id="retry-review-actions"></div>
     <div class="row" id="library-album-tools">
       <button class="action ghost" id="album-select-loaded">Select loaded albums</button>
       <button class="action ghost" id="album-clear">Clear album selection</button>
@@ -1532,16 +1624,19 @@ const views = {
         panel.innerHTML = `<div class="card"><h3>Review album duplicates</h3>
           <p>${groups.length} possible duplicate groups among ${targets.total} selected tracks.
           ${previewJob.summary.skipped || 0} bad or unavailable tracks excluded.
-          Listen, choose keepers, then approve groups. Only approved copies go to recoverable trash.</p>
+          Listen, choose the file to KEEP, then include groups for cleanup. The OTHER copies move to recoverable trash.</p>
           <div class="row"><button class="action ghost" data-dupe-select-all>Select all groups</button>
             <button class="action ghost" data-dupe-clear>Clear selection</button>
             <span class="hint" data-dupe-count role="status">0 groups selected</span></div>
           ${groups.map(g => duplicateGroupMarkup(g, false, "album")).join("")}
-          ${groups.length ? '<button class="action danger" data-dupe-apply data-operation>Trash approved copies</button>' :
+          ${groups.length ? '<button class="action danger" data-dupe-apply data-operation>Choose groups to clean up</button>' :
             '<p>No duplicates were found among these tracks. No files were changed.</p>'}
           <div data-dupe-status role="status"></div></div>`;
         const update = () => {
-          panel.querySelector("[data-dupe-count]").textContent = `${approved.size} groups selected`;
+          const copies = groups.filter(g => approved.has(g.group_id)).reduce((count, g) => count + g.members.length - 1, 0);
+          panel.querySelector("[data-dupe-count]").textContent = `${approved.size} keepers stay; ${copies} extra copies move to trash`;
+          const action = panel.querySelector("[data-dupe-apply]");
+          if (action) { action.disabled = !copies; action.textContent = `Keep ${approved.size} files; move ${copies} extra copies to trash`; }
           panel.querySelectorAll("[data-approve]").forEach(input => {
             input.checked = approved.has(Number(input.dataset.approve));
           });
@@ -1560,6 +1655,7 @@ const views = {
           groups.find(g => g.group_id === gid).keep_id = tid;
         });
         const apply = panel.querySelector("[data-dupe-apply]");
+        update();
         if (apply) apply.onclick = async () => {
           const chosen = groups.filter(g => approved.has(g.group_id));
           const copies = chosen.reduce((n, g) => n + g.members.length - 1, 0);
@@ -2173,12 +2269,13 @@ const views = {
       if (token === null) return;
       const searchPanel = el.querySelector("#metadata-search");
       el.querySelector("#metadata-review").innerHTML = "";
-      searchPanel.innerHTML = `<form class="card"><h3>Search MusicBrainz</h3>
+      searchPanel.innerHTML = `<form class="card"><h3>Search music catalogs</h3>
         <p class="path">${esc(track.path)}</p>
-        <p class="hint">Enter or correct a title or artist, even if the file has no tags. MusicBrainz and iTunes are queried together. Searching does not change your files.</p>
+        <p class="hint">Enter or correct a title or artist, even if the file has no tags. Compare MusicBrainz, iTunes, or Deezer suggestions. Scores are provider/search estimates, not proof of the same recording. Searching does not change files.</p>
         <div class="row">
           <label>Title <input type="text" name="title" value="${esc(track.title || "")}"></label>
           <label>Artist <input type="text" name="artist" value="${esc(track.artist || "")}"></label>
+          <label>Source <select name="source">${trackSourceOptions("all")}</select></label>
           <button type="submit" class="action" data-lookup-operation>Search catalogs</button>
         </div><p role="status" class="hint" data-search-status></p></form>`;
       const form = searchPanel.querySelector("form");
@@ -2194,10 +2291,10 @@ const views = {
         }
         submit.disabled = true;
         workspace.busy(token, true); workspace.stage(token, "preview");
-        status.textContent = "Searching MusicBrainz and iTunes… You can continue working in the library.";
+        status.textContent = "Searching selected catalogs… You can continue working in the library.";
         el.querySelector("#metadata-review").innerHTML = "";
         try {
-          const review = await post("/api/metadata/lookup", {track_id: track.id, title, artist});
+          const review = await post("/api/metadata/lookup", {track_id: track.id, title, artist, source: form.elements.namedItem("source").value});
           if (!workspace.owns(token)) return;
           status.textContent = "";
           workspace.stage(token, "confirm");
@@ -2517,7 +2614,7 @@ const views = {
       if (token === null) return;
       workspace.busy(token, true); workspace.stage(token, "preview");
       try {
-        const { job_id } = await post("/api/metadata/lookup-bulk", {track_ids: [...selectedTracks]});
+        const { job_id } = await post("/api/metadata/lookup-bulk", {track_ids: [...selectedTracks], source: $("#track-lookup-source").value});
         if (!workspace.owns(token)) return;
         rememberReview("bulk-lookup", job_id);
         await refreshActivity();
@@ -2554,6 +2651,29 @@ const views = {
       finally { workspace.busy(token, false); }
     };
     if (savedReview?.jobId) await state.openLibraryReview(savedReview.kind, savedReview.jobId);
+    if (state.retrySelection) {
+      const retry = state.retrySelection;
+      state.retrySelection = null;
+      retry.tracks.forEach(track => selectedTracks.add(track.id));
+      updateSelection();
+      const actions = $("#retry-review-actions");
+      actions.innerHTML = `<div class="card"><h3>Fresh review of failed / unfinished files</h3>
+        <p>${retry.tracks.length} files selected. Previous approvals and field choices were NOT reused. Check current file state; nothing is automatically applied.</p>
+        <details><summary>Files included in this new review</summary>${retry.tracks.map(track => `<p class="path">${esc(track.path)}</p>`).join("")}</details>
+        <button class="action ghost" data-retry-rename data-operation>New organization preview</button>
+        <button class="action ghost" data-retry-dupes data-operation>New duplicate comparison</button>
+        <button class="action ghost" data-retry-trash data-operation>New recoverable trash preview</button>
+        <p class="hint">For metadata, choose a source above and Look up each track again. For artwork, open the album and upload a new reviewed image.</p></div>`;
+      actions.querySelector("[data-retry-rename]").onclick = () => previewOrganization([...selectedTracks]);
+      actions.querySelector("[data-retry-dupes]").onclick = () => reviewAlbumDuplicates([...selectedTracks]);
+      const trash = actions.querySelector("[data-retry-trash]");
+      trash.hidden = retry.kind.includes("duplicate");
+      trash.onclick = async () => {
+        const {job_id} = await post("/api/trash/preview-selected", {track_ids: [...selectedTracks]});
+        await pollJob(job_id, "New trash preview");
+        await state.openLibraryReview("trash", job_id);
+      };
+    }
   },
 
   async recovery(el) {
@@ -2865,6 +2985,7 @@ const views = {
         <p class="hint">Applies to album and track metadata searches. Normally, address-related connection failures
         automatically retry once over IPv4. Enable this if IPv6 is unreliable on the NAS. Proxy settings and TLS verification are preserved.</p>
         <p class="hint">Library-only searches and manual tag edits work offline. Changing providers cannot repair a disconnected NAS.</p>
+        <p class="hint">Deezer is an additional public album/track catalog; regional availability and network access may limit results. Catalog suggestions never prove that two local files contain identical audio.</p>
       </div>
       <div class="card" style="margin-top:14px"><h3>Organize</h3>
         ${field("organize", "template", "Filename template")}
@@ -2878,7 +2999,13 @@ const views = {
         ${field("doctor", "min_duration", "Minimum duration (seconds)")}
         ${field("doctor", "deep_decode", "Deep decode with ffmpeg")}
         ${field("duplicates", "duration_tolerance", "Duplicate duration tolerance (seconds)")}
-        ${field("duplicates", "strategy", "Duplicate strategy (hash | tags | fingerprint)")}
+        <label>Duplicate detection <select id="set-duplicates-strategy">
+          ${[["tags", "Tags + exact files"], ["fingerprint", "Audio + tags + exact files"], ["hash", "Exact files only"]].map(([value, label]) => `<option value="${value}" ${s.duplicates.strategy === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+        <label>Automatic duplicate discovery <select id="set-duplicates-schedule_hours">
+          ${[[0, "Off"], [24, "Daily"], [168, "Weekly"]].map(([value, label]) => `<option value="${value}" ${s.duplicates.schedule_hours === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+        ${field("duplicates", "schedule_fingerprint", "Include audio fingerprints in scheduled discovery (slower)")}
+        <p class="hint">Opt-in, runs inside Musiclib while the NAS app is running. First run occurs one interval after enabling.
+          Refreshes the catalog, finds candidates, and reports in Activity. Never trashes files automatically. Busy jobs defer the run; Stop cancels only the current run. Set Off to disable future runs.</p>
       </div>
       <div class="card" style="margin-top:14px"><h3>Cover art</h3>
         ${field("artwork", "embed", "Embed art in files")}

@@ -413,3 +413,31 @@ test("human-readable results escape filenames and keep raw data collapsed", () =
   assert.doesNotMatch(row, /<script>|<details open/);
   assert.doesNotThrow(() => context.resultRow({fields: {album: "Album"}}));
 });
+
+test("duplicate review explicitly separates keeper and other copies with escaped evidence", () => {
+  const {context} = dashboard();
+  const markup = context.duplicateGroupMarkup({
+    group_id: 1, keep_id: 10, members: [
+      {id: 10, path: "/music/keeper.flac", artist: "Artist", title: "Song", duration: 180,
+        format: "flac", evidence: ["Recommended keeper"]},
+      {id: 11, path: "/music/<copy>.mp3", title: "Song", duration: 181, album: "Compilation",
+        format: "mp3", evidence: ["Same title <not proof>"]},
+    ],
+  }, false, "test");
+  assert.match(markup, /KEEP/);
+  assert.match(markup, /Move to trash/);
+  assert.match(markup, /Include this group for cleanup/);
+  assert.match(markup, /Compilation/);
+  assert.match(markup, /Same title &lt;not proof&gt;/);
+  assert.doesNotMatch(markup, /Trash approved copies|<copy>|data-approve="1" checked/);
+});
+
+test("file outcome summaries distinguish unfinished files from completed changes", () => {
+  const {context, run} = dashboard();
+  assert.equal(run("outcomeSummary({outcomes: {completed: 2, skipped: 1, failed: 1, stopped: 3}})"),
+    "2 completed · 1 skipped · 1 failed · 3 stopped");
+  const row = context.resultRow({status: "stopped", path: "/music/untouched.mp3",
+    reason: "Check current state before retrying."});
+  assert.match(row, /Stopped/);
+  assert.match(row, /Check current state before retrying/);
+});

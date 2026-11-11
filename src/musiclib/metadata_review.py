@@ -24,7 +24,8 @@ from .scanner import Scanner, ScanReport, file_hash, scan_worker
 CAA_FRONT = "https://coverartarchive.org/release/{mbid}/front-250"
 ITUNES_SEARCH = "https://itunes.apple.com/search"
 logger = logging.getLogger(__name__)
-ALBUM_SOURCES = ("all", "musicbrainz", "itunes", "library")
+ALBUM_SOURCES = ("all", "musicbrainz", "itunes", "deezer", "library")
+TRACK_SOURCES = ("all", "musicbrainz", "itunes", "deezer")
 
 EDITABLE_FIELDS = (
     "title", "artist", "album", "album_artist", "year",
@@ -232,6 +233,69 @@ def search_musicbrainz(
     ]
 
 
+def _deezer_search(query: str, albums: bool, ipv4_only: bool) -> List[Dict[str, Any]]:
+    try:
+        response = catalog_get(
+            "https://api.deezer.com/search/album" if albums else "https://api.deezer.com/search",
+            params={"q": query, "limit": 6}, headers={"User-Agent": "musiclib/0.1"},
+            timeout=4.0, ipv4_only=ipv4_only,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"Deezer lookup failed: {catalog_error(exc)}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        error = payload.get("error", {}).get("message") if isinstance(payload, dict) and isinstance(payload.get("error"), dict) else None
+        raise RuntimeError(f"Deezer returned an unexpected response{': ' + str(error) if error else '.'}")
+    return _dict_list(payload["data"])
+
+
+def _deezer_candidate(item: Dict[str, Any], albums: bool) -> Optional[Dict[str, Any]]:
+    album = item if albums else item.get("album")
+    artist = item.get("artist")
+    if not isinstance(album, dict) or not isinstance(artist, dict):
+        return None
+    title, owner = item.get("title"), artist.get("name")
+    if not isinstance(title, str) or not title or not isinstance(owner, str) or not owner:
+        return None
+    fields = {
+        "album": album.get("title") if isinstance(album.get("title"), str) else None,
+        "album_artist": owner if albums else None, "artist": owner, "year": None, "genre": None,
+        "mbid_release": None,
+    }
+    if not albums:
+        fields.update(title=title, track_no=None, disc_no=None, mbid_track=None)
+    cover = album.get("cover_medium")
+    link = item.get("link")
+    return {
+        "source": "Deezer", "confidence": 70, "fields": fields,
+        "source_url": link if isinstance(link, str) and link.startswith("https://www.deezer.com/") else None,
+        "cover_url": cover if isinstance(cover, str) and cover.startswith("https://") else None,
+        "cover_fallback": None, "recording_mbid": None, "release_mbid": None,
+    }
+
+
+def _deezer_query(artist: str, title: str, albums: bool) -> str:
+    # Keep user text inside quoted terms rather than accepting catalog query operators.
+    def clean(text: str) -> str:
+        return text.replace("\\", " ").replace('"', " ").strip()
+    return " ".join(
+        f'{field}:"{clean(value)}"' for field, value in (
+            ("artist", artist), ("album" if albums else "track", title),
+        ) if clean(value)
+    )
+
+
+def search_deezer(title: str, artist: str, track: Any, ipv4_only: bool = False) -> List[Dict[str, Any]]:
+    return [candidate for item in _deezer_search(_deezer_query(artist, title, False), False, ipv4_only)
+            if (candidate := _deezer_candidate(item, False))]
+
+
+def search_deezer_albums(artist: str, album: str, ipv4_only: bool = False) -> List[Dict[str, Any]]:
+    return [candidate for item in _deezer_search(_deezer_query(artist, album, True), True, ipv4_only)
+            if (candidate := _deezer_candidate(item, True))]
+
+
 def _merge_candidates(
     musicbrainz: List[Dict[str, Any]], itunes: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
@@ -259,35 +323,40 @@ def lookup_track(
     track: Any, title: Optional[str] = None, artist: Optional[str] = None,
     warnings: Optional[List[str]] = None,
     ipv4_only: bool = False,
+    source: str = "all",
 ) -> List[Dict[str, Any]]:
     search_title = ((track.title if title is None else title) or "").strip()
     search_artist = ((track.artist if artist is None else artist) or "").strip()
     if not search_title and not search_artist:
         raise ValueError("Enter a title or artist to search. File tags are unchanged.")
+    if source not in TRACK_SOURCES:
+        raise ValueError("Choose all catalogs, MusicBrainz, iTunes, or Deezer.")
     errors = []
     musicbrainz_hits: List[Dict[str, Any]] = []
     itunes_hits: List[Dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    deezer_hits: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=3) as pool:
         options = {"ipv4_only": True} if ipv4_only else {}
-        musicbrainz_future = pool.submit(search_musicbrainz, search_title, search_artist, track, **options)
-        itunes_future = pool.submit(search_itunes, search_title, search_artist, track, **options)
-        try:
-            musicbrainz_hits = musicbrainz_future.result()
-        except RuntimeError as exc:
-            errors.append(str(exc))
-        try:
-            itunes_hits = itunes_future.result()
-        except RuntimeError as exc:
-            errors.append(str(exc))
+        providers = {"musicbrainz": search_musicbrainz, "itunes": search_itunes, "deezer": search_deezer}
+        futures = {name: pool.submit(provider, search_title, search_artist, track, **options)
+                   for name, provider in providers.items() if source in ("all", name)}
+        hits = {}
+        for name, future in futures.items():
+            try:
+                hits[name] = future.result()
+            except RuntimeError as exc:
+                errors.append(str(exc))
+        musicbrainz_hits, itunes_hits, deezer_hits = (hits.get(name, []) for name in providers)
     for error in errors:
         logger.warning("%s", error)
     if warnings is not None:
         warnings.extend(errors)
-    if not musicbrainz_hits and not itunes_hits:
+    if not musicbrainz_hits and not itunes_hits and not deezer_hits:
         if errors:
             raise RuntimeError("; ".join(errors))
         return []
-    return _merge_candidates(musicbrainz_hits, itunes_hits)
+    return sorted([*_merge_candidates(musicbrainz_hits, itunes_hits), *deezer_hits],
+                  key=lambda item: item["confidence"], reverse=True)
 
 
 def write_audio_tags(
@@ -429,7 +498,8 @@ class MetadataReview:
         )
 
     def propose(
-        self, track_id: int, title: Optional[str] = None, artist: Optional[str] = None
+        self, track_id: int, title: Optional[str] = None, artist: Optional[str] = None,
+        source: str = "all",
     ) -> Dict[str, Any]:
         track = self.db.get_track(track_id)
         if track is None or track.status == "deleted":
@@ -439,9 +509,11 @@ class MetadataReview:
         if not os.path.isfile(track.path):
             raise ValueError("Track file is missing from disk.")
         warnings: List[str] = []
+        options = {"source": source} if source != "all" else {}
         candidates = lookup_track(
             track, title=title, artist=artist, warnings=warnings,
             ipv4_only=bool(self.config.catalog.get("ipv4_only", False)),
+            **options,
         )
         return {**self._save_review(track, candidates), "warnings": warnings}
 
@@ -554,7 +626,7 @@ class MetadataReview:
 
         candidates = json.loads(row["candidates"])
         if candidate_index < 0 or candidate_index >= len(candidates):
-            raise ValueError("Selected MusicBrainz candidate is unavailable.")
+            raise ValueError("Selected catalog candidate is unavailable.")
         candidate = candidates[candidate_index]
         tags_to_write = {
             TAG_KEYS[field]: candidate["fields"].get(field)
@@ -599,7 +671,7 @@ class MetadataReview:
     ) -> Dict[str, Any]:
         source = self.config.catalog.get("album_source", "all") if source is None else source
         if source not in ALBUM_SOURCES:
-            raise ValueError("Choose all catalogs, MusicBrainz, iTunes, or your library only.")
+            raise ValueError("Choose all catalogs, MusicBrainz, iTunes, Deezer, or your library only.")
         tracks = self._tracks_for_album(track_ids)
         album_guess = (album or "").strip() or _most_common([track.album for track in tracks]) or ""
         artist_guess = (
@@ -656,6 +728,8 @@ class MetadataReview:
             providers.append(search_musicbrainz_releases)
         if source in ("all", "itunes"):
             providers.append(search_itunes_albums)
+        if source in ("all", "deezer"):
+            providers.append(search_deezer_albums)
         if providers:
             with ThreadPoolExecutor(max_workers=len(providers)) as pool:
                 options = {"ipv4_only": True} if self.config.catalog.get("ipv4_only", False) else {}
@@ -693,6 +767,7 @@ class MetadataReview:
         rename: bool = False,
         snapshots: Optional[Dict[int, Tuple[str, str]]] = None,
         progress: Optional[Callable[..., None]] = None,
+        outcome: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         if not fields or set(fields) - set(ALBUM_FIELDS):
             raise ValueError("Select one or more album fields to apply.")
@@ -707,12 +782,19 @@ class MetadataReview:
         if not tags_to_write:
             raise ValueError("The selected album has no values for the chosen fields.")
         applied, errors = [], []
+        if outcome:
+            for track_id in track_ids:
+                track = self.db.get_track(track_id)
+                outcome({"track_id": track_id, "path": track.path if track else "",
+                         "status": "pending", "reason": "Awaiting reviewed album tags."})
         for index, track_id in enumerate(track_ids):
             if progress:
                 progress("Applying album tags", index, len(track_ids), str(track_id))
             track = self.db.get_track(track_id)
             if track is None or track.status == "deleted":
                 errors.append({"track_id": track_id, "error": "Track is not available."})
+                if outcome:
+                    outcome({"track_id": track_id, "status": "failed", "error": "Track is not available."})
                 continue
             try:
                 if not is_inside(track.path, self.config.library):
@@ -728,8 +810,12 @@ class MetadataReview:
                 result = write_audio_tags(Path(track.path), tags_to_write)
                 Scanner(self.config, self.db)._store_result(result, ScanReport(), row_exists=True)
                 applied.append({"track_id": track.id, "path": track.path})
+                if outcome:
+                    outcome({"track_id": track.id, "path": track.path, "status": "completed", "reason": "Saved reviewed album tags."})
             except (ValueError, OSError, mutagen.MutagenError) as exc:
                 errors.append({"track_id": track.id, "path": track.path, "error": str(exc)})
+                if outcome:
+                    outcome({"track_id": track.id, "path": track.path, "status": "failed", "error": str(exc)})
         renamed, rename_errors = 0, []
         if rename and applied:
             from .rename import Renamer
@@ -737,6 +823,7 @@ class MetadataReview:
             selected = [track for track in selected if track is not None]
             report = Renamer(self.config, self.db).apply(
                 Renamer(self.config, self.db).plan(selected, progress=progress), progress=progress,
+                outcome=outcome,
             )
             renamed = report.moved
             rename_errors = [{"path": path, "error": reason} for path, reason in report.errors]

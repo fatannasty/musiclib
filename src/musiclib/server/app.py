@@ -34,6 +34,7 @@ from ..restore_review import RestoreReview
 from ..scanner import Scanner, file_hash
 from ..trash_review import TrashReview
 from ..usenet import Sabnzbd, SabnzbdError, search_all
+from .duplicate_schedule import DuplicateSchedule
 from .jobs import JobRegistry
 from .playback import MEDIA_TYPES, Playback
 
@@ -99,6 +100,7 @@ class MetadataLookupBody(BaseModel):
     track_id: int
     title: Optional[str] = None
     artist: Optional[str] = None
+    source: Literal["all", "musicbrainz", "itunes", "deezer"] = "all"
 
 
 class MetadataApplyBody(BaseModel):
@@ -109,6 +111,7 @@ class MetadataApplyBody(BaseModel):
 
 class MetadataBulkLookupBody(BaseModel):
     track_ids: List[int]
+    source: Literal["all", "musicbrainz", "itunes", "deezer"] = "all"
 
 
 class MetadataBulkApplyBody(BaseModel):
@@ -124,7 +127,7 @@ class AlbumSuggestBody(BaseModel):
     track_ids: List[int]
     album: Optional[str] = None
     artist: Optional[str] = None
-    source: Optional[Literal["all", "musicbrainz", "itunes", "library"]] = None
+    source: Optional[Literal["all", "musicbrainz", "itunes", "deezer", "library"]] = None
 
 
 class SelectedDuplicatesBody(BaseModel):
@@ -284,11 +287,12 @@ def create_app(config: Config) -> FastAPI:
         report = doc.check(
             deep=body.deep, apply_actions=body.apply, hard_delete=body.hard_delete,
             progress_state=jobs.update,
+            outcome=jobs.outcome,
         )
         return {
             "checked": report.checked, "bad": report.bad, "suspect": report.suspect,
             "trashed": report.trashed, "deleted": report.deleted,
-            "failed": report.failed, "results": report.results, "failures": report.failures,
+            "failed": report.failed, "skipped": report.skipped, "results": report.results, "failures": report.failures,
         }
 
     @app.get("/api/issues")
@@ -322,8 +326,10 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(400, "Select distinct files to trash.")
 
         def run(job: Dict[str, Any]) -> Dict[str, Any]:
-            result: Dict[str, Any] = {"trashed": 0, "deleted": 0, "failed": 0, "failures": []}
+            result: Dict[str, Any] = {"trashed": 0, "deleted": 0, "failed": 0, "skipped": 0, "failures": []}
             total = len(body.track_ids)
+            jobs.plan([{"track_id": track_id, "path": track.path if (track := db.get_track(track_id)) else "",
+                        "reason": "Awaiting selected cleanup."} for track_id in body.track_ids])
             for offset in range(0, total, 200):
                 jobs.check_cancelled()
                 report = Doctor(config, db).trash_tracks(
@@ -331,8 +337,9 @@ def create_app(config: Config) -> FastAPI:
                     progress_state=lambda phase, done, count, current, base=offset: jobs.update(
                         phase, base + done, total, current,
                     ),
+                    outcome=jobs.outcome,
                 )
-                for key in ("trashed", "deleted", "failed"):
+                for key in ("trashed", "deleted", "failed", "skipped"):
                     result[key] += getattr(report, key)
                 result["failures"].extend(report.failures)
             return result
@@ -352,6 +359,8 @@ def create_app(config: Config) -> FastAPI:
                         "bitrate": member.track.bitrate, "bit_depth": member.track.bit_depth,
                         "quality_score": member.score,
                         "file_hash": member.track.file_hash,
+                        "duration": member.track.duration,
+                        "evidence": member.evidence,
                     }
                     for member in group.members
                 ],
@@ -362,7 +371,9 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/dupes/find")
     @jobs.operation
     def dupes_find(body: ApplyBody) -> List[Dict[str, Any]]:
-        fingerprint = body.fingerprint or body.strategy == "fingerprint"
+        fingerprint = body.fingerprint or (
+            body.strategy or config.duplicates.get("strategy", "tags")
+        ) == "fingerprint"
         if fingerprint:
             if not fpcalc_available():
                 raise HTTPException(400, "fpcalc is not installed; audio fingerprints cannot be generated.")
@@ -375,16 +386,38 @@ def create_app(config: Config) -> FastAPI:
                 ),
             )
             if computed != len(missing):
-                raise HTTPException(
-                    400, f"Could not fingerprint {len(missing) - computed} files. "
-                    "Check these files with Bad Files before retrying; no duplicates were removed.",
-                )
+                for track in missing:
+                    if not db.get_track(track.id).fingerprint:
+                        jobs.outcome({
+                            "track_id": track.id, "path": track.path, "status": "failed",
+                            "reason": "Audio comparison unavailable for this file. Tags and exact hashes were still compared.",
+                            "error": "Could not generate an audio fingerprint. Check the file in Bad Files before retrying.",
+                        })
         jobs.update("Comparing duplicates")
         groups = DuplicateFinder(config, db).find(
             strategy=body.strategy, fingerprint_pass=fingerprint,
             progress_state=jobs.update,
         )
         return serialize_dupe_groups(groups)
+
+    def scheduled_duplicates(job: Dict[str, Any]) -> Dict[str, Any]:
+        run_scan(ScanBody())
+        audio = bool(config.duplicates.get("schedule_fingerprint", True))
+        return {"groups": dupes_find(ApplyBody(
+            strategy="fingerprint" if audio else (
+                "hash" if config.duplicates.get("strategy") == "hash" else "tags"
+            ),
+        ))}
+
+    schedule = DuplicateSchedule(config, db, jobs, scheduled_duplicates)
+
+    @app.on_event("startup")
+    def start_schedule() -> None:
+        schedule.start()
+
+    @app.get("/api/dupes/schedule")
+    def duplicate_schedule_status() -> Dict[str, Any]:
+        return schedule.status()
 
     @app.get("/api/dupes")
     def dupes_list() -> List[Dict[str, Any]]:
@@ -430,6 +463,7 @@ def create_app(config: Config) -> FastAPI:
             report = finder.apply(
                 groups, hard_delete=body.hard_delete, keep_ids=body.keep_ids,
                 progress_state=jobs.update,
+                outcome=jobs.outcome,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -451,7 +485,8 @@ def create_app(config: Config) -> FastAPI:
             group = finder.manual_group(body.track_ids, body.keep_id)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        report = finder.apply([group], hard_delete=body.hard_delete, progress_state=jobs.update)
+        report = finder.apply([group], hard_delete=body.hard_delete, progress_state=jobs.update,
+                              outcome=jobs.outcome)
         return {
             "trashed": report.trashed, "deleted": report.deleted,
             "reclaimed_bytes": report.reclaimed_bytes,
@@ -481,7 +516,7 @@ def create_app(config: Config) -> FastAPI:
             selected = selected_tracks(body.track_ids)
             tracks = [track for track in selected if track.status in ("ok", "suspect")]
             groups = DuplicateFinder(config, db).find(
-                tracks=tracks, persist=False, progress_state=jobs.update,
+                tracks=tracks, persist=False, progress_state=jobs.update, fingerprint_pass=True,
             )
             return {
                 "groups": serialize_dupe_groups(groups),
@@ -519,7 +554,7 @@ def create_app(config: Config) -> FastAPI:
                     raise ValueError("Files changed since duplicate review. Scan and review again.")
             finder = DuplicateFinder(config, db)
             groups = [finder.manual_group(group.track_ids, group.keep_id) for group in body.groups]
-            report = finder.apply(groups, progress_state=jobs.update)
+            report = finder.apply(groups, progress_state=jobs.update, outcome=jobs.outcome)
             return {
                 "trashed": report.trashed, "failed": len(report.failures), "failures": report.failures,
                 "remaining_ids": [
@@ -557,7 +592,7 @@ def create_app(config: Config) -> FastAPI:
     def metadata_lookup(body: MetadataLookupBody) -> Dict[str, Any]:
         try:
             return MetadataReview(config, db).propose(
-                body.track_id, title=body.title, artist=body.artist
+                body.track_id, title=body.title, artist=body.artist, source=body.source,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -585,12 +620,19 @@ def create_app(config: Config) -> FastAPI:
             reviewer = MetadataReview(config, db)
             reviews, errors = [], []
             total = len(body.track_ids)
+            jobs.plan([{"track_id": track_id, "path": track.path if (track := db.get_track(track_id)) else "",
+                        "reason": "Awaiting metadata search."} for track_id in body.track_ids])
             for index, track_id in enumerate(body.track_ids):
                 jobs.update("Looking up catalog suggestions", index, total, str(track_id))
                 try:
-                    reviews.append(reviewer.propose(track_id))
+                    review = reviewer.propose(track_id, source=body.source)
+                    reviews.append(review)
+                    jobs.outcome({"track_id": track_id,
+                                  "status": "completed" if review["candidates"] else "skipped",
+                                  "reason": f"{len(review['candidates'])} suggestions found. No tags changed."})
                 except (ValueError, RuntimeError, OSError) as exc:
                     errors.append({"track_id": track_id, "error": str(exc)})
+                    jobs.outcome({"track_id": track_id, "status": "failed", "error": str(exc)})
                 jobs.update("Looking up catalog suggestions", index + 1, total, str(track_id))
             return {"reviews": reviews, "errors": errors}
 
@@ -615,6 +657,13 @@ def create_app(config: Config) -> FastAPI:
             reviewer = MetadataReview(config, db)
             applied, errors = [], []
             total = len(body.reviews)
+            snapshots = {}
+            for review in body.reviews:
+                row = db.query_one("SELECT track_id,path FROM metadata_reviews WHERE id=?", (review.review_id,))
+                if row:
+                    snapshots[review.review_id] = dict(row)
+            jobs.plan([{"review_id": review.review_id, **snapshots[review.review_id]}
+                       for review in body.reviews if review.review_id in snapshots])
             for index, review in enumerate(body.reviews):
                 jobs.update("Applying reviewed metadata", index, total, str(review.review_id))
                 try:
@@ -622,8 +671,11 @@ def create_app(config: Config) -> FastAPI:
                         review.review_id, review.candidate_index, review.fields
                     )
                     applied.append({"review_id": review.review_id, **result})
+                    jobs.outcome({**result, "status": "completed", "reason": "Saved reviewed metadata."})
                 except (ValueError, RuntimeError, OSError, MutagenError) as exc:
                     errors.append({"review_id": review.review_id, "error": str(exc)})
+                    if review.review_id in snapshots:
+                        jobs.outcome({**snapshots[review.review_id], "status": "failed", "error": str(exc)})
                 jobs.update("Applying reviewed metadata", index + 1, total, str(review.review_id))
             return {"applied": applied, "errors": errors}
 
@@ -709,6 +761,7 @@ def create_app(config: Config) -> FastAPI:
             result = MetadataReview(config, db).apply_album(
                 body.track_ids, body.fields, body.values, rename=body.rename, snapshots=snapshots,
                 progress=jobs.update,
+                outcome=jobs.outcome,
             )
             jobs.update("Applying album tags", len(body.track_ids), len(body.track_ids))
             return result
@@ -894,7 +947,7 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         return {"job_id": jobs.start(
             "restore-reviewed",
-            lambda job: RestoreReview(config, db).apply(preview["review_id"], progress=jobs.update),
+            lambda job: RestoreReview(config, db).apply(preview["review_id"], progress=jobs.update, outcome=jobs.outcome),
         )}
 
     @app.post("/api/trash/preview-selected")
@@ -930,7 +983,7 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         return {"job_id": jobs.start(
             "trash-reviewed",
-            lambda job: TrashReview(config, db).apply(preview["review_id"], progress=jobs.update),
+            lambda job: TrashReview(config, db).apply(preview["review_id"], progress=jobs.update, outcome=jobs.outcome),
         )}
 
     @app.post("/api/rename")
@@ -941,7 +994,7 @@ def create_app(config: Config) -> FastAPI:
         report = renamer.plan(progress=jobs.update)
         if body.apply:
             jobs.update("Moving and renaming files")
-            report = renamer.apply(report, progress=jobs.update)
+            report = renamer.apply(report, progress=jobs.update, outcome=jobs.outcome)
         return {
             "applied": body.apply, "to_move": len(report.moves),
             "moved": report.moved, "already_ok": report.already_ok,
@@ -974,7 +1027,7 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(400, "This preview has no files ready to rename.")
         return {"job_id": jobs.start(
             "rename-reviewed",
-            lambda job: Renamer(config, db).apply_selected(preview, progress=jobs.update),
+            lambda job: Renamer(config, db).apply_selected(preview, progress=jobs.update, outcome=jobs.outcome),
         )}
 
     @app.get("/api/albums")
@@ -1045,7 +1098,7 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(400, "This artwork preview was already used. Create a fresh preview.")
         return {"job_id": jobs.start(
             "artwork-reviewed",
-            lambda job: ArtworkReview(config, db).apply(preview["review_id"], progress=jobs.update),
+            lambda job: ArtworkReview(config, db).apply(preview["review_id"], progress=jobs.update, outcome=jobs.outcome),
         )}
 
     @app.post("/api/art")
@@ -1178,6 +1231,21 @@ def create_app(config: Config) -> FastAPI:
             updates[section] = merged
         if "catalog" in updates and updates["catalog"].get("album_source", "all") not in ALBUM_SOURCES:
             raise HTTPException(400, "Choose a valid default album lookup source.")
+        if "duplicates" in updates:
+            duplicate_settings = updates["duplicates"]
+            if duplicate_settings.get("schedule_hours", 0) not in (0, 24, 168):
+                raise HTTPException(400, "Choose disabled, daily (24 hours), or weekly (168 hours) discovery.")
+            if duplicate_settings.get("strategy") not in ("hash", "tags", "fingerprint"):
+                raise HTTPException(400, "Choose hash, tags, or fingerprint duplicate detection.")
+            try:
+                tolerance = float(duplicate_settings.get("duration_tolerance", 5))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "Duplicate duration tolerance must be a number.") from exc
+            if not 0 <= tolerance <= 30:
+                raise HTTPException(400, "Duplicate duration tolerance must be between 0 and 30 seconds.")
+            duplicate_settings["duration_tolerance"] = tolerance
+            if duplicate_settings.get("schedule_hours") and duplicate_settings.get("schedule_fingerprint") and not fpcalc_available():
+                raise HTTPException(400, "Install fpcalc before enabling scheduled audio comparison.")
         new_indexers = None
         if body.indexers is not None:
             new_indexers = []
@@ -1197,6 +1265,8 @@ def create_app(config: Config) -> FastAPI:
                     {"name": name, "url": url, "api_key": key,
                      "categories": str(item.get("categories", "3000")).strip() or "3000"}
                 )
+        previous_sections = {section: dict(getattr(config, section)) for section in updates}
+        previous_indexers = list(config.indexers)
         for section, merged in updates.items():
             getattr(config, section).update(merged)
         if new_indexers is not None:
@@ -1204,7 +1274,12 @@ def create_app(config: Config) -> FastAPI:
         try:
             path = config.save()
         except (OSError, ValueError) as exc:
+            for section, previous in previous_sections.items():
+                getattr(config, section).clear()
+                getattr(config, section).update(previous)
+            config.indexers[:] = previous_indexers
             raise HTTPException(500, f"could not write config: {exc}") from exc
+        schedule.status()
         return {"saved": True, "path": str(path)}
 
     @app.post("/api/tasks/{kind}")
@@ -1238,6 +1313,42 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(404, "result section not found")
         return {"items": items[offset:offset + limit], "total": len(items), "offset": offset}
 
+    @app.get("/api/jobs/{job_id}/items")
+    def job_items(
+        job_id: str, status: Literal["", "completed", "failed", "skipped", "stopped", "pending"] = "",
+        offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+    ) -> Dict[str, Any]:
+        if jobs.get(job_id) is None:
+            raise HTTPException(404, "job not found")
+        return {
+            "items": jobs.items(job_id, status, offset, limit),
+            "total": jobs.item_count(job_id, status), "offset": offset,
+        }
+
+    @app.get("/api/jobs/{job_id}/retry-selection")
+    def retry_selection(job_id: str) -> Dict[str, Any]:
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "job not found")
+        if job["status"] not in ("done", "cancelled", "error"):
+            raise HTTPException(409, "Stop the job or wait for completion before preparing a new review.")
+        items = [item for item in jobs.items(job_id) if item["status"] in ("failed", "stopped")]
+        ids = list(dict.fromkeys(
+            track_id for item in items for track_id in (item.get("track_id"), item.get("keep_id"))
+            if track_id is not None
+        ))
+        if not ids:
+            raise HTTPException(400, "No retryable library tracks. Review file details and refresh the relevant workspace.")
+        if len(ids) > 200:
+            raise HTTPException(400, "More than 200 tracks need attention. Select a smaller batch from Library using the file details.")
+        tracks = [track for track_id in ids if (track := db.get_track(track_id)) and track.status != "deleted"]
+        if not tracks:
+            raise HTTPException(409, "These files are no longer in Library. Refresh the catalog and check Recovery.")
+        return {
+            "tracks": [asdict(track) for track in tracks], "kind": job["kind"],
+            "unavailable": len(ids) - len(tracks),
+        }
+
     @app.get("/api/jobs/{job_id}")
     def job_status(job_id: str) -> Dict[str, Any]:
         job = jobs.get(job_id)
@@ -1247,6 +1358,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.on_event("shutdown")
     def shutdown() -> None:
+        schedule.close()
         jobs.close()
         db.close()
 
