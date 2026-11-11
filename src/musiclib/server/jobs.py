@@ -34,8 +34,14 @@ class JobRegistry:
             "CREATE TABLE IF NOT EXISTS jobs "
             "(id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, result TEXT)"
         )
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS job_items ("
+            "job_id TEXT NOT NULL, item_key TEXT NOT NULL, status TEXT NOT NULL, "
+            "detail TEXT NOT NULL, PRIMARY KEY(job_id,item_key))"
+        )
         for job in self.list():
             if job["status"] in ("queued", "running", "stopping"):
+                self._finish_items(job, "stopped", "Application restarted before this item finished. Check the file before retrying.")
                 job.update(
                     status="error", finished=time.time(),
                     error="Application restarted before this job finished. Review results before retrying.",
@@ -95,7 +101,7 @@ class JobRegistry:
         )
         return HTTPException(409, message)
 
-    def start(self, kind: str, fn, *, read_only: bool = False) -> str:
+    def start(self, kind: str, fn, *, read_only: bool = False, origin: str = "manual") -> str:
         lease = self._lookup_lease if read_only else self._lease
         ownership = "lookup_owned" if read_only else "owned"
         if not lease.acquire(blocking=False):
@@ -106,6 +112,7 @@ class JobRegistry:
             "completed": 0, "total": None, "current": "", "error": None,
             "summary": None, "read_only": read_only,
             "cancel_requested": False,
+            "origin": origin,
         }
         try:
             with self._state_lock:
@@ -132,6 +139,7 @@ class JobRegistry:
                     if not read_only and self.after_write:
                         self.after_write()
                 with self._state_lock:
+                    self._finish_items(job, "stopped", "No completion was recorded for this item. Inspect the current file before retrying.")
                     job.update(
                         status="done", finished=time.time(), phase="Complete",
                         summary={
@@ -142,6 +150,7 @@ class JobRegistry:
                     self._save(job, result)
             except CancelledError:
                 with self._state_lock:
+                    self._finish_items(job, "stopped", "Not completed before Stop. Check the current file before retrying.")
                     job.update(
                         status="cancelled", finished=time.time(), phase="Stopped",
                         error=None,
@@ -150,8 +159,10 @@ class JobRegistry:
                     self._save(job)
             except Exception as exc:
                 logger.exception("Musiclib %s job %s failed", kind, job["id"])
-                job.update(status="error", finished=time.time(), error=str(exc))
-                self._save(job)
+                with self._state_lock:
+                    self._finish_items(job, "stopped", "Job failed before this item completed. Check the current file before retrying.")
+                    job.update(status="error", finished=time.time(), error=str(exc))
+                    self._save(job)
             finally:
                 setattr(self._local, ownership, False)
                 self._local.job = None
@@ -174,6 +185,91 @@ class JobRegistry:
             raise
         self._threads.append(thread)
         return job["id"]
+
+    @staticmethod
+    def _item_key(item: Dict[str, Any]) -> str:
+        for field in ("track_id", "deletion_id", "path"):
+            if item.get(field) not in (None, ""):
+                return f"{field}:{item[field]}"
+        raise ValueError("A file outcome requires a track ID, recovery ID, or path.")
+
+    def plan(self, items: list) -> None:
+        job = getattr(self._local, "job", None)
+        if job is None:
+            return
+        with self._state_lock:
+            self.db.executemany(
+                "INSERT OR IGNORE INTO job_items(job_id,item_key,status,detail) VALUES (?,?,?,?)",
+                [(job["id"], self._item_key(item), "pending", json.dumps(item)) for item in items],
+            )
+            self._item_counts(job)
+            self._save(job)
+
+    def outcome(self, item: Dict[str, Any]) -> None:
+        job = getattr(self._local, "job", None)
+        if job is None:
+            return
+        status = item["status"]
+        if status not in ("pending", "completed", "failed", "skipped"):
+            raise ValueError(f"Unknown file outcome: {status}")
+        key = self._item_key(item)
+        with self._state_lock:
+            existing = self.db.query_one(
+                "SELECT detail,status FROM job_items WHERE job_id=? AND item_key=?", (job["id"], key),
+            )
+            detail = {**(json.loads(existing["detail"]) if existing else {}), **item}
+            self.db.execute(
+                "INSERT INTO job_items(job_id,item_key,status,detail) VALUES (?,?,?,?) "
+                "ON CONFLICT(job_id,item_key) DO UPDATE SET status=excluded.status,detail=excluded.detail",
+                (job["id"], key, status, json.dumps(detail)),
+            )
+            counts = job.setdefault("outcomes", {})
+            if existing:
+                previous = existing["status"]
+                counts[previous] -= 1
+                if not counts[previous]:
+                    del counts[previous]
+            counts[status] = counts.get(status, 0) + 1
+            self._save(job)
+
+    def _item_counts(self, job: Dict[str, Any]) -> None:
+        counts = {row["status"]: row["n"] for row in self.db.query(
+            "SELECT status,COUNT(*) AS n FROM job_items WHERE job_id=? GROUP BY status",
+            (job["id"],),
+        )}
+        if counts:
+            job["outcomes"] = counts
+
+    def _finish_items(self, job: Dict[str, Any], status: str, reason: str) -> None:
+        for row in self.db.query(
+            "SELECT item_key,detail FROM job_items WHERE job_id=? AND status='pending'", (job["id"],),
+        ):
+            item = {**json.loads(row["detail"]), "status": status, "reason": reason}
+            self.db.execute(
+                "UPDATE job_items SET status=?,detail=? WHERE job_id=? AND item_key=?",
+                (status, json.dumps(item), job["id"], row["item_key"]),
+            )
+        self._item_counts(job)
+
+    def items(
+        self, job_id: str, status: str = "", offset: int = 0, limit: Optional[int] = None,
+    ) -> list:
+        params = [job_id, status] if status else [job_id]
+        sql = "SELECT detail,status FROM job_items WHERE job_id=?"
+        sql += (" AND status=?" if status else "") + " ORDER BY rowid"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend((limit, offset))
+        return [
+            {**json.loads(row["detail"]), "status": row["status"]}
+            for row in self.db.query(sql, params)
+        ]
+
+    def item_count(self, job_id: str, status: str = "") -> int:
+        return self.db.query_one(
+            "SELECT COUNT(*) AS n FROM job_items WHERE job_id=?" + (" AND status=?" if status else ""),
+            (job_id, status) if status else (job_id,),
+        )["n"]
 
     def progress(
         self, job: Dict[str, Any], phase: str, completed: int = 0,

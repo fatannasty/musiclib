@@ -156,6 +156,7 @@ class ArtworkReview:
 
     def apply(
         self, review_id: str, progress: Optional[Callable[..., None]] = None,
+        outcome: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         row = self.db.query_one("SELECT * FROM artwork_reviews WHERE id=?", (review_id,))
         if row is None or row["status"] != "review":
@@ -166,6 +167,10 @@ class ArtworkReview:
         self.db.execute("UPDATE artwork_reviews SET status='used' WHERE id=?", (review_id,))
         data = bytes(row["image"])
         applied, errors = [], []
+        if outcome:
+            for snapshot in json.loads(row["tracks"]):
+                outcome({**snapshot, "status": "pending" if snapshot["status"] == "ready" else "skipped",
+                         "reason": snapshot["reason"] or "Awaiting artwork update."})
         for index, snapshot in enumerate(tracks):
             track_id = snapshot["track_id"]
             if progress:
@@ -186,8 +191,12 @@ class ArtworkReview:
                     (track.album_artist or track.artist or "Unknown Artist", track.album or ""),
                 )
                 applied.append({"track_id": track_id, "path": track.path})
+                if outcome:
+                    outcome({**snapshot, "status": "completed", "reason": "Embedded reviewed artwork."})
             except (ValueError, OSError, mutagen.MutagenError) as exc:
                 errors.append({"track_id": track_id, "path": snapshot["path"], "error": str(exc)})
+                if outcome:
+                    outcome({**snapshot, "status": "failed", "error": str(exc)})
         if progress:
             progress("Artwork update complete", len(tracks), len(tracks))
         return {"applied": applied, "errors": errors}

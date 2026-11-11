@@ -146,6 +146,7 @@ class RestoreReview:
 
     def apply(
         self, review_id: str, progress: Optional[Callable[..., None]] = None,
+        outcome: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         row = self.db.query_one("SELECT * FROM restore_reviews WHERE id=?", (review_id,))
         if row is None or row["status"] != "review":
@@ -158,6 +159,10 @@ class RestoreReview:
             raise ValueError("This preview has no files ready to restore.")
         restored, errors, restored_paths = [], [], []
         cancelled = None
+        if outcome:
+            for snapshot in json.loads(row["entries"]):
+                outcome({**snapshot, "status": "pending" if snapshot["status"] == "ready" else "skipped",
+                         "reason": snapshot["reason"] or "Awaiting restore."})
         for index, snapshot in enumerate(entries):
             if progress:
                 try:
@@ -190,11 +195,15 @@ class RestoreReview:
                     raise ValueError(
                         f"File restored to {snapshot['target']}, but catalog/history update failed: {exc}. Run Scan."
                     ) from exc
+                if outcome:
+                    outcome({**snapshot, "status": "completed", "reason": "Restored; catalog refresh follows."})
             except (OSError, ValueError, sqlite3.Error) as exc:
                 errors.append({
                     "deletion_id": snapshot["deletion_id"], "path": snapshot["path"],
                     "source": snapshot["source"], "error": str(exc),
                 })
+                if outcome:
+                    outcome({**snapshot, "status": "failed", "error": str(exc)})
         scan_errors = []
         if restored_paths:
             try:
@@ -211,6 +220,10 @@ class RestoreReview:
             except Exception as exc:
                 logger.exception("Could not refresh catalog metadata after reviewed restore")
                 scan_errors = [{"path": path, "error": str(exc)} for path in restored_paths]
+        if outcome:
+            for error in scan_errors:
+                snapshot = next(item for item in entries if item["target"] == error["path"])
+                outcome({**snapshot, "status": "failed", "error": error["error"]})
         if progress:
             if cancelled is not None:
                 raise cancelled

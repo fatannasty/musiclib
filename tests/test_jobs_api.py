@@ -190,6 +190,85 @@ def test_worker_start_failure_releases_its_lane(lib_env, monkeypatch, read_only)
     assert guard(lambda: "available")() == "available"
 
 
+@pytest.mark.parametrize("finish", ["stop", "error"])
+def test_file_outcomes_survive_partial_jobs_and_restart(lib_env, finish):
+    registry = JobRegistry(lib_env.db)
+
+    def run(job):
+        registry.plan([{"track_id": index, "path": f"/music/{index}.mp3"} for index in range(3)])
+        registry.outcome({"track_id": 0, "status": "completed", "reason": "Saved reviewed tags."})
+        registry.outcome({"track_id": 1, "status": "failed", "error": "Read-only folder"})
+        if finish == "stop":
+            registry.cancel(job["id"])
+            registry.update("Next file", 2, 3)
+        raise OSError("Share disconnected")
+    job_id = registry.start("metadata-apply", run)
+    registry.close()
+    job = registry.get(job_id)
+    assert job["outcomes"] == {"completed": 1, "failed": 1, "stopped": 1}
+    assert [item["status"] for item in registry.items(job_id)] == ["completed", "failed", "stopped"]
+    restarted = JobRegistry(lib_env.db)
+    assert restarted.items(job_id)[1]["error"] == "Read-only folder"
+    assert restarted.items(job_id)[2]["path"] == "/music/2.mp3"
+    assert restarted.get(job_id)["status"] == ("cancelled" if finish == "stop" else "error")
+
+
+def test_unreported_planned_work_is_not_reported_as_success_or_a_harmless_skip(lib_env):
+    registry = JobRegistry(lib_env.db)
+
+    def run(job):
+        registry.plan([{"track_id": 1, "path": "/music/uncertain.mp3"}])
+        return {}
+    job_id = registry.start("test", run)
+    registry.close()
+    assert registry.get(job_id)["outcomes"] == {"stopped": 1}
+    assert "Inspect" in registry.items(job_id)[0]["reason"]
+
+
+def test_reviewed_trash_reports_paths_and_retry_excludes_successes(lib_env, monkeypatch):
+    from conftest import make_mp3
+
+    from musiclib.trash_review import TrashReview
+    for index in range(2):
+        make_mp3(lib_env.library / f"{index}.mp3", tags={"title": f"Song {index}"})
+    Scanner(lib_env.config, lib_env.db, workers=1).scan()
+    tracks = lib_env.db.all_tracks()
+    move = TrashReview._move
+
+    def fail_second(self, snapshot):
+        if snapshot["track_id"] == tracks[1].id:
+            raise PermissionError("Read-only music folder")
+        return move(self, snapshot)
+    monkeypatch.setattr(TrashReview, "_move", fail_second)
+    with TestClient(create_app(lib_env.config)) as client:
+        preview_id = client.post("/api/trash/preview-selected", json={
+            "track_ids": [track.id for track in tracks],
+        }).json()["job_id"]
+        assert wait_job(client, preview_id)["status"] == "done"
+        apply_id = client.post("/api/trash/apply-reviewed", json={
+            "preview_job_id": preview_id,
+        }).json()["job_id"]
+        job = wait_job(client, apply_id)
+        assert job["outcomes"] == {"completed": 1, "failed": 1}
+        failures = client.get(f"/api/jobs/{apply_id}/items?status=failed").json()
+        assert failures["total"] == 1
+        assert failures["items"][0]["path"] == tracks[1].path
+        assert "Read-only" in failures["items"][0]["error"]
+        retry = client.get(f"/api/jobs/{apply_id}/retry-selection").json()
+        assert [track["id"] for track in retry["tracks"]] == [tracks[1].id]
+        assert lib_env.db.get_track(tracks[1].id).status != "deleted"
+        assert client.post("/api/trash/apply-reviewed", json={
+            "preview_job_id": preview_id,
+        }).status_code == 400
+        new_id = client.post("/api/trash/preview-selected", json={
+            "track_ids": [track["id"] for track in retry["tracks"]],
+        }).json()["job_id"]
+        assert wait_job(client, new_id)["summary"]["ready"] == 1
+        assert lib_env.db.get_track(tracks[1].id).status != "deleted"
+    with TestClient(create_app(lib_env.config)) as client:
+        assert client.get(f"/api/jobs/{apply_id}/items?status=failed").json()["total"] == 1
+
+
 def test_issue_and_job_result_pages_do_not_truncate(lib_env, monkeypatch):
     for index in range(525):
         lib_env.db.upsert_track(Track(
@@ -221,7 +300,9 @@ def test_fingerprints_are_generated_before_comparison(lib_env, monkeypatch):
     def compute(config, db, tracks, progress):
         calls.append(len(tracks))
         for done, track in enumerate(tracks, 1):
-            db.update_track_columns(track.id, fingerprint=",".join(["123456"] * 16))
+            db.update_track_columns(track.id, fingerprint=",".join(
+                str((index * 2654435761) & 0xFFFFFFFF) for index in range(32)
+            ))
             progress(done, track.path)
         return len(tracks)
 

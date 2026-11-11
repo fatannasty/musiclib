@@ -133,7 +133,7 @@ def test_invalid_keeper_never_deletes_anything(mini_library):
 
 
 def test_fingerprint_comparison_crosses_old_bucket_boundaries(lib_env):
-    fp = ",".join(["123456"] * 16)
+    fp = ",".join(str((index * 2654435761) & 0xFFFFFFFF) for index in range(32))
     for index, duration in enumerate((177.9, 178.1)):
         lib_env.db.upsert_track(Track(
             path=f"/lib/{index}.flac", duration=duration,
@@ -144,7 +144,7 @@ def test_fingerprint_comparison_crosses_old_bucket_boundaries(lib_env):
 
 
 def test_fingerprint_comparison_does_not_skip_large_duration_buckets(lib_env):
-    fp = ",".join(["123456"] * 16)
+    fp = ",".join(str((index * 2654435761) & 0xFFFFFFFF) for index in range(32))
     for index in range(61):
         lib_env.db.upsert_track(Track(
             path=f"/lib/{index}.flac", duration=180,
@@ -177,3 +177,67 @@ def test_stale_duplicates_never_remove_a_usable_copy(mini_library, change):
     assert report.failures
     assert Path(loser.path).is_file()
     assert env.db.query("SELECT * FROM deletions") == []
+
+
+def test_cross_album_unicode_candidates_explain_the_match_and_keep_editions_separate(lib_env):
+    tracks = [
+        _track(path="/lib/original.flac", title="Café — Song", album="Original", file_hash="a"),
+        _track(path="/lib/compilation.mp3", title="Cafe - Song (Copy 2)", album="Best Of",
+               format="mp3", file_hash="b"),
+        _track(path="/lib/live.flac", title="Café — Song (Live)", file_hash="c"),
+        _track(path="/lib/remix.flac", title="Café — Song (Remix)", file_hash="d"),
+        _track(path="/lib/cover.flac", title="Cafe - Song", artist="Different Singer", file_hash="e"),
+    ]
+    for track in tracks:
+        lib_env.db.upsert_track(track)
+    finder = DuplicateFinder(lib_env.config, lib_env.db)
+    groups = finder.find()
+    assert len(groups) == 1
+    assert {member.track.path for member in groups[0].members} == {
+        "/lib/original.flac", "/lib/compilation.mp3",
+    }
+    assert "different edition" in groups[0].members[1].evidence[0]
+    restored = finder.persisted_groups()[0]
+    assert [member.evidence for member in restored.members] == [
+        member.evidence for member in groups[0].members
+    ]
+
+
+def test_recording_id_finds_differently_tagged_tracks_but_respects_duration(lib_env):
+    for index, duration in enumerate((180, 181, 240)):
+        lib_env.db.upsert_track(_track(
+            path=f"/lib/{index}.flac", title=f"Different {index}", album=None,
+            file_hash=str(index), duration=duration, mbid_track="same-recording",
+        ))
+    groups = DuplicateFinder(lib_env.config, lib_env.db).find()
+    assert len(groups) == 1
+    assert len(groups[0].members) == 2
+    assert "MusicBrainz recording" in groups[0].members[1].evidence[0]
+
+
+def test_hash_only_strategy_does_not_remove_tag_matches(lib_env):
+    for index in range(2):
+        lib_env.db.upsert_track(_track(path=f"/lib/{index}.flac", file_hash=str(index)))
+    assert DuplicateFinder(lib_env.config, lib_env.db).find(strategy="hash") == []
+
+
+def test_duration_chains_cannot_connect_different_length_endpoints(lib_env):
+    for index, duration in enumerate((180, 184, 188)):
+        lib_env.db.upsert_track(_track(
+            path=f"/lib/{index}.flac", file_hash=str(index), duration=duration,
+            bitrate=320 if index == 1 else 128, format="mp3",
+        ))
+    groups = DuplicateFinder(lib_env.config, lib_env.db).find()
+    assert all(
+        max(m.track.duration for m in g.members) - min(m.track.duration for m in g.members) <= 5
+        for g in groups
+    )
+
+
+def test_unknown_artist_tags_are_not_enough_to_match_across_albums(lib_env):
+    for index in range(2):
+        lib_env.db.upsert_track(_track(
+            path=f"/lib/{index}.flac", artist="Unknown Artist", album=f"Album {index}",
+            file_hash=str(index),
+        ))
+    assert DuplicateFinder(lib_env.config, lib_env.db).find() == []

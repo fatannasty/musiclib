@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
 import string
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -23,6 +25,17 @@ def normalize(text: Optional[str]) -> str:
     text = _REMOVE_FEAT_RE.sub("", text)
     text = text.lower().translate(_PUNCT_TABLE)
     return " ".join(text.split())
+
+
+def duplicate_text(text: Optional[str], title: bool = False) -> str:
+    text = unicodedata.normalize("NFKD", text or "").casefold()
+    if title:
+        text = re.sub(r"\s*[\[(](?:copy|duplicate)(?:\s*\d+)?[\])]\s*$", "", text)
+    text = _REMOVE_FEAT_RE.sub("", text)
+    return " ".join("".join(
+        char if char.isalnum() or char.isspace() else " "
+        for char in text if not unicodedata.combining(char)
+    ).split())
 
 
 def score_track(track: Track) -> int:
@@ -92,6 +105,7 @@ class DupeMember:
     track: Track
     score: int
     action: str = "loser"
+    evidence: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -133,6 +147,14 @@ class DuplicateFinder:
         persist: bool = True,
     ) -> List[DupeGroup]:
         strategy = (strategy or self.config.duplicates.get("strategy", "tags")).lower()
+        if strategy not in ("hash", "tags", "fingerprint"):
+            raise ValueError("Choose hash, tags, or fingerprint duplicate detection.")
+        self._matches: Dict[Tuple[int, int], List[str]] = {}
+
+        def match(a: Track, b: Track, reason: str) -> None:
+            union.union(a.id, b.id)
+            self._matches.setdefault(tuple(sorted((a.id, b.id))), []).append(reason)
+
         tracks = [t for t in (self.db.all_tracks() if tracks is None else tracks) if t.status in ("ok", "suspect")]
         for index, track in enumerate(tracks):
             if progress_state:
@@ -152,40 +174,37 @@ class DuplicateFinder:
             if track.file_hash:
                 by_hash.setdefault(track.file_hash, []).append(track)
                 if len(by_hash[track.file_hash]) > 1:
-                    union.union(by_hash[track.file_hash][0].id, track.id)
+                    for other in by_hash[track.file_hash][:-1]:
+                        match(other, track, "Identical file hash")
             if progress_state:
                 progress_state("Comparing exact file hashes", index, len(tracks), track.path)
 
-        by_tags: Dict[Tuple[str, str, str], List[Track]] = {}
+        by_tags: Dict[Tuple[str, str], List[Track]] = {}
+        by_recording: Dict[str, List[Track]] = {}
         for track in tracks:
-            if track.title and track.album:
+            if track.mbid_track:
+                by_recording.setdefault(track.mbid_track, []).append(track)
+            artist = duplicate_text(track.artist or track.album_artist)
+            title = duplicate_text(track.title, title=True)
+            if artist and artist not in ("unknown", "unknown artist", "various artists", "va") and title and strategy != "hash":
                 key = (
-                    normalize(track.album_artist or track.artist),
-                    normalize(track.album),
-                    normalize(track.title),
+                    artist, title,
                 )
                 by_tags.setdefault(key, []).append(track)
-        for group in by_tags.values():
+        for group in [*by_tags.values(), *(by_recording.values() if strategy != "hash" else [])]:
             if progress_state:
                 progress_state("Comparing track tags", 0, len(tracks), group[0].path)
             group.sort(key=lambda t: (t.duration or 0))
-            clusters: List[List[Track]] = []
-            for track in group:
-                placed = False
-                for cluster in clusters:
-                    if _duration_close(
-                        cluster[0].duration, track.duration, self.tolerance
-                    ) or _duration_close(
-                        cluster[-1].duration, track.duration, self.tolerance
+            for index, track in enumerate(group):
+                for other in group[index + 1:]:
+                    if other.duration is not None and track.duration is not None and (
+                        other.duration - track.duration > self.tolerance
                     ):
-                        cluster.append(track)
-                        placed = True
                         break
-                if not placed:
-                    clusters.append([track])
-            for cluster in clusters:
-                for other in cluster[1:]:
-                    union.union(cluster[0].id, other.id)
+                    if _duration_close(track.duration, other.duration, self.tolerance):
+                        same_recording = track.mbid_track and track.mbid_track == other.mbid_track
+                        match(track, other, "Same MusicBrainz recording and similar duration" if same_recording
+                              else "Same artist/title and similar duration (may be a different edition)")
 
         if fingerprint_pass is None:
             fingerprint_pass = strategy == "fingerprint"
@@ -203,8 +222,11 @@ class DuplicateFinder:
                     b = candidates[j]
                     if b.duration - a.duration > self.tolerance:
                         break
-                    if similarity(a.fingerprint, b.fingerprint) >= 0.85:
-                        union.union(a.id, b.id)
+                    score = similarity(a.fingerprint, b.fingerprint, minimum=0.90)
+                    if score >= 0.90:
+                        match(a, b, f"Similar audio fingerprint ({score:.0%}); verify by listening")
+                    if progress_state and j % 100 == 0:
+                        progress_state("Comparing audio fingerprints", i, len(candidates), a.path)
                 if progress_state:
                     progress_state("Comparing audio fingerprints", i + 1, len(candidates), a.path)
 
@@ -216,14 +238,24 @@ class DuplicateFinder:
         by_id = {t.id: t for t in tracks}
         groups: List[DupeGroup] = []
         for member_ids in union.groups():
-            members = [
-                DupeMember(by_id[tid], by_id[tid].quality_score) for tid in member_ids
-            ]
-            keep = pick_keep(members)
-            keep.action = "keep"
-            key = f"keep:{keep.track.id}"
-            group = DupeGroup(key=key, members=members, keep=keep)
-            groups.append(group)
+            remaining = [DupeMember(by_id[tid], by_id[tid].quality_score) for tid in member_ids]
+            while len(remaining) > 1:
+                keep = pick_keep(remaining)
+                members = [keep]
+                for member in remaining:
+                    evidence = self._matches.get(tuple(sorted((keep.track.id, member.track.id))))
+                    if evidence and all(
+                        tuple(sorted((member.track.id, included.track.id))) in self._matches
+                        for included in members
+                    ):
+                        member.evidence = list(dict.fromkeys(evidence))
+                        members.append(member)
+                remaining = [member for member in remaining if member not in members]
+                if len(members) < 2:
+                    continue
+                keep.action = "keep"
+                keep.evidence = ["Recommended keeper: quality, health, tags, then shortest path"]
+                groups.append(DupeGroup(key=f"keep:{keep.track.id}", members=members, keep=keep))
         if persist:
             self._persist(groups)
         else:
@@ -236,9 +268,10 @@ class DuplicateFinder:
         self.db.execute("DELETE FROM dupe_groups")
         for group in groups:
             cur = self.db.execute(
-                "INSERT INTO dupe_groups (key, keep_id, resolved, created_at) "
-                "VALUES (?,?,0,datetime('now'))",
-                (group.key, group.keep.track.id if group.keep else None),
+                "INSERT INTO dupe_groups (key, keep_id, evidence, resolved, created_at) "
+                "VALUES (?,?,?,0,datetime('now'))",
+                (group.key, group.keep.track.id if group.keep else None,
+                 json.dumps({member.track.id: member.evidence for member in group.members})),
             )
             group.group_id = cur.lastrowid
             self.db.executemany(
@@ -249,7 +282,7 @@ class DuplicateFinder:
     def persisted_groups(self) -> List[DupeGroup]:
         tracks = {track.id: track for track in self.db.all_tracks() if track.id is not None}
         rows = self.db.query(
-            "SELECT g.id AS group_id, g.keep_id, m.track_id FROM dupe_groups g "
+            "SELECT g.id AS group_id, g.keep_id, g.evidence, m.track_id FROM dupe_groups g "
             "JOIN dupe_members m ON m.group_id=g.id WHERE g.resolved=0 "
             "ORDER BY g.id"
         )
@@ -261,7 +294,8 @@ class DuplicateFinder:
             group = groups.setdefault(
                 row["group_id"], DupeGroup(key=f"persisted:{row['group_id']}", group_id=row["group_id"])
             )
-            member = DupeMember(track, track.quality_score)
+            member = DupeMember(track, track.quality_score,
+                                evidence=json.loads(row["evidence"] or "{}").get(str(track.id), []))
             group.members.append(member)
             if track.id == row["keep_id"]:
                 member.action = "keep"
@@ -300,6 +334,7 @@ class DuplicateFinder:
         hard_delete: bool = False,
         keep_ids: Optional[Dict[int, int]] = None,
         progress_state: Optional[Callable[[str, int, int, str], None]] = None,
+        outcome: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> DupeReport:
         keep_ids = keep_ids or {}
         available = {group.group_id: group for group in groups}
@@ -310,6 +345,16 @@ class DuplicateFinder:
         report = DupeReport(groups=groups)
         total = sum(len(group.members) - 1 for group in groups)
         done = 0
+        if outcome:
+            for group in groups:
+                keeper_id = keep_ids.get(group.group_id, group.keep.track.id if group.keep else None)
+                for member in group.members:
+                    if member.track.id == keeper_id:
+                        outcome({"track_id": member.track.id, "path": member.track.path,
+                                 "status": "skipped", "reason": "Kept as the chosen keeper. No file change."})
+                    else:
+                        outcome({"track_id": member.track.id, "path": member.track.path,
+                                 "keep_id": keeper_id, "status": "pending", "reason": "Awaiting keeper-verified trash move."})
         for group in groups:
             if progress_state:
                 progress_state("Checking duplicate keepers", done, total, "")
@@ -324,6 +369,11 @@ class DuplicateFinder:
                     self._check_member(member.track)
             except (OSError, ValueError) as exc:
                 report.failures.append({"path": member.track.path, "error": str(exc)})
+                if outcome:
+                    for candidate in group.members:
+                        if candidate.track.id != keeper.track.id:
+                            outcome({"track_id": candidate.track.id, "path": candidate.track.path,
+                                     "keep_id": keeper.track.id, "status": "failed", "error": str(exc)})
                 continue
             for member in group.members:
                 if keep_id is not None:
@@ -361,8 +411,14 @@ class DuplicateFinder:
                             raise ValueError(result["errors"][0]["error"])
                     report.reclaimed_bytes += track.size
                     self.db.update_track_columns(track.id, status="deleted")
+                    if outcome:
+                        outcome({"track_id": track.id, "path": track.path, "keep_id": keeper.track.id,
+                                 "status": "completed", "reason": "Deleted permanently." if hard_delete else "Moved to recoverable trash; keeper retained."})
                 except (OSError, ValueError) as exc:
                     report.failures.append({"path": track.path, "error": str(exc)})
+                    if outcome:
+                        outcome({"track_id": track.id, "path": track.path, "keep_id": keeper.track.id,
+                                 "status": "failed", "error": str(exc)})
                 done += 1
             if group.group_id:
                 resolved = all(

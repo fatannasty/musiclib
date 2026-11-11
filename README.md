@@ -116,7 +116,23 @@ in-flight decoder workers, and necessary catalog refreshes may finish first.
 Waiting decoder tasks are cancelled rather than all being processed. Completed
 tag edits and moves are not rolled back; completed trash moves remain recoverable.
 Refresh the library and create a fresh preview before retrying. Stopped jobs are
-not automatically resumed and do not have a complete result list.
+not automatically resumed. Reviewed duplicate cleanup, selected bad-file cleanup,
+metadata writes/lookups, organization, artwork uploads, trash, and restore retain
+per-file **completed**, **skipped**, **failed**, and **stopped** outcomes, including
+paths and reasons, across stops and restarts. A stopped item means its operation
+did not report completion: inspect the current file before retrying. Completed
+changes are never reported as rolled back.
+
+Activity shows a compact last-job summary. **View details** opens filterable,
+paginated file outcomes; technical records remain collapsed. **Review failed /
+unfinished files** selects only those library tracks (plus required
+duplicate keepers), not successful files. Up to 200 tracks can be prepared at once;
+larger failures must be selected in smaller batches from Library. New organization,
+duplicate, or trash previews and fresh metadata searches still require new review
+and confirmation. Duplicate retries do not expose generic trash without keeper
+checks; failed restore entries must be selected again in Recovery. Artwork retries
+require selecting/uploading the cover again. Existing jobs from before this update
+retain their original result format.
 
 ## Listen to tracks
 
@@ -143,12 +159,28 @@ cannot be played. Listening does not replace the **Bad Files** decode checks.
 
 ## Duplicate detection
 
-Three passes, merged with union-find:
+Three evidence sources produce review candidates across folders:
 
 1. **Exact** — identical SHA-256 file hash
-2. **Tags** — same normalized artist/album/title with duration within tolerance
-3. **Fingerprint** — chromaprint audio similarity (needs `fpcalc`), for files with
-   missing or unreliable tags
+2. **Tags / recording ID** — matching artist/title or MusicBrainz recording ID,
+   with duration within tolerance. Album names need not match: compilation,
+   differently tagged, and cross-folder copies can be found. Unicode, punctuation,
+   and explicit `(copy)`/`(duplicate)` title suffixes are normalized; live/remix
+   qualifiers are preserved. Unknown/various-artist placeholders are not enough
+   evidence for an artist/title match.
+3. **Fingerprint** — Chromaprint audio similarity of at least 90% (needs `fpcalc`),
+   including small leading-audio offsets and different encodings. Uninformative
+   repeated/silence fingerprints are excluded. The dashboard enables audio
+   comparison by default; generation failures are reported per file while other
+   files, tags, and exact hashes are still compared. **Retry audio discovery**
+   retries missing fingerprints without removing files.
+
+Each member must have direct match evidence with every other member in a group;
+duration chains cannot silently connect different-length endpoints. The review
+shows track/album, duration, format, path, and match evidence. Tag and fingerprint
+matches are **possible copies**, not proof that releases or editions are
+interchangeable. Listen before removing live, remastered, compilation, or remix
+versions. Fingerprints compare up to the first 90 seconds, not the complete recording.
 
 Best version is chosen by a quality score: lossless beats lossy, higher
 bitrate/sample-rate/bit-depth wins, complete tags and embedded art add up, broken
@@ -157,11 +189,21 @@ override the keeper per group before applying.
 
 **Duplicates** has top-of-page controls for selecting the current page or **all
 groups across pages**, plus a selection count and clear action. Confirming
-**Trash copies in selected groups** preserves one chosen keeper per group and
+**Move N extra copies to trash (keep K)** preserves one chosen keeper per group and
 leaves unapproved groups alone. File paths and hashes are checked against the
 review and again on disk; changed copies or missing keepers block removal.
 Errors are listed in Activity. Recoverable duplicate moves use the same verified,
 no-overwrite trash mechanism as selected Library trash.
+
+Optional **Settings → Automatic duplicate discovery** runs daily or weekly
+**inside the NAS Musiclib server**. It is off by default and starts one interval
+after enabling. Each scheduled job refreshes the catalog and finds candidates;
+it **never applies cleanup or removes files**. Results are saved in Activity and
+Duplicates. The next due time survives restarts; a busy write lane defers the run.
+The app must be running (use one server process for scheduling). Missed intervals
+coalesce into one run, not a backlog. Stop cancels the current run, while setting
+the schedule to Off disables future runs. Audio comparison can be disabled for
+lighter scheduled runs; `fpcalc` is included in the Docker image.
 
 ## Configuration
 
@@ -179,12 +221,14 @@ template_multidisc = "{albumartist}/{album} ({year})/CD{disc}/{track:02d} - {tit
 [duplicates]
 duration_tolerance = 5
 strategy = "tags"            # hash | tags | fingerprint
+schedule_hours = 0            # 0 (off) | 24 (daily) | 168 (weekly), server only
+schedule_fingerprint = true   # include audio comparison in scheduled discovery
 
 [brainz]
 contact = "you@example.com"  # MusicBrainz requires a real contact
 
 [catalog]
-album_source = "all"        # all | musicbrainz | itunes | library
+album_source = "all"        # all | musicbrainz | itunes | deezer | library
 ipv4_only = false           # force IPv4 for interactive metadata searches
 
 [sabnzbd]
@@ -398,8 +442,12 @@ failure after a successful move reports the restored path explicitly instead of
 moving it back or overwriting anything.
 
 In Library, choose **Lookup**, enter or correct the title and/or artist, then
-search. MusicBrainz and iTunes are queried together, and matching albums show Cover Art Archive
-or iTunes artwork previews. This works even when a file has no title or artist
+search. Choose MusicBrainz, iTunes, Deezer, or all three. Bulk track lookup also has
+a source selector. Matching albums show available provider artwork previews.
+Deezer is a public, key-free alternative; regional/service availability can limit
+results. Search scores are provider estimates, not verified recording identities.
+Unknown album artists, dates, track numbers, and release IDs are not invented.
+This works even when a file has no title or artist
 tags. Search terms do not modify file tags; only explicitly selected suggestions
 are written after confirmation. Tag editing does not embed artwork; use
 **Change artwork** to upload a cover or **Cover Art** for automatic downloads.
@@ -424,8 +472,8 @@ field selection. Files without search terms are reported separately and can be
 looked up individually. Per-track tagging does not rename or move files.
 
 To retag a whole album at once, select up to 200 tracks and choose **Find album
-matches**. Choose **Library + both catalogs**, **Library + MusicBrainz**,
-**Library + iTunes**, or **Your library only (offline)**. Only the selected online
+matches**. Choose **Library + all three catalogs**, **Library + MusicBrainz**,
+**Library + iTunes**, **Library + Deezer**, or **Your library only (offline)**. Only the selected online
 providers are contacted; local matches remain first. The offline option makes no
 catalog requests. Set a default in **Settings → Album lookup sources and
 connections**, or override it for each search. If a catalog fails, use **Search
@@ -550,6 +598,8 @@ node --test tests/dashboard.test.cjs
 
 The test suite generates its own valid FLAC/MP3/WAV fixtures at the byte level, so
 it runs anywhere without binary dependencies.
+An additional real transcode/leading-silence regression runs when FFmpeg and
+`fpcalc` are installed; it is skipped otherwise.
 Dashboard interaction regressions use Node's built-in test runner (no npm install);
 Node is only needed to run those development checks, not to serve the dashboard.
 
@@ -560,5 +610,7 @@ Node is only needed to run those development checks, not to serve the dashboard.
 - Tag extraction and hashing run in a process pool across all CPU cores
 - Deep decode checks (`doctor --deep`) run ffmpeg in parallel, only on files not
   already validated
-- Duplicate search is index-driven (hash index, tag index, duration buckets for
-  fingerprints) — no O(n²) scans
+- Duplicate candidates use hash/tag/recording maps and duration-sorted audio
+  windows. Audio comparison caches parsed fingerprints and stops comparisons that
+  cannot meet the threshold. Libraries with many similar-duration tracks still
+  require many comparisons; scheduled audio runs can be slow on a NAS.

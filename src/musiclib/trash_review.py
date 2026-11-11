@@ -148,6 +148,7 @@ class TrashReview:
 
     def apply(
         self, review_id: str, progress: Optional[Callable[..., None]] = None,
+        outcome: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         row = self.db.query_one("SELECT * FROM trash_reviews WHERE id=?", (review_id,))
         if row is None or row["status"] != "review":
@@ -159,6 +160,10 @@ class TrashReview:
         if not tracks:
             raise ValueError("This preview has no files ready to trash.")
         trashed, errors = [], []
+        if outcome:
+            for snapshot in json.loads(row["tracks"]):
+                outcome({**snapshot, "status": "pending" if snapshot["status"] == "ready" else "skipped",
+                         "reason": snapshot["reason"] or "Awaiting recoverable trash move."})
         for index, snapshot in enumerate(tracks):
             if progress:
                 progress("Moving reviewed files to recoverable trash", index, len(tracks), snapshot["path"])
@@ -175,11 +180,15 @@ class TrashReview:
                         f"File is recoverable at {snapshot['target']}, "
                         f"but catalog update failed: {exc}. Run Scan."
                     ) from exc
+                if outcome:
+                    outcome({**snapshot, "status": "completed", "reason": "Moved to recoverable trash."})
             except (OSError, ValueError, sqlite3.Error) as exc:
                 errors.append({
                     "track_id": snapshot["track_id"], "path": snapshot["path"],
                     "target": snapshot["target"], "error": str(exc),
                 })
+                if outcome:
+                    outcome({**snapshot, "status": "failed", "error": str(exc)})
         if progress:
             progress("Trash complete", len(tracks), len(tracks), "")
         return {"trashed": trashed, "errors": errors}

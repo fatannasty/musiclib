@@ -38,6 +38,8 @@ deep_decode = true
 [duplicates]
 duration_tolerance = 5
 strategy = "tags"
+schedule_hours = 0
+schedule_fingerprint = true
 
 [artwork]
 embed = true
@@ -117,7 +119,10 @@ def _default_config(library: str) -> Dict[str, Any]:
             "cleanup_empty_dirs": True,
         },
         "doctor": {"min_bitrate": 128, "min_duration": 10, "deep_decode": True},
-        "duplicates": {"duration_tolerance": 5, "strategy": "tags"},
+        "duplicates": {
+            "duration_tolerance": 5, "strategy": "tags",
+            "schedule_hours": 0, "schedule_fingerprint": True,
+        },
         "artwork": {
             "embed": True,
             "folder_image": "folder.jpg",
