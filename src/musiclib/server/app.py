@@ -27,6 +27,7 @@ from ..metadata_review import (
     EDITABLE_FIELDS,
     TRACK_FIELDS,
     MetadataReview,
+    check_catalog_connections,
 )
 from ..models import audio_format
 from ..rename import Renamer
@@ -131,6 +132,16 @@ class AlbumSuggestBody(BaseModel):
     track_ids: List[int]
     album: Optional[str] = None
     artist: Optional[str] = None
+    source: Optional[Literal["all", "musicbrainz", "itunes", "deezer", "library"]] = None
+
+
+class AlbumIdentity(BaseModel):
+    album_artist: str = Field(max_length=1000)
+    album: str = Field(min_length=1, max_length=1000)
+
+
+class AlbumBatchSuggestBody(BaseModel):
+    albums: List[AlbumIdentity]
     source: Optional[Literal["all", "musicbrainz", "itunes", "deezer", "library"]] = None
 
 
@@ -755,6 +766,61 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(502, str(exc)) from exc
+
+    @app.post("/api/metadata/albums-suggest")
+    def metadata_albums_suggest(body: AlbumBatchSuggestBody) -> Dict[str, str]:
+        if not 1 <= len(body.albums) <= 10:
+            raise HTTPException(400, "Discover matches for 1 to 10 selected albums at a time.")
+        identities = [(item.album_artist.strip(), item.album.strip()) for item in body.albums]
+        if any(not artist or not album for artist, album in identities):
+            raise HTTPException(400, "Each selected album needs an artist and album name.")
+        if len(set(identities)) != len(identities):
+            raise HTTPException(400, "Choose each album only once.")
+        source = body.source or config.catalog.get("album_source", "all")
+
+        def run(job: Dict[str, Any]) -> Dict[str, Any]:
+            reviewer = MetadataReview(config, db)
+            results = []
+            jobs.update("Discovering selected album matches", 0, len(identities))
+            for index, (artist, album) in enumerate(identities, start=1):
+                jobs.check_cancelled()
+                item: Dict[str, Any] = {
+                    "album_artist": artist, "album": album, "source": source,
+                }
+                try:
+                    tracks = [
+                        dict(track) for status in ("ok", "suspect", "bad")
+                        for track in db.album_tracks(artist, album, status=status)
+                    ]
+                    if not tracks:
+                        raise ValueError("Album is no longer available in the library.")
+                    if len(tracks) > 200:
+                        raise ValueError(
+                            "This album has more than 200 tracks. Search smaller album batches from Library."
+                        )
+                    suggestion = reviewer.suggest_album(
+                        [track["id"] for track in tracks], album=album, artist=artist, source=source,
+                    )
+                    item.update(suggestion)
+                    item["status"] = "suggestions" if suggestion["suggestions"] else "no-matches"
+                except (ValueError, RuntimeError, OSError) as exc:
+                    item.update(status="error", error=str(exc), suggestions=[], warnings=[])
+                    logger.warning("Album match discovery failed for %r / %r: %s", artist, album, exc)
+                results.append(item)
+                jobs.update(
+                    "Discovering selected album matches", index, len(identities),
+                    f"{artist} — {album}",
+                )
+            return {"albums": results, "source": source}
+
+        return {"job_id": jobs.start("metadata-album-discovery", run, read_only=True)}
+
+    @app.post("/api/catalogs/check")
+    @jobs.lookup_operation
+    def catalogs_check() -> Dict[str, Any]:
+        return {"providers": check_catalog_connections(
+            ipv4_only=bool(config.catalog.get("ipv4_only", False)),
+        )}
 
     @app.post("/api/metadata/album-apply")
     def metadata_album_apply(body: AlbumApplyBody) -> Dict[str, str]:
