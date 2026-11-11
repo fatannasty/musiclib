@@ -12,6 +12,7 @@ import httpx
 import musicbrainzngs
 import mutagen
 
+from .audio_identify import identify_audio
 from .brainz import configure_musicbrainz, search_recordings, search_releases
 from .catalog_http import catalog_error, catalog_get
 from .config import Config
@@ -515,6 +516,33 @@ class MetadataReview:
             ipv4_only=bool(self.config.catalog.get("ipv4_only", False)),
             **options,
         )
+        return {**self._save_review(track, candidates), "warnings": warnings}
+
+    def identify(self, track_id: int) -> Dict[str, Any]:
+        track = self.db.get_track(track_id)
+        if track is None or track.status == "deleted":
+            raise ValueError("Track is not available in the library.")
+        if not is_inside(track.path, self.config.library):
+            raise ValueError("Track is outside the configured library.")
+        if Path(track.path).is_symlink():
+            raise ValueError("Symbolic links cannot be identified. Select the original file.")
+        if not os.path.isfile(track.path) or not track.file_hash:
+            raise ValueError("File is missing or has not been hashed. Scan it before identifying audio.")
+        if file_hash(track.path) != track.file_hash:
+            raise ValueError("File changed since the scan. Scan it before identifying audio.")
+        warnings: List[str] = []
+        candidates = identify_audio(
+            str(Path(track.path).resolve()), self.config.acoustid.get("api_key", ""),
+            ipv4_only=bool(self.config.catalog.get("ipv4_only", False)), warnings=warnings,
+        )
+        current = self.db.get_track(track_id)
+        if (
+            current is None or current.status == "deleted"
+            or current.path != track.path or current.file_hash != track.file_hash
+            or not is_inside(track.path, self.config.library) or Path(track.path).is_symlink()
+            or not os.path.isfile(track.path) or file_hash(track.path) != track.file_hash
+        ):
+            raise ValueError("File changed during audio identification. Scan it and try again.")
         return {**self._save_review(track, candidates), "warnings": warnings}
 
     def _save_review(self, track: Track, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:

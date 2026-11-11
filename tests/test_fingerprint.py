@@ -1,9 +1,10 @@
+import json
 import shutil
 import subprocess
 
 import pytest
 
-from musiclib.fingerprint import compute_fingerprint, similarity
+from musiclib.fingerprint import compute_encoded_fingerprint, compute_fingerprint, similarity
 
 
 def test_similarity_identical():
@@ -80,3 +81,71 @@ def test_real_audio_transcode_and_leading_silence_match_but_other_audio_does_not
     assert original["fingerprint"] and encoded["fingerprint"] and different["fingerprint"]
     assert similarity(original["fingerprint"], encoded["fingerprint"], minimum=.9) >= .9
     assert similarity(original["fingerprint"], different["fingerprint"], minimum=.9) < .9
+    result = compute_encoded_fingerprint(str(source))
+    assert isinstance(result["fingerprint"], str) and result["fingerprint"]
+    assert "," not in result["fingerprint"]
+    assert result["duration"] == 24
+
+
+def test_encoded_fingerprint_uses_compressed_format_and_full_duration(monkeypatch):
+    calls = []
+    monkeypatch.setattr("musiclib.fingerprint.fpcalc_available", lambda: "/usr/bin/fpcalc")
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({
+            "duration": 245.9, "fingerprint": "AQAA_encoded",
+        }))
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert compute_encoded_fingerprint("/music/song.flac") == {
+        "duration": 245, "fingerprint": "AQAA_encoded",
+    }
+    assert calls == [(["/usr/bin/fpcalc", "-json", "-length", "120", "/music/song.flac"],
+                     {"capture_output": True, "text": True, "timeout": 120, "check": False})]
+
+
+@pytest.mark.skipif(not shutil.which("fpcalc") or not shutil.which("ffmpeg"),
+                    reason="Real audio identification needs fpcalc and FFmpeg")
+def test_encoded_fingerprint_keeps_full_duration_beyond_analysis_window(tmp_path):
+    source = tmp_path / "long.flac"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=11025:duration=130",
+                    "-y", str(source)], check=True)
+    result = compute_encoded_fingerprint(str(source))
+    assert result["duration"] == 130
+    assert result["fingerprint"] and "," not in result["fingerprint"]
+
+
+@pytest.mark.parametrize("payload", [
+    None, [], {}, {"fingerprint": "", "duration": 120},
+    {"fingerprint": "encoded", "duration": True},
+    {"fingerprint": "encoded", "duration": float("inf")},
+    {"fingerprint": "encoded", "duration": 0},
+])
+def test_encoded_fingerprint_rejects_unusable_output(monkeypatch, payload):
+    monkeypatch.setattr("musiclib.fingerprint.fpcalc_available", lambda: "/usr/bin/fpcalc")
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs:
+                        subprocess.CompletedProcess([], 0, stdout=json.dumps(payload)))
+    with pytest.raises(RuntimeError, match="fpcalc returned"):
+        compute_encoded_fingerprint("/music/song.flac")
+
+
+@pytest.mark.parametrize("failure,exception,message", [
+    ("missing", ValueError, "needs fpcalc"),
+    ("timeout", RuntimeError, "timed out"),
+    ("decode", RuntimeError, "could not decode"),
+    ("output", RuntimeError, "invalid fingerprint"),
+])
+def test_encoded_fingerprint_reports_failures(monkeypatch, failure, exception, message):
+    monkeypatch.setattr("musiclib.fingerprint.fpcalc_available",
+                        lambda: None if failure == "missing" else "/usr/bin/fpcalc")
+
+    def run(*args, **kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired("fpcalc", 120)
+        return subprocess.CompletedProcess([], 1 if failure == "decode" else 0, stdout="not json")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(exception, match=message):
+        compute_encoded_fingerprint("/music/song.flac")

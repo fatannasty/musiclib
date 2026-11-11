@@ -231,6 +231,9 @@ contact = "you@example.com"  # MusicBrainz requires a real contact
 album_source = "all"        # all | musicbrainz | itunes | deezer | library
 ipv4_only = false           # force IPv4 for interactive metadata searches
 
+[acoustid]
+api_key = ""                # optional application key, only for explicit audio identification
+
 [sabnzbd]
 url = "http://localhost:8080"
 api_key = "your-sabnzbd-api-key"
@@ -457,6 +460,35 @@ requests use four-second connection/read timeouts. Address/route connection erro
 retry once using IPv4; timeouts, rate limits, and HTTP service errors are not
 automatically retried. If one provider fails, available matches are shown with a warning instead
 of hiding the failure. MusicBrainz requests remain rate limited.
+
+For songs with missing or incorrect tags, **Library -> Tracks -> Lookup ->
+Identify from audio** searches by sound instead of title/artist. First register an
+application at https://acoustid.org/new-application and enter its **application API
+key** (not a user API key) in **Settings -> Audio identification (AcoustID)**.
+The key is optional; existing catalog searches and duplicate discovery do not use
+it. Settings masks the saved key; a blank input preserves it, and **Remove the
+saved AcoustID key** clears it. It is stored in the NAS configuration file, so keep
+that file and its backups private. Browsing memory never includes credentials.
+
+Identification decodes up to the first 120 seconds locally with `fpcalc` (included
+in Docker), with a 120-second process timeout. Only the compressed fingerprint,
+full duration, and application key are sent to AcoustID over HTTPS; no audio file,
+local path, or existing tags are uploaded. Up to five distinct recording IDs are
+resolved through rate-limited MusicBrainz requests. The AcoustID score is an audio
+match estimate, not guaranteed identity. Suggestions include only the recording
+title, credited artist, and recording ID: album edition, year, release ID and
+track/disc numbers are not inferred from a recording match.
+
+Audio identification is individual and explicitly requested, never part of
+**All catalogs**, bulk text searches, or scheduled duplicate discovery. It uses
+the same lookup lane and IPv4-only setting as catalog search, a ten-second AcoustID
+request timeout, and four-second MusicBrainz request timeouts. Partial recording
+lookup failures show warnings; total failures are errors rather than empty
+successful searches. Missing keys/tools, unreadable files, and no matches are
+reported separately. No fields are selected or saved automatically. Select fields
+and confirm through the existing review; files changed during identification or
+before applying are refused. Audio identification does not move/trash files, save
+artwork, or replace the raw fingerprints used for local duplicate comparison.
 
 Catalog searches run separately from library changes: you can edit tags, scan,
 trash, or organize files while a lookup is running. Only one catalog search or

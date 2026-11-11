@@ -66,7 +66,39 @@ def test_existing_config_without_catalog_section_gets_compatible_defaults(lib_en
     with TestClient(create_app(config)) as client:
         settings = client.get("/api/settings").json()
         assert settings["catalog"] == {"album_source": "all", "ipv4_only": False}
+        assert settings["acoustid"] == {"api_key": "", "api_key_set": False}
         assert client.put("/api/settings", json={
             "catalog": {"album_source": "library", "ipv4_only": True},
         }).status_code == 200
     assert Config.load(path).catalog == {"album_source": "library", "ipv4_only": True}
+
+
+def test_acoustid_key_is_optional_masked_preserved_and_removable(lib_env):
+    with TestClient(create_app(lib_env.config)) as client:
+        assert client.get("/api/settings").json()["acoustid"] == {
+            "api_key": "", "api_key_set": False,
+        }
+        assert client.put("/api/settings", json={
+            "acoustid": {"api_key": "test-application-key"},
+        }).status_code == 200
+        masked = client.get("/api/settings").json()
+        assert masked["acoustid"] == {"api_key": "", "api_key_set": True}
+        assert "test-application-key" not in str(masked)
+        assert client.put("/api/settings", json={"acoustid": {"api_key": ""}}).status_code == 200
+        assert Config.load(lib_env.config.config_path).acoustid["api_key"] == "test-application-key"
+        assert client.put("/api/settings", json={
+            "acoustid": {"clear_api_key": True},
+        }).status_code == 200
+        assert Config.load(lib_env.config.config_path).acoustid["api_key"] == ""
+
+
+@pytest.mark.parametrize("key", ["has spaces", "newline\nkey", "x" * 201])
+def test_invalid_acoustid_key_does_not_leak_or_change_settings(lib_env, key):
+    with TestClient(create_app(lib_env.config)) as client:
+        before = client.get("/api/settings").json()
+        response = client.put("/api/settings", json={
+            "acoustid": {"api_key": key}, "doctor": {"min_bitrate": 192},
+        })
+        assert response.status_code == 400
+        assert key not in response.text
+        assert client.get("/api/settings").json() == before

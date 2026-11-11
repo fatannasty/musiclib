@@ -109,6 +109,10 @@ class MetadataApplyBody(BaseModel):
     fields: List[str]
 
 
+class MetadataIdentifyBody(BaseModel):
+    track_id: int
+
+
 class MetadataBulkLookupBody(BaseModel):
     track_ids: List[int]
     source: Literal["all", "musicbrainz", "itunes", "deezer"] = "all"
@@ -188,11 +192,12 @@ class SettingsBody(BaseModel):
     artwork: Optional[Dict[str, Any]] = None
     brainz: Optional[Dict[str, Any]] = None
     catalog: Optional[Dict[str, Any]] = None
+    acoustid: Optional[Dict[str, Any]] = None
     sabnzbd: Optional[Dict[str, Any]] = None
     indexers: Optional[List[Dict[str, Any]]] = None
 
 
-EDITABLE_SECTIONS = ("organize", "doctor", "duplicates", "artwork", "brainz", "catalog", "sabnzbd")
+EDITABLE_SECTIONS = ("organize", "doctor", "duplicates", "artwork", "brainz", "catalog", "acoustid", "sabnzbd")
 SECRET_KEYS = ("api_key",)
 
 
@@ -610,6 +615,16 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(500, str(exc)) from exc
+
+    @app.post("/api/metadata/identify")
+    @jobs.lookup_operation
+    def metadata_identify(body: MetadataIdentifyBody) -> Dict[str, Any]:
+        try:
+            return MetadataReview(config, db).identify(body.track_id)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(502, str(exc)) from exc
 
     @app.post("/api/metadata/lookup-bulk")
     def metadata_lookup_bulk(body: MetadataBulkLookupBody) -> Dict[str, str]:
@@ -1229,6 +1244,12 @@ def create_app(config: Config) -> FastAPI:
                     continue
                 merged[key] = _coerce(value, current[key])
             updates[section] = merged
+        if "acoustid" in updates:
+            if body.acoustid and body.acoustid.get("clear_api_key") is True:
+                updates["acoustid"]["api_key"] = ""
+            key = updates["acoustid"]["api_key"]
+            if len(key) > 200 or any(not 33 <= ord(char) <= 126 for char in key):
+                raise HTTPException(400, "The AcoustID application key must contain at most 200 non-space ASCII characters.")
         if "catalog" in updates and updates["catalog"].get("album_source", "all") not in ALBUM_SOURCES:
             raise HTTPException(400, "Choose a valid default album lookup source.")
         if "duplicates" in updates:
