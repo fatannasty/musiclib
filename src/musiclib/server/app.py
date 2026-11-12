@@ -21,6 +21,7 @@ from ..config import Config
 from ..db import Database
 from ..doctor import Doctor
 from ..duplicates import DuplicateFinder
+from ..edition_audit import audit_album
 from ..fingerprint import compute_all, fpcalc_available
 from ..fsops import is_inside, move_no_replace
 from ..metadata_review import (
@@ -792,6 +793,17 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(502, str(exc)) from exc
+
+    @app.post("/api/metadata/album-tracklist-audit")
+    def metadata_album_tracklist_audit(body: AlbumIdentity) -> Dict[str, str]:
+        artist, album = body.album_artist.strip(), body.album.strip()
+        if not artist or not album:
+            raise HTTPException(400, "An album artist and album name are required.")
+        return {"job_id": jobs.start(
+            "album-tracklist-audit",
+            lambda job: audit_album(config, db, artist, album, jobs.update, jobs.check_cancelled),
+            read_only=True,
+        )}
 
     @app.post("/api/metadata/albums-suggest")
     def metadata_albums_suggest(body: AlbumBatchSuggestBody) -> Dict[str, str]:

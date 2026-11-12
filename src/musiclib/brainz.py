@@ -109,6 +109,24 @@ def get_recording(recording_id: str, *, ipv4_only: bool = False) -> Dict[str, An
     return payload
 
 
+def get_release(release_id: str, *, ipv4_only: bool = False) -> Dict[str, Any]:
+    try:
+        with musicbrainz_request(timeout=4.0):
+            response = catalog_get(
+                f"https://musicbrainz.org/ws/2/release/{release_id}",
+                params={"inc": "recordings", "fmt": "json"},
+                headers={"User-Agent": _user_agent},
+                timeout=4.0, ipv4_only=ipv4_only,
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, OSError, ValueError, musicbrainzngs.MusicBrainzError) as exc:
+        raise RuntimeError(f"MusicBrainz track-list lookup failed: {catalog_error(exc)}") from exc
+    if not isinstance(payload, dict) or payload.get("id") != release_id or not isinstance(payload.get("media"), list):
+        raise RuntimeError("MusicBrainz returned an unexpected release track list.")
+    return payload
+
+
 @dataclass
 class ExpectedTrack:
     disc: int

@@ -62,6 +62,23 @@ function dashboard({storage, reducedMotion = false} = {}) {
     run: script => vm.runInContext(script, context)};
 }
 
+test("track-list comparison displays uncertainty and escapes catalog and local data", () => {
+  const {context} = dashboard();
+  const markup = context.tracklistAuditMarkup(
+    {summary: {album_artist: "Artist", album: "<Tape>"}},
+    [{id: "release", title: "<Edition>", date: "2001", country: "US", status: "",
+      tracks: [{catalog: {disc: 1, position: 1, title: "<Song>", duration: 100},
+        local: null, flags: ["No unique title match"]}],
+      unmatched_local: [{disc_no: 1, track_no: 1, title: "Other", path: "<path>"}]}],
+  );
+  assert.match(markup, /&lt;Tape&gt;/);
+  assert.match(markup, /&lt;Edition&gt;/);
+  assert.match(markup, /&lt;Song&gt;/);
+  assert.match(markup, /&lt;path&gt;/);
+  assert.match(markup, /No unique title match/);
+  assert.match(markup, /No files or tags were changed/);
+});
+
 test("workspace memory restores validated browsing fields without restoring reviews or selections", () => {
   const {context, saved, run} = dashboard();
   saved.set("musiclib.workspace.v1", JSON.stringify({
@@ -399,6 +416,12 @@ test("job locks respect search/write lanes without overriding local disabled sta
   run('state.jobs = [{status:"stopping", read_only:true}]');
   context.applyJobLocks(root);
   assert.equal(write.hasAttribute("aria-disabled"), false);
+  assert.equal(search.attributes.get("aria-disabled"), "true");
+  run('state.jobs = [{status:"running", read_only:true, lane:"artwork", kind:"artwork-discovery"}]');
+  context.applyJobLocks(root);
+  assert.equal(search.hasAttribute("aria-disabled"), false);
+  run('state.jobs = [{status:"running", read_only:true, lane:"default", kind:"album-tracklist-audit"}]');
+  context.applyJobLocks(root);
   assert.equal(search.attributes.get("aria-disabled"), "true");
   run("state.jobs = []");
   context.applyJobLocks(root);

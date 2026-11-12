@@ -409,6 +409,7 @@ const jobNames = {
   "album-duplicates-apply": "Clean selected duplicates", rename: "Organize library", art: "Find / download artwork",
   brainz: "Check album completeness", "issues-trash": "Trash selected bad files",
   "metadata-lookup": "Look up track metadata", "metadata-album-discovery": "Discover selected album matches",
+  "album-tracklist-audit": "Compare album track lists",
   "artwork-discovery": "Find catalog cover candidates",
   "metadata-apply": "Save track tags",
   "album-apply": "Save album tags", "rename-preview": "Preview selected organization",
@@ -474,7 +475,8 @@ function leaveLibraryReview() {
 }
 function applyJobLocks(root = document) {
   const writing = state.jobs.some(job => activeJob(job) && !job.read_only);
-  const searching = state.jobs.some(job => activeJob(job) && job.read_only);
+  const searching = state.jobs.some(job =>
+    activeJob(job) && job.read_only && job.lane !== "artwork" && job.kind !== "artwork-discovery");
   root.querySelectorAll("[data-operation], [data-lookup-operation]").forEach(button => {
     const locked = button.hasAttribute("data-lookup-operation") ? searching : writing;
     if (locked) {
@@ -780,6 +782,29 @@ document.addEventListener("change", event => {
 });
 const outcomeSummary = job => Object.entries(job.outcomes || {}).map(([status, count]) =>
   `${count} ${status === "pending" ? "waiting" : status}`).join(" · ");
+function tracklistAuditMarkup(job, editions) {
+  const duration = value => value == null ? "—" : `${Number(value).toFixed(1)}s`;
+  const position = (disc, track) => `${disc || "—"} / ${track || "—"}`;
+  return `<h3>${esc(job.summary.album_artist)} — ${esc(job.summary.album)}</h3>
+    <p class="hint">MusicBrainz suggestions may be different editions. Unique normalized titles are paired; unmatched titles may be missing, extra, or named differently. Duplicate titles are not paired automatically. No files or tags were changed. Results are a snapshot.</p>` +
+    (editions.length ? editions.map(edition => `<section class="card">
+      <h3>${esc(edition.title)}</h3>
+      <p class="hint">MusicBrainz · ${esc(edition.date || "Unknown date")} · ${esc(edition.country || "Unknown country")} · ${esc(edition.status || "Unknown status")} · Release ${esc(edition.id)}</p>
+      ${edition.error ? `<p role="alert">${esc(edition.error)}</p>` : `
+      <div class="table-scroll"><table><thead><tr><th>Catalog disc / track</th><th>Catalog title / duration</th><th>Local disc / track</th><th>Local title / duration</th><th>Review</th></tr></thead>
+      <tbody>${edition.tracks.map(item => `<tr><td>${esc(position(item.catalog.disc, item.catalog.position))}</td>
+        <td>${esc(item.catalog.title || "Unknown")} · ${esc(duration(item.catalog.duration))}</td>
+        <td>${item.local ? esc(position(item.local.disc_no, item.local.track_no)) : "—"}</td>
+        <td>${item.local ? `${esc(item.local.title)} · ${esc(duration(item.local.duration))}` : "No unique match"}</td>
+        <td>${esc(item.flags.join("; ") || "Title matches")}</td></tr>`).join("")}</tbody></table></div>
+      <p><strong>Unmatched local tracks: ${edition.unmatched_local.length}</strong></p>
+      ${edition.unmatched_local.map(track => `<p>${esc(position(track.disc_no, track.track_no))} · ${esc(track.title || "Unknown")} · ${esc(track.path)}</p>`).join("")}`}
+    </section>`).join("") : "<p>No MusicBrainz editions were found. No files or tags were changed.</p>");
+}
+async function showTracklistAudit(panel, job) {
+  const response = await api(`/api/jobs/${job.id}/results/editions?limit=6`);
+  if (panel.isConnected) panel.innerHTML = tracklistAuditMarkup(job, response.items);
+}
 async function showJobResults(job) {
   const container = $("#activity-results");
   $("#activity-details").open = true;
@@ -787,6 +812,11 @@ async function showJobResults(job) {
     <button class="action ghost" data-close-results>Close results</button></div>
     <div class="row sections"></div><div class="results-page"></div></div>`;
   container.querySelector("[data-close-results]").onclick = () => { container.innerHTML = ""; };
+  if (job.kind === "album-tracklist-audit") {
+    if (job.status === "done") await showTracklistAudit(container.querySelector(".results-page"), job);
+    else container.querySelector(".results-page").textContent = job.error || "This comparison has not completed.";
+    return;
+  }
   const sections = Object.entries(job.summary || {}).filter(([, value]) => typeof value === "number");
   const lists = {
     scan: [], doctor: ["results", "failures"], duplicates: ["groups"],
@@ -1557,6 +1587,7 @@ const views = {
           <div class="album-hero">${albumCover(detail.cover_url)}
             <div><h3>${esc(detail.album)}</h3>
             <p>${esc(detail.album_artist)} · ${esc(detail.year || "—")} · ${detail.track_count} tracks${detail.bad_count ? ` · ${detail.bad_count} bad` : ""}</p>
+            <button class="action ghost" data-tracklist-audit data-lookup-operation>Compare track lists</button>
             <div class="row selection-actions" data-album-selection-actions>
               <button class="action" data-edit-album data-operation>Edit album tags</button>
               <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button>
@@ -1572,6 +1603,7 @@ const views = {
             </div></div>
           </div>
           ${detail.track_count > 200 ? '<p class="hint">Only the first 200 tracks are selected. Edit larger albums in batches.</p>' : ''}
+          <div data-tracklist-audit-results role="region" aria-label="Track-list comparison"></div>
           <div class="table-scroll"><table><thead><tr><th>Select</th><th>Disc</th><th>Track</th><th>Title</th><th>Artist</th><th>Status</th><th>Listen / Edit</th></tr></thead>
           <tbody>${detail.tracks.map(track =>
             `<tr><td><input type="checkbox" data-select-track="${track.id}" aria-label="Select ${esc(track.title || track.path)}"></td>
@@ -1589,6 +1621,23 @@ const views = {
         };
         pageEl.querySelector("[data-dupes-album]").onclick = () =>
           reviewAlbumDuplicates(detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id));
+        pageEl.querySelector("[data-tracklist-audit]").onclick = async event => {
+          const button = event.currentTarget;
+          const panel = pageEl.querySelector("[data-tracklist-audit-results]");
+          button.disabled = true;
+          panel.textContent = "Comparing MusicBrainz editions. No files are being changed.";
+          try {
+            const {job_id} = await post("/api/metadata/album-tracklist-audit", {
+              album_artist: detail.album_artist, album: detail.album,
+            });
+            await refreshActivity();
+            const job = await pollJob(job_id, "Track-list comparison");
+            if (panel.isConnected) await showTracklistAudit(panel, job);
+          } catch (error) {
+            if (panel.isConnected) panel.textContent = error.message;
+            toast(error.message, true);
+          } finally { if (button.isConnected) button.disabled = false; }
+        };
         pageEl.querySelector("[data-trash-album]").onclick = async () => {
           const trackIds = detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id);
           if (!trackIds.length) { toast("Select tracks to trash first.", true); return; }
