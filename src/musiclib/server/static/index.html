@@ -135,6 +135,10 @@ td.path { font-family: var(--mono); font-size: 11.5px; color: var(--dim); word-b
 .doctor-selection .row { margin: 8px 0 0; }
 .doctor-selection details { margin-top: 8px; }
 .doctor-bulk-trash { border-color: var(--border); }
+.recovery-controls { box-shadow: var(--shadow); }
+.recovery-selection { padding: 14px; border-left: 2px solid var(--accent); background: var(--panel2); border-radius: 9px; margin: 12px 0 16px; }
+.recovery-selection .row { margin: 8px 0 0; }
+.recovery-preview { border-top: 3px solid var(--accent); scroll-margin-top: 16px; }
 label.check { color: var(--dim); font-size: 13px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
 select { background: var(--panel); border: 1px solid var(--control-border); color: var(--text); padding: 10px 12px; border-radius: 9px; }
 .hint { color: var(--dim); font-size: 12px; }
@@ -3049,14 +3053,23 @@ const views = {
   },
 
   async recovery(el) {
-    el.innerHTML = `<p class="hint">Restore trashed files to their original locations. If a location is occupied, the restore is refused rather than overwriting anything.</p>
-      <label class="check"><input type="checkbox" id="show-restored"> include previously restored entries</label>
-      <div class="row"><button class="action ghost" id="restore-select-page">Select this page</button>
-      <button class="action ghost" id="restore-clear">Clear selection</button>
-      <span id="restore-count">0 entries selected</span>
-      <button class="action" id="restore-preview-selected" data-operation>Preview restore selected</button></div>
-      <p class="hint">Select up to 200 recoverable entries across pages. Preview fixes the exact file list;
-      nothing moves until you review the paths and confirm. Existing files are never overwritten.</p>
+    el.innerHTML = `<div class="card recovery-controls">
+      <h3>Recover files</h3>
+      <p>Restore trashed files to their original paths. Existing files are never overwritten; blocked restores stay in trash.</p>
+      <details><summary>Previously restored entries</summary>
+        <label class="check"><input type="checkbox" id="show-restored"> Include restored history</label>
+      </details>
+    </div>
+      <h3>Choose files to restore</h3>
+      <p class="hint">Select files across pages, up to 200. Preview checks each exact path; nothing moves until you review and confirm.</p>
+      <div class="recovery-selection" id="restore-selection">
+        <span id="restore-count" role="status">No recoverable files on this page.</span>
+        <div class="row">
+          <button class="action ghost" id="restore-select-page">Select this page</button>
+          <button class="action ghost" id="restore-clear" hidden>Clear selection</button>
+          <button class="action" id="restore-preview-selected" data-operation hidden>Preview selected restores</button>
+        </div>
+      </div>
       <div id="restore-review"></div><div id="trash-table"></div>`;
     const selected = new Set();
     let pageItems = [];
@@ -3067,13 +3080,24 @@ const views = {
       else selected.delete(id);
     };
     const updateSelection = () => {
-      el.querySelector("#restore-count").textContent = `${selected.size} entries selected`;
+      const currentRecoverable = pageItems.filter(item => !item.restored_at && item.moved_to).length;
+      el.querySelector("#restore-selection").hidden = !currentRecoverable && selected.size === 0;
+      el.querySelector("#restore-count").textContent = selected.size
+        ? `${selected.size} ${selected.size === 1 ? "file" : "files"} selected for preview`
+        : "No files selected. Select this page or use Previous and Next to choose across pages.";
+      el.querySelector("#restore-clear").hidden = selected.size === 0;
+      el.querySelector("#restore-preview-selected").hidden = selected.size === 0;
+      el.querySelector("#restore-preview-selected").textContent =
+        `Preview ${selected.size} selected ${selected.size === 1 ? "restore" : "restores"}`;
+      el.querySelector("#restore-select-page").disabled = currentRecoverable === 0;
       el.querySelectorAll("[data-select-restore]").forEach(input => {
         input.checked = selected.has(Number(input.dataset.selectRestore));
       });
     };
-    const draw = () => pagedTable($("#trash-table"),
-      offset => api(`/api/trash?offset=${offset}&include_restored=${$("#show-restored").checked}`),
+    const draw = () => pagedTable($("#trash-table"), offset => {
+      el.querySelector("#restore-select-page").disabled = true;
+      return api(`/api/trash?offset=${offset}&include_restored=${$("#show-restored").checked}`);
+    },
       ["Select", "Deleted", "Reason", "Original path", "Restore"],
       item => `<tr><td>${!item.restored_at && item.moved_to ?
         `<input type="checkbox" data-select-restore="${item.id}" aria-label="Select ${esc(item.path)}">` : ""}</td>
@@ -3110,8 +3134,8 @@ const views = {
       const review = await api(`/api/trash/restore-reviews/${preview.review_id}`);
       if (!el.isConnected) return;
       const panel = el.querySelector("#restore-review");
-      panel.innerHTML = `<div class="card"><h3>Review selected restores</h3>
-        <p>${preview.ready} ready (${fmtBytes(preview.bytes)}) · ${preview.blocked} blocked.
+      panel.innerHTML = `<div class="card recovery-preview"><h3>Restore preview</h3>
+        <p><strong>${preview.ready} ready</strong> (${fmtBytes(preview.bytes)}) · ${preview.blocked} blocked.
         No files have been moved. Only the saved ready list below is used, regardless of the current checkboxes.</p>
         <p>Restore to the exact original paths shown. Occupied paths are never overwritten or renamed
         with a suffix. Changed or missing trash files are skipped. Blocked entries stay in Recovery.</p>

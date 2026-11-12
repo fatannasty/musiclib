@@ -440,7 +440,8 @@ when hard links are unavailable. A file restored later cannot be trashed again
 using an already-used preview.
 
 In **Recovery**, select up to 200 recoverable entries across pages and choose
-**Preview restore selected**. The saved preview lists exact trash files, original
+**Preview selected restores**. The **Previously restored entries** history is
+collapsed by default. The saved preview lists exact trash files, original
 paths, sizes, and ready/blocked reasons without moving files or creating folders.
 Choose **Restore reviewed files** and confirm to restore only the saved ready list;
 changing checkboxes does not retarget an existing preview.
