@@ -253,7 +253,7 @@ class Database:
 
     def album_groups_page(
         self, query: str = "", status: str = "", genre: str = "", format: str = "",
-        offset: int = 0, limit: int = 48,
+        offset: int = 0, limit: int = 48, initial: str = "",
     ) -> Dict[str, Any]:
         artist_expr = (
             "COALESCE(NULLIF(TRIM(album_artist), ''), NULLIF(TRIM(artist), ''), 'Unknown Artist')"
@@ -268,6 +268,11 @@ class Database:
             if value:
                 where += f" AND {column}=?"
                 params.append(value)
+        if initial == "#":
+            where += f" AND UPPER(SUBSTR({artist_expr}, 1, 1)) NOT GLOB '[A-Z]'"
+        elif initial:
+            where += f" AND UPPER(SUBSTR({artist_expr}, 1, 1)) = ?"
+            params.append(initial)
         if query:
             pattern = f"%{query}%"
             where += (

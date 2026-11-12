@@ -94,7 +94,7 @@ def test_track_cover_serves_embedded_art(lib_env):
         assert client.get("/api/tracks/999999/cover").status_code == 404
 
 
-@pytest.mark.parametrize("limit", [50, 100, 150, 200])
+@pytest.mark.parametrize("limit", [25, 50, 100, 150, 200])
 def test_album_scroll_batches_cover_all_albums_without_overlap(lib_env, limit):
     for index in range(225):
         lib_env.db.upsert_track(Track(
@@ -108,6 +108,30 @@ def test_album_scroll_batches_cover_all_albums_without_overlap(lib_env, limit):
         assert len(second["items"]) == min(limit, 225 - limit)
         assert not {a["album"] for a in first["items"]} & {a["album"] for a in second["items"]}
         assert first["total"] == second["total"] == 225
+
+
+def test_library_initial_filters_albums_and_tracks_with_pagination(lib_env):
+    for index in range(32):
+        artist = "Alpha" if index < 27 else "beta" if index < 30 else "7 Artist"
+        lib_env.db.upsert_track(Track(
+            path=str(lib_env.library / f"{index}.mp3"), album=f"Album {index:03d}",
+            album_artist=artist, artist=artist, title=f"Track {index:03d}", genre="Jazz",
+        ))
+    with TestClient(create_app(lib_env.config)) as client:
+        for letter, expected in (("A", 27), ("b", 3), ("#", 2)):
+            album_page = client.get("/api/albums/page", params={
+                "initial": letter, "limit": 25, "genre": "Jazz",
+            }).json()
+            track_page = client.post("/api/tracks/page", json={
+                "initial": letter, "limit": 25, "genre": "Jazz",
+            }).json()
+            assert album_page["total"] == track_page["total"] == expected
+            assert len(album_page["items"]) == len(track_page["items"]) == min(expected, 25)
+        next_albums = client.get("/api/albums/page", params={"initial": "A", "limit": 25, "offset": 25}).json()
+        next_tracks = client.post("/api/tracks/page", json={"initial": "A", "limit": 25, "offset": 25}).json()
+        assert len(next_albums["items"]) == len(next_tracks["items"]) == 2
+        assert client.get("/api/albums/page", params={"initial": "AB"}).status_code == 400
+        assert client.post("/api/tracks/page", json={"initial": "AB"}).status_code == 400
 
 
 def test_album_duplicates_are_scoped_recoverable_and_leave_organization_separate(mini_library):

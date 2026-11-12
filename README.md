@@ -63,10 +63,9 @@ Short entrance and hover animations provide feedback without looping decoration.
 The dashboard respects your device's reduced-motion setting, including review scrolling.
 
 Workspace memory is saved in this browser: the current tab, last applied Library
-search and filters, Albums/Tracks view, album batch size, track page, and browsing
+search and filters, artist initial, Albums/Tracks view, page size and page, and browsing
 scroll positions. Returning to Library or refreshing restores that context.
-Album browsing loads additional batches as needed to reach the saved position;
-scrolling, typing, or clicking interrupts automatic position restoration.
+Scrolling, typing, or clicking interrupts automatic position restoration.
 Unavailable genre/format filters are cleared with a notice, and a track page that
 no longer exists is moved to the last available page. Positions are best-effort
 when the collection, window size, or temporary results have changed.
@@ -311,11 +310,11 @@ Album discovery shows each candidate with its suggested tag fields. Choose field
 individually or use **Select all fields** for that album; nothing is selected or
 saved automatically, and each apply still requires confirmation.
 
-Choose **50, 100, 150, or 200 Albums per load**. Scrolling near the bottom appends
-the next batch instead of replacing existing albums; **Load more albums** also
-works with a keyboard or without automatic scroll detection. Album selections
-survive appended batches and search filters until cleared or successfully merged.
-Changing the load size resets the displayed list, not the selection.
+Choose **25, 50, or 100 items per page** and use the numbered controls below the
+results. The artist initial index filters the entire matching library in both
+views; **#** includes names starting with a number, symbol, or non-ASCII letter.
+Album selections survive page and filter changes until cleared or successfully
+merged. Closing an edit review returns to the track and its previous position.
 
 To combine albums, select their album-card checkboxes and choose **Merge selected
 albums** (up to 200 tracks per batch). This works across folders. Enter the target
