@@ -46,6 +46,7 @@ embed = true
 folder_image = "folder.jpg"
 min_side = 300
 replace_small = false
+schedule_hours = 0
 
 [brainz]
 contact = "you@example.com"
@@ -131,6 +132,7 @@ def _default_config(library: str) -> Dict[str, Any]:
             "folder_image": "folder.jpg",
             "min_side": 300,
             "replace_small": False,
+            "schedule_hours": 0,
         },
         "brainz": {"contact": "you@example.com"},
         "catalog": {"album_source": "all", "ipv4_only": False},

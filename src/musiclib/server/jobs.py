@@ -25,6 +25,7 @@ class JobRegistry:
         self.after_write = after_write
         self._lease = threading.Lock()
         self._lookup_lease = threading.Lock()
+        self._artwork_lease = threading.Lock()
         self._local = threading.local()
         self._threads: list = []
         self._state_lock = threading.RLock()
@@ -94,18 +95,30 @@ class JobRegistry:
         return guarded
 
     @staticmethod
-    def _busy(read_only: bool) -> HTTPException:
-        message = (
-            "A catalog search is already running. Wait for it to finish; bulk progress is in Activity."
-            if read_only else "A library operation is already running. See Activity."
-        )
+    def _busy(read_only: bool, lane: str = "default") -> HTTPException:
+        if lane == "artwork":
+            message = "Artwork discovery is already running. See Activity."
+        else:
+            message = (
+                "A catalog search is already running. Wait for it to finish; bulk progress is in Activity."
+                if read_only else "A library operation is already running. See Activity."
+            )
         return HTTPException(409, message)
 
-    def start(self, kind: str, fn, *, read_only: bool = False, origin: str = "manual") -> str:
-        lease = self._lookup_lease if read_only else self._lease
-        ownership = "lookup_owned" if read_only else "owned"
+    def start(
+        self, kind: str, fn, *, read_only: bool = False, origin: str = "manual",
+        lane: str = "default",
+    ) -> str:
+        if lane == "artwork":
+            lease = self._artwork_lease
+            ownership = "artwork_owned"
+        elif lane == "default":
+            lease = self._lookup_lease if read_only else self._lease
+            ownership = "lookup_owned" if read_only else "owned"
+        else:
+            raise ValueError(f"Unknown job lane: {lane}")
         if not lease.acquire(blocking=False):
-            raise self._busy(read_only)
+            raise self._busy(read_only, lane)
         job = {
             "id": uuid.uuid4().hex[:12], "kind": kind, "status": "queued",
             "started": time.time(), "finished": None, "phase": "Preparing",

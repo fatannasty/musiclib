@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from dataclasses import asdict
@@ -13,6 +14,7 @@ from mutagen import MutagenError
 from pydantic import BaseModel, Field
 
 from ..artwork import CAA_FRONT_THUMB, Artwork, read_cover
+from ..artwork_discovery import discover_artwork_batch, download_candidate_cover
 from ..artwork_review import MAX_IMAGE_BASE64, ArtworkReview
 from ..brainz import Brainz
 from ..config import Config
@@ -35,6 +37,7 @@ from ..restore_review import RestoreReview
 from ..scanner import Scanner, file_hash
 from ..trash_review import TrashReview
 from ..usenet import Sabnzbd, SabnzbdError, search_all
+from .artwork_schedule import ArtworkSchedule
 from .duplicate_schedule import DuplicateSchedule
 from .jobs import JobRegistry
 from .playback import MEDIA_TYPES, Playback
@@ -188,6 +191,12 @@ class ArtworkPreviewBody(BaseModel):
     track_ids: List[int]
     image_base64: str = Field(max_length=MAX_IMAGE_BASE64)
     filename: str = Field(default="Uploaded cover", max_length=255)
+
+
+class ArtworkCandidatePreviewBody(BaseModel):
+    discovery_job_id: str
+    album_index: int = Field(ge=0)
+    candidate_index: int = Field(ge=0)
 
 
 class SabAddBody(BaseModel):
@@ -427,13 +436,30 @@ def create_app(config: Config) -> FastAPI:
 
     schedule = DuplicateSchedule(config, db, jobs, scheduled_duplicates)
 
+    def discover_artwork(job: Dict[str, Any], albums: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return discover_artwork_batch(config, db, albums, jobs.update, jobs.check_cancelled)
+
+    artwork_schedule = ArtworkSchedule(config, db, jobs, discover_artwork)
+
     @app.on_event("startup")
     def start_schedule() -> None:
         schedule.start()
+        artwork_schedule.start()
 
     @app.get("/api/dupes/schedule")
     def duplicate_schedule_status() -> Dict[str, Any]:
         return schedule.status()
+
+    @app.get("/api/artwork/schedule")
+    def artwork_schedule_status() -> Dict[str, Any]:
+        return artwork_schedule.status()
+
+    @app.post("/api/artwork/discover")
+    def artwork_discover() -> Dict[str, str]:
+        job_id = artwork_schedule.start_next()
+        if job_id is None:
+            raise HTTPException(404, "No albums need cover artwork discovery.")
+        return {"job_id": job_id}
 
     @app.get("/api/dupes")
     def dupes_list() -> List[Dict[str, Any]]:
@@ -1165,6 +1191,65 @@ def create_app(config: Config) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from exc
 
+    @app.post("/api/artwork/candidate-preview")
+    def artwork_candidate_preview(body: ArtworkCandidatePreviewBody) -> Dict[str, str]:
+        discovery = jobs.get(body.discovery_job_id)
+        if discovery is None or discovery["kind"] != "artwork-discovery":
+            raise HTTPException(404, "Artwork discovery results were not found.")
+        if discovery["status"] != "done":
+            raise HTTPException(409, "Wait for artwork discovery to finish before reviewing a cover.")
+        albums = jobs.result(body.discovery_job_id).get("albums")
+        if not isinstance(albums, list) or body.album_index >= len(albums):
+            raise HTTPException(404, "Album artwork suggestions were not found.")
+        album = albums[body.album_index]
+        suggestions = album.get("suggestions")
+        if not isinstance(suggestions, list) or body.candidate_index >= len(suggestions):
+            raise HTTPException(404, "This cover suggestion is not available.")
+        candidate = suggestions[body.candidate_index]
+        tracks = album.get("tracks")
+        if not isinstance(tracks, list) or not 1 <= len(tracks) <= 200:
+            raise HTTPException(409, "Album track snapshots are unavailable; run artwork discovery again.")
+
+        def verify_snapshots() -> List[int]:
+            track_ids = []
+            for snapshot in tracks:
+                track = db.get_track(snapshot.get("id"))
+                if track is None or track.status == "deleted" or not is_inside(
+                    track.path, config.library
+                ) or Path(track.path).is_symlink() or (track.path, track.file_hash or "") != (
+                    snapshot.get("path"), snapshot.get("file_hash"),
+                ):
+                    raise ValueError("Album files changed since artwork discovery. Search again.")
+                try:
+                    current_hash = file_hash(track.path)
+                except OSError as exc:
+                    raise ValueError("Album files are unavailable. Search again.") from exc
+                if not track.file_hash or current_hash != snapshot.get("file_hash"):
+                    raise ValueError("Album files changed since artwork discovery. Search again.")
+                track_ids.append(track.id)
+            return track_ids
+
+        try:
+            verify_snapshots()
+
+            def preview(job: Dict[str, Any]) -> Dict[str, Any]:
+                jobs.update("Downloading catalog cover", 0, 1, str(candidate.get("source", "")))
+                image = download_candidate_cover(candidate, config, db)
+                image_base64 = base64.b64encode(image).decode("ascii")
+                track_ids = verify_snapshots()
+                return ArtworkReview(config, db).preview(
+                    track_ids, image_base64,
+                    filename=f"{album.get('album_artist', 'Unknown Artist')} - {album.get('album', 'Album')}",
+                    progress=jobs.update,
+                )
+
+            job_id = jobs.start(
+                "artwork-preview", preview, read_only=True, lane="artwork",
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"job_id": job_id}
+
     @app.post("/api/artwork/apply-reviewed")
     def artwork_apply_reviewed(body: ReviewedApplyBody) -> Dict[str, str]:
         preview_job = jobs.get(body.preview_job_id)
@@ -1318,6 +1403,8 @@ def create_app(config: Config) -> FastAPI:
                 raise HTTPException(400, "The AcoustID application key must contain at most 200 non-space ASCII characters.")
         if "catalog" in updates and updates["catalog"].get("album_source", "all") not in ALBUM_SOURCES:
             raise HTTPException(400, "Choose a valid default album lookup source.")
+        if "artwork" in updates and updates["artwork"].get("schedule_hours", 0) not in (0, 24, 168):
+            raise HTTPException(400, "Choose disabled, daily, or weekly artwork discovery.")
         if "duplicates" in updates:
             duplicate_settings = updates["duplicates"]
             if duplicate_settings.get("schedule_hours", 0) not in (0, 24, 168):
@@ -1367,6 +1454,7 @@ def create_app(config: Config) -> FastAPI:
             config.indexers[:] = previous_indexers
             raise HTTPException(500, f"could not write config: {exc}") from exc
         schedule.status()
+        artwork_schedule.status()
         return {"saved": True, "path": str(path)}
 
     @app.post("/api/tasks/{kind}")
@@ -1446,6 +1534,7 @@ def create_app(config: Config) -> FastAPI:
     @app.on_event("shutdown")
     def shutdown() -> None:
         schedule.close()
+        artwork_schedule.close()
         jobs.close()
         db.close()
 

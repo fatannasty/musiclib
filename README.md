@@ -377,6 +377,18 @@ consumes its preview; create a fresh preview to retry failed files. Embedded art
 takes priority over catalog artwork on album cards, and updated covers refresh
 without requiring a manual browser-cache clear.
 
+In **Cover Art**, **Find cover candidates** checks the next batch of up to 25
+albums missing artwork against MusicBrainz, iTunes, and Deezer. Suggestions are
+saved in Activity; choose **Review cover candidates** to preview a candidate.
+The preview snapshots current file paths and hashes, and embedding still requires
+an explicit confirmation. No scheduled run writes to music files.
+
+**Settings → Cover art → Automatic cover discovery** can schedule this search
+daily or weekly; it is off by default and the first run waits one full interval.
+Each run checks up to 25 albums and advances through the missing-art list.
+Discovery runs in its own background lane alongside album lookup and renaming;
+MusicBrainz requests remain rate-limited. Turn the setting off to stop future runs.
+
 For safe album organization, select up to 200 tracks on an album page and choose
 **Preview organization**. The saved preview lists current and exact proposed paths,
 using the album and multidisc templates in Settings (even for loose root files).
