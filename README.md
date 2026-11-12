@@ -414,6 +414,12 @@ untouched. Preview and apply results remain in Activity; use **View results →
 Review organization** on a `rename-preview` job to reopen a saved preview after
 refreshing. Create a fresh preview to retry failed files.
 
+The **Organize** tab previews folder and filename moves for the library and shows
+the proposed destinations, skipped files, and issues separately. Applying creates
+a fresh plan and checks current destinations again; existing files are never
+overwritten. Review the current destination list before applying, especially after
+metadata or organization settings have changed.
+
 To remove unwanted album tracks, select up to 200 on an album page and choose
 **Trash selected**. This creates a saved preview showing exact source/trash paths,
 sizes, and ready/blocked reasons without moving music files or creating folders.

@@ -139,6 +139,9 @@ td.path { font-family: var(--mono); font-size: 11.5px; color: var(--dim); word-b
 .recovery-selection { padding: 14px; border-left: 2px solid var(--accent); background: var(--panel2); border-radius: 9px; margin: 12px 0 16px; }
 .recovery-selection .row { margin: 8px 0 0; }
 .recovery-preview { border-top: 3px solid var(--accent); scroll-margin-top: 16px; }
+.organize-controls { box-shadow: var(--shadow); }
+.organize-summary { padding: 14px; border-left: 2px solid var(--accent); background: var(--panel2); border-radius: 9px; margin: 12px 0; }
+.organize-summary:empty { display: none; }
 label.check { color: var(--dim); font-size: 13px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
 select { background: var(--panel); border: 1px solid var(--control-border); color: var(--text); padding: 10px 12px; border-radius: 9px; }
 .hint { color: var(--dim); font-size: 12px; }
@@ -3210,33 +3213,53 @@ const views = {
   },
 
   async organize(el) {
-    el.innerHTML = `<div class="row">
-      <button class="action" id="btn-plan" data-operation>Preview renames</button>
-      <button class="action" id="btn-apply" data-operation style="display:none">Apply (move files)</button>
-    </div><p class="hint">No files move during preview. Loose root-level tracks go to Singles/Genre.</p>
-    <div id="ren-summary"></div><div class="row" id="ren-sections"></div>
-    <div id="ren-out"><div class="empty">Preview shows every file move before anything happens.</div></div>`;
+    el.innerHTML = `<div class="card organize-controls">
+      <h3>Organize folders and filenames</h3>
+      <p>Preview the planned destinations first. Nothing moves until you review the list and choose to apply it.</p>
+      <p class="hint">Applying creates a fresh plan and checks current destinations again. Existing files are never overwritten.</p>
+      <p class="hint">Uses the templates in Settings. Loose root-level tracks go to Singles/Genre.</p>
+      <button class="action" id="btn-plan" data-operation>Preview organization</button>
+    </div>
+    <div class="organize-summary" id="ren-summary" role="status"></div>
+    <div class="row" id="ren-actions"><button class="action" id="btn-apply" data-operation hidden>Apply reviewed moves</button></div>
+    <h3>Preview details</h3><div class="row" id="ren-sections"></div>
+    <div id="ren-out"><div class="empty">Choose Preview organization to see the proposed moves, skipped files, and any issues.</div></div>`;
+    $("#btn-apply").hidden = true;
     const showPlan = async job => {
       const res = job.summary;
-      $("#btn-apply").style.display = !res.applied && res.to_move ? "" : "none";
-      $("#ren-summary").textContent = `${res.to_move} planned · ${res.moved} moved · ${res.already_ok} already organized · ${res.skipped} skipped · ${res.errors} errors`;
-      $("#ren-sections").innerHTML = ["moves", "skipped_files", "errors"].map(section =>
-        `<button class="action ghost" data-section="${section}">${esc(section)}</button>`).join("");
+      const applied = Boolean(res.applied);
+      $("#btn-apply").hidden = applied || !res.to_move;
+      $("#btn-apply").dataset.planned = String(res.to_move);
+      $("#btn-apply").textContent = "Apply organization";
+      $("#ren-summary").textContent = applied
+        ? `${res.moved} ${res.moved === 1 ? "file moved" : "files moved"} · ${res.already_ok} already organized · ${res.skipped} skipped · ${res.errors} errors`
+        : `${res.to_move} ${res.to_move === 1 ? "destination" : "destinations"} to review · ${res.already_ok} already organized · ${res.skipped} skipped · ${res.errors} errors`;
+      const sections = [
+        ["moves", `Planned moves (${res.to_move})`, res.to_move > 0],
+        ["skipped_files", `Skipped files (${res.skipped})`, res.skipped > 0],
+        ["errors", `Issues (${res.errors})`, res.errors > 0],
+      ].filter(([, , visible]) => visible);
+      $("#ren-sections").innerHTML = sections.map(([section, label]) =>
+        `<button class="action ghost" data-section="${section}">${esc(label)}</button>`).join("");
       el.querySelectorAll("[data-section]").forEach(button => button.onclick = () => {
         const section = button.dataset.section;
         pagedTable($("#ren-out"), offset => api(`/api/jobs/${job.id}/results/${section}?offset=${offset}`),
-          section === "moves" ? ["From", "To", "Status"] : ["File", "Reason"],
-          item => section === "moves" ? `<tr><td class="path">${esc(item.source)}</td><td class="path">${esc(item.target)}</td><td>${esc(item.status)}</td></tr>` :
+          section === "moves" ? ["Current location", "New location", "Review status"] : ["File", "Details"],
+          item => section === "moves" ? `<tr><td class="path">${esc(item.source)}</td><td class="path">${esc(item.target)}</td>
+            <td>${esc(item.status)}${item.reason ? `<p class="hint">${esc(item.reason)}</p>` : ""}</td></tr>` :
             `<tr><td class="path">${esc(item.path || item[0])}</td><td>${esc(item.reason || item[1])}</td></tr>`);
       });
-      el.querySelector("[data-section]").click();
+      const firstSection = el.querySelector("[data-section]");
+      if (firstSection) firstSection.click();
+      else $("#ren-out").innerHTML = '<div class="empty">No file moves are needed for this library.</div>';
     };
     $("#btn-plan").onclick = async () => {
       const job = await runTask("rename", {});
       if (el.isConnected) await showPlan(job);
     };
     $("#btn-apply").onclick = async () => {
-      if (!confirm("Move and rename files into the organized structure?")) return;
+      const count = Number($("#btn-apply").dataset.planned || 0);
+      if (!confirm(`Apply the organization plan? ${count} destinations were in the preview. Musiclib creates a fresh plan and checks current paths again; existing files are never overwritten.`)) return;
       const job = await runTask("rename", { apply: true });
       if (el.isConnected) await showPlan(job);
       await loadStats();
