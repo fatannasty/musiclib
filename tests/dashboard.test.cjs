@@ -170,14 +170,16 @@ test("workspace memory restores validated browsing fields without restoring revi
   saved.set("musiclib.workspace.v1", JSON.stringify({
     version: 1, tab: "library",
     library: {query: "Session", genre: "Jazz", format: "mp3", status: "suspect", view: "tracks",
-      batch: 150, trackOffset: 100, selectedTracks: [1, 2]},
+      batch: 25, trackOffset: 75, albumOffset: 50, initial: "B", selectedTracks: [1, 2]},
     scroll: {library: 2400}, libraryReview: {kind: "trash", jobId: "old"}, api_key: "not-persisted",
   }));
   context.loadBrowsing();
   assert.equal(run("state.tab"), "library");
   assert.equal(run("state.libraryView"), "tracks");
-  assert.equal(run("state.libraryBatch"), 150);
-  assert.equal(run("browsing.library.trackOffset"), 100);
+  assert.equal(run("state.libraryBatch"), 25);
+  assert.equal(run("browsing.library.trackOffset"), 75);
+  assert.equal(run("browsing.library.albumOffset"), 50);
+  assert.equal(run("browsing.library.initial"), "B");
   assert.equal(run("browsing.scroll.library"), 2400);
   assert.equal(run("state.libraryReview"), undefined);
   context.saveBrowsing();
@@ -187,6 +189,44 @@ test("workspace memory restores validated browsing fields without restoring revi
   assert.equal(memory.library.format, "mp3");
   assert.equal(memory.library.status, "suspect");
   assert.doesNotMatch(JSON.stringify(memory), /selectedTracks|libraryReview|api_key/);
+});
+
+test("Library numbered pages are bounded and mark the current page", () => {
+  const {context} = dashboard();
+  const markup = context.libraryPagerMarkup(125, 500, 25);
+  assert.match(markup, /126–150 of 500/);
+  assert.match(markup, /data-library-page="6"[^>]*aria-current="page"/);
+  assert.match(markup, /data-library-page="1"/);
+  assert.match(markup, /data-library-page="20"/);
+  assert.doesNotMatch(markup, /data-library-page="15"/);
+  assert.match(context.libraryPagerMarkup(0, 500, 25), /data-library-page="5"/);
+  assert.equal(context.libraryPagerMarkup(0, 0, 25), "");
+});
+
+test("legacy page sizes are reset safely and saved offsets align to the selected size", () => {
+  const {context} = dashboard();
+  const saved = context.validateBrowsing({version: 1, library: {batch: 150, trackOffset: 175, albumOffset: 175, initial: "AA"}});
+  assert.equal(saved.library.batch, 50);
+  assert.equal(saved.library.trackOffset, 150);
+  assert.equal(saved.library.albumOffset, 150);
+  assert.equal(saved.library.initial, "");
+});
+
+test("closing a review returns to the edited track without scrolling the wrong surface", () => {
+  const {context, scrolls} = dashboard();
+  const focus = [];
+  const track = {isConnected: true, focus: options => focus.push(options)};
+  const surface = {scrollTop: 0};
+  const dialog = {open: true, querySelector: () => surface};
+  context.restoreReviewPosition({element: track, scrollTop: 640, scrollY: 2100}, dialog);
+  assert.equal(surface.scrollTop, 640);
+  assert.equal(scrolls.length, 0);
+  assert.equal(focus[0].preventScroll, true);
+  dialog.open = false;
+  track.isConnected = false;
+  context.restoreReviewPosition({element: track, scrollTop: null, scrollY: 2100}, dialog);
+  assert.equal(scrolls[0].top, 2100);
+  assert.equal(focus.length, 1);
 });
 
 test("invalid workspace values cannot select unknown tabs, run actions, or request unbounded restoration", () => {

@@ -218,6 +218,16 @@ details > summary { cursor: pointer; color: var(--dim); padding: 6px 0; }
 .library-view-bar { justify-content: space-between; }
 .library-view-switch { display: flex; gap: 6px; flex-wrap: wrap; }
 .library-guide { margin: 4px 0 16px; }
+.library-results { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 14px; align-items: start; }
+.library-results-content { min-width: 0; }
+.library-index { position: sticky; top: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; max-height: calc(100vh - 24px); overflow-y: auto; }
+.library-index-title { grid-column: 1 / -1; color: var(--dim); font-size: 12px; font-weight: 650; }
+.library-index button, .pager-pages button { min-width: 36px; min-height: 36px; padding: 5px 8px; }
+.library-index button.action.ghost[aria-pressed=true], .pager-pages button.action.ghost[aria-current=page] {
+  background: var(--accent); color: var(--on-accent); border-color: var(--accent);
+}
+.pager { flex-wrap: wrap; }
+.pager-pages { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .table-scroll { overflow-x: auto; margin-bottom: 12px; }
 .pager { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
 .widgets { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin: 8px 0 24px; }
@@ -365,6 +375,10 @@ body.player-open #toast { bottom: 260px; }
   select { max-width: 100%; }
   .match-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .match-card { padding: 8px; }
+  .library-results { display: block; }
+  .library-index { position: static; display: flex; overflow-x: auto; gap: 4px; margin: 0 0 12px; padding-bottom: 4px; }
+  .library-index-title { flex: 0 0 auto; align-self: center; margin-right: 4px; white-space: nowrap; }
+  .library-index button { flex: 0 0 auto; }
   .widgets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .widget { padding: 14px; }
   .album-hero { grid-template-columns: 90px minmax(0, 1fr); gap: 12px; align-items: start; }
@@ -460,7 +474,7 @@ const state = { tab: "overview", jobs: [], libraryView: "albums", libraryBatch: 
 const BROWSING_KEY = "musiclib.workspace.v1";
 const defaultBrowsing = () => ({
   version: 1, tab: "overview",
-  library: {query: "", genre: "", format: "", status: "", view: "albums", batch: 50, trackOffset: 0},
+  library: {query: "", genre: "", format: "", status: "", view: "albums", batch: 50, trackOffset: 0, albumOffset: 0, initial: ""},
   scroll: Object.fromEntries(TABS.map(([id]) => [id, 0])),
 });
 let browsing = defaultBrowsing(), browsingStorageBlocked = false;
@@ -474,10 +488,12 @@ function validateBrowsing(value) {
   }
   if (["", "suspect", "bad"].includes(library.status)) clean.library.status = library.status;
   if (["albums", "tracks"].includes(library.view)) clean.library.view = library.view;
-  if ([50, 100, 150, 200].includes(library.batch)) clean.library.batch = library.batch;
-  if (Number.isSafeInteger(library.trackOffset) && library.trackOffset >= 0 &&
-      library.trackOffset <= 1000000000 && library.trackOffset % 50 === 0) {
-    clean.library.trackOffset = library.trackOffset;
+  if ([25, 50, 100].includes(library.batch)) clean.library.batch = library.batch;
+  if (typeof library.initial === "string" && /^(?:[A-Z]|#)?$/.test(library.initial)) clean.library.initial = library.initial;
+  for (const key of ["trackOffset", "albumOffset"]) {
+    if (Number.isSafeInteger(library[key]) && library[key] >= 0 && library[key] <= 1000000000) {
+      clean.library[key] = Math.floor(library[key] / clean.library.batch) * clean.library.batch;
+    }
   }
   for (const [id] of TABS) {
     const position = value.scroll?.[id];
@@ -624,6 +640,14 @@ function bindDiscoveryFieldSelection(selectAll, fields) {
   };
   fields.forEach(field => { field.onchange = update; });
   update();
+}
+function restoreReviewPosition(point, albumDialog) {
+  if (!point) return;
+  if (albumDialog.open) {
+    const surface = albumDialog.querySelector(".album-dialog-surface");
+    if (surface && point.scrollTop !== null) surface.scrollTop = point.scrollTop;
+  } else window.scrollTo({top: point.scrollY, behavior: "instant"});
+  if (point.element?.isConnected) point.element.focus({preventScroll: true});
 }
 function leaveLibraryReview() {
   return !state.libraryWorkspace || state.libraryWorkspace.leave();
@@ -885,24 +909,50 @@ const elapsed = job => {
   const seconds = Math.max(0, Math.floor((job.finished || Date.now() / 1000) - job.started));
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 };
+function libraryPagerMarkup(offset, total, limit) {
+  const pages = Math.ceil(total / limit);
+  if (!pages) return "";
+  const current = Math.floor(offset / limit) + 1;
+  const visible = new Set([1, pages]);
+  const first = Math.max(1, Math.min(current - 2, pages - 4));
+  for (let page = first; page <= Math.min(pages, first + 4); page++) visible.add(page);
+  let previous = 0;
+  const links = [...visible].sort((a, b) => a - b).map(page => {
+    const gap = page - previous > 1 ? '<span aria-hidden="true">…</span>' : "";
+    previous = page;
+    return `${gap}<button type="button" class="action ghost" data-library-page="${page}" aria-label="Page ${page}" ${page === current ? 'aria-current="page"' : ""}>${page}</button>`;
+  }).join("");
+  return `<nav class="pager" aria-label="Library pages"><span>${offset + 1}–${Math.min(offset + limit, total)} of ${total}</span><div class="pager-pages">${links}</div></nav>`;
+}
+function bindLibraryPages(container, onPage) {
+  container.querySelectorAll("[data-library-page]").forEach(button => {
+    button.onclick = () => onPage(Number(button.dataset.libraryPage));
+  });
+}
 async function pagedTable(container, load, headers, row, onPage = () => {}, options = {}) {
   let offset = options.offset || 0, generation = 0;
+  const limit = options.limit || 50;
   const draw = async () => {
     const request = ++generation;
     try {
       const page = await load(offset);
       if (!container.isConnected || request !== generation || (options.current && !options.current())) return;
       if (offset > 0 && offset >= page.total) {
-        offset = Math.max(0, Math.floor((page.total - 1) / 50) * 50);
+        offset = Math.max(0, Math.floor((page.total - 1) / limit) * limit);
         return draw();
       }
       container.innerHTML = `<div class="table-scroll"><table><thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead>
         <tbody>${page.items.map(row).join("")}</tbody></table></div>
-        <div class="pager"><button class="action ghost prev" ${offset === 0 ? "disabled" : ""}>Previous</button>
+        ${options.numbered ? libraryPagerMarkup(offset, page.total, limit) : `<div class="pager"><button class="action ghost prev" ${offset === 0 ? "disabled" : ""}>Previous</button>
         <span>${page.total ? offset + 1 : 0}–${Math.min(offset + page.items.length, page.total)} of ${page.total}</span>
-        <button class="action ghost next" ${offset + page.items.length >= page.total ? "disabled" : ""}>Next</button></div>`;
-      container.querySelector(".prev").onclick = () => { offset = Math.max(0, offset - 50); draw(); };
-      container.querySelector(".next").onclick = () => { offset += 50; draw(); };
+        <button class="action ghost next" ${offset + page.items.length >= page.total ? "disabled" : ""}>Next</button></div>`}`;
+      if (options.numbered) bindLibraryPages(container, pageNumber => {
+        offset = (pageNumber - 1) * limit; options.onNavigate?.(); draw();
+      });
+      else {
+        container.querySelector(".prev").onclick = () => { offset = Math.max(0, offset - limit); draw(); };
+        container.querySelector(".next").onclick = () => { offset += limit; draw(); };
+      }
       onPage(page.items);
       options.onOffset?.(offset);
     } catch (e) {
@@ -1632,7 +1682,7 @@ const views = {
         <button class="action ${state.libraryView === "albums" ? "" : "ghost"}" id="library-view-albums">Albums</button>
         <button class="action ${state.libraryView === "tracks" ? "" : "ghost"}" id="library-view-tracks">Tracks</button>
       </div>
-      <label id="library-batch-label">Albums per load <select id="library-batch">${[50, 100, 150, 200].map(size =>
+      <label id="library-batch-label">Items per page <select id="library-batch">${[25, 50, 100].map(size =>
         `<option value="${size}" ${state.libraryBatch === size ? "selected" : ""}>${size}</option>`).join("")}</select></label>
     </div>
     <p class="hint library-guide" id="library-guide"></p>
@@ -1649,7 +1699,7 @@ const views = {
       <p class="hint">Up to 200 tracks per review; individual lookups up to 100. Preview before applying.</p></div>
     <div id="retry-review-actions"></div>
     <div class="row" id="library-album-tools">
-      <button class="action ghost" id="album-select-loaded">Select loaded albums</button>
+      <button class="action ghost" id="album-select-loaded">Select this page</button>
       <button class="action ghost" id="album-clear" hidden>Clear album selection</button>
       <span class="hint" id="album-selection-count" role="status">0 albums selected</span>
       <label id="album-bulk-source-label" hidden>Lookup source
@@ -1681,23 +1731,41 @@ const views = {
     <div id="metadata-search" data-review-slot></div><div id="metadata-review" data-review-slot></div>
     </fieldset>
     </div></div>
+    <div class="library-results">
+    <nav class="library-index" aria-label="Filter by artist initial"><span class="library-index-title">Artist A–Z</span>
+      ${["All", ...Array.from("ABCDEFGHIJKLMNOPQRSTUVWXYZ"), "#"].map(letter =>
+        `<button type="button" class="action ghost" data-library-initial="${letter === "All" ? "" : letter}" aria-label="${letter === "All" ? "All artists" : letter === "#" ? "Artists starting with a number, symbol, or non-ASCII letter" : `Artists beginning with ${letter}`}">${letter}</button>`).join("")}
+    </nav><div class="library-results-content">
     <div id="library-albums"></div>
     <dialog id="library-album-page" class="album-dialog" aria-label="Album details"></dialog>
-    <div id="library-table"></div>`;
+    <div id="library-table"></div></div></div>`;
     const selectedTracks = new Set();
     const selectedAlbums = new Map();
     const loadedAlbums = new Map();
-    const workspace = createReviewWorkspace($("#library-workspace"), () => { state.libraryReview = null; });
-    state.libraryWorkspace = workspace;
     const workspaceHome = $("#library-workspace-home");
     const playerHome = $("#player-home");
     const player = $("#player");
     const albumDialog = $("#library-album-page");
     let albumOpener = null;
+    let reviewReturn = null, albumNeedsRefresh = false;
+    const workspace = createReviewWorkspace($("#library-workspace"), () => {
+      state.libraryReview = null;
+      if (!reviewReturn) return;
+      const point = reviewReturn;
+      reviewReturn = null;
+      restoreReviewPosition(point, albumDialog);
+    });
+    state.libraryWorkspace = workspace;
     const beginReview = (kind, title) => {
       captureBrowsingPosition(); saveBrowsing();
+      const returnPoint = {
+        element: document.activeElement,
+        scrollTop: albumDialog.open ? albumDialog.querySelector(".album-dialog-surface").scrollTop : null,
+        scrollY: window.scrollY,
+      };
       const token = workspace.begin(kind, title);
       if (token !== null) {
+        reviewReturn = returnPoint;
         state.libraryReview = {kind};
         revealReview($("#library-workspace"));
         $("#library-workspace [data-workspace-title]").focus({preventScroll: true});
@@ -1715,9 +1783,7 @@ const views = {
     };
     const albumKey = album => JSON.stringify([album.album_artist, album.album]);
     let pageTracks = [];
-    let albumOffset = 0, albumTotal = 0, albumGeneration = 0, albumLoading = false, librarySearch = 0;
-    let albumLoadFailed = false;
-    let albumFilters = {};
+    let albumGeneration = 0, librarySearch = 0;
     const updateAlbumSelection = () => {
       $("#album-selection-count").textContent = `${selectedAlbums.size} ${selectedAlbums.size === 1 ? "album" : "albums"} selected`;
       $("#album-clear").hidden = selectedAlbums.size === 0;
@@ -1762,14 +1828,14 @@ const views = {
     };
     const setView = view => {
       state.libraryObserver?.disconnect();
-      if (state.libraryView !== view) { albumGeneration++; albumLoading = false; librarySearch++; }
+      if (state.libraryView !== view) { albumGeneration++; librarySearch++; }
       state.libraryView = view;
       state.libraryDetail = false;
       $("#library-view-albums").className = `action ${view === "albums" ? "" : "ghost"}`;
       $("#library-view-tracks").className = `action ${view === "tracks" ? "" : "ghost"}`;
       $("#library-view-albums").setAttribute("aria-pressed", String(view === "albums"));
       $("#library-view-tracks").setAttribute("aria-pressed", String(view === "tracks"));
-      $("#library-batch-label").hidden = view !== "albums";
+      $("#library-batch-label").hidden = false;
       $("#library-guide").textContent = view === "albums"
         ? "Open a cover to listen and edit tracks. For tag changes, choose tracks, preview the proposed edits, then confirm."
         : "Select tracks for batch actions, or choose Lookup beside a track. Changes require review.";
@@ -1793,9 +1859,18 @@ const views = {
       selectedTracks.clear();
       $("#library-track-tools").style.display = "none";
       updateSelection();
-      watchAlbumScroll();
-      if (albumOpener?.isConnected) albumOpener.focus({preventScroll: true});
+      const opener = albumOpener;
+      const artist = opener?.dataset.albumArtist, album = opener?.dataset.album;
+      if (opener?.isConnected) opener.focus({preventScroll: true});
       albumOpener = null;
+      if (albumNeedsRefresh) {
+        albumNeedsRefresh = false;
+        searchAlbums().then(() => {
+          const replacement = [...el.querySelectorAll("[data-album]")].find(button =>
+            button.dataset.albumArtist === artist && button.dataset.album === album);
+          if (replacement && state.libraryView === "albums" && !albumDialog.open) replacement.focus({preventScroll: true});
+        });
+      }
       return true;
     };
     albumDialog.addEventListener("cancel", event => {
@@ -1805,55 +1880,28 @@ const views = {
     albumDialog.addEventListener("click", event => {
       if (event.target === albumDialog) closeAlbum();
     });
-    const watchAlbumScroll = () => {
-      state.libraryObserver?.disconnect();
-      const sentinel = el.querySelector("[data-album-more]");
-      if (!sentinel || sentinel.hidden || albumLoadFailed || state.rendering || !("IntersectionObserver" in window)) return;
-      state.libraryObserver = new IntersectionObserver(entries => {
-        if (!el.isConnected) { state.libraryObserver.disconnect(); return; }
-        if (entries.some(entry => entry.isIntersecting) && !albumLoading &&
-            $("#library-albums").style.display !== "none" && state.libraryView === "albums") {
-          searchAlbums(true);
-        }
-      }, {rootMargin: "0px 0px 200px 0px"});
-      state.libraryObserver.observe(sentinel);
-    };
-    const searchAlbums = async (append = false) => {
+    const searchAlbums = async () => {
       const container = $("#library-albums");
-      const pageEl = $("#library-album-page");
-      if (append && (albumLoading || albumOffset >= albumTotal)) return;
-      albumLoadFailed = false;
-      if (!append) {
-        if (pageEl.open && !closeAlbum()) return false;
-        albumGeneration++;
-        state.libraryObserver?.disconnect();
-        albumOffset = 0; albumTotal = 0; loadedAlbums.clear();
-        pageTracks = [];
-        $("#library-track-tools").style.display = "none";
-        container.style.display = "";
-        albumFilters = {
-          query: $("#library-query").value, status: $("#library-status").value,
-          genre: $("#library-genre").value, format: $("#library-format").value,
-          limit: String(state.libraryBatch),
-        };
-        container.innerHTML = '<div class="match-grid" data-album-grid></div><p role="status" data-album-count>Loading albums...</p><div data-album-more><button class="action ghost" data-load-albums>Load more albums</button></div>';
-      }
-      const generation = albumGeneration;
-      const params = new URLSearchParams({...albumFilters, offset: String(albumOffset)});
-      const more = container.querySelector("[data-album-more]");
-      const load = container.querySelector("[data-load-albums]");
-      load.onclick = () => searchAlbums(albumOffset > 0);
-      albumLoading = true; load.disabled = true;
+      if (albumDialog.open) { albumNeedsRefresh = true; return true; }
+      const generation = ++albumGeneration;
+      const params = new URLSearchParams({
+        query: $("#library-query").value, status: $("#library-status").value,
+        genre: $("#library-genre").value, format: $("#library-format").value,
+        initial: browsing.library.initial, limit: String(state.libraryBatch),
+        offset: String(browsing.library.albumOffset),
+      });
+      container.innerHTML = '<p role="status">Loading albums...</p>';
       try {
         const page = await api(`/api/albums/page?${params}`);
         if (!container.isConnected || generation !== albumGeneration || state.libraryView !== "albums") return false;
-        if (!page.items.length && albumOffset < page.total) {
-          throw new Error("The album list changed while loading. Retry or run a fresh search.");
+        if (browsing.library.albumOffset > 0 && browsing.library.albumOffset >= page.total) {
+          browsing.library.albumOffset = Math.max(0, Math.floor((page.total - 1) / state.libraryBatch) * state.libraryBatch);
+          saveBrowsing();
+          return searchAlbums();
         }
-        albumOffset += page.items.length; albumTotal = page.total;
-        const fresh = page.items.filter(album => !loadedAlbums.has(albumKey(album)));
-        fresh.forEach(album => loadedAlbums.set(albumKey(album), album));
-        container.querySelector("[data-album-grid]").insertAdjacentHTML("beforeend", fresh.map(album =>
+        loadedAlbums.clear();
+        page.items.forEach(album => loadedAlbums.set(albumKey(album), album));
+        container.innerHTML = `<div class="match-grid" data-album-grid>${page.items.map(album =>
           `<div class="album-tile"><label><input type="checkbox" data-select-album="${esc(albumKey(album))}"
             aria-label="Select album ${esc(album.album)} by ${esc(album.album_artist)}"> Select album</label>
           <button type="button" class="match-card" data-album-artist="${esc(album.album_artist)}"
@@ -1863,11 +1911,14 @@ const views = {
             <em>${esc(album.album_artist)} · ${esc(album.year || "—")} · ${album.track_count} tracks${album.bad_count ? ` · ${album.bad_count} bad` : ""}</em>
             <span class="album-card-open">Open album · listen · edit</span>
           </button></div>`
-        ).join(""));
-        container.querySelector("[data-album-count]").textContent = page.total ?
-          `${loadedAlbums.size} of ${page.total} albums loaded. Scroll down or use Load more.` :
-          "No albums match this search. Scan the library if this is a new collection.";
-        more.hidden = albumOffset >= albumTotal || !page.items.length;
+        ).join("")}</div>${page.total ? libraryPagerMarkup(browsing.library.albumOffset, page.total, state.libraryBatch) :
+          '<p role="status">No albums match this search. Try another letter or filter.</p>'}`;
+        bindLibraryPages(container, number => {
+          browsing.library.albumOffset = (number - 1) * state.libraryBatch;
+          browsing.scroll.library = 0; saveBrowsing();
+          searchAlbums();
+          $("#library-albums").scrollIntoView({behavior: "instant", block: "start"});
+        });
         container.querySelectorAll("[data-select-album]").forEach(input => input.onchange = () => {
           const key = input.dataset.selectAlbum;
           if (input.checked) selectedAlbums.set(key, loadedAlbums.get(key)); else selectedAlbums.delete(key);
@@ -1879,18 +1930,12 @@ const views = {
           );
         });
         updateAlbumSelection();
-        watchAlbumScroll();
       } catch (e) {
         if (!container.isConnected || generation !== albumGeneration) return;
-        albumLoadFailed = true;
-        state.libraryObserver?.disconnect();
-        container.querySelector("[data-album-count]").textContent = `Cannot load albums: ${e.message}`;
-        more.hidden = false;
-        load.textContent = "Retry loading albums";
+        container.innerHTML = `<p role="alert">Cannot load albums: ${esc(e.message)}</p><button class="action ghost" data-retry-albums>Retry</button>`;
+        container.querySelector("[data-retry-albums]").onclick = searchAlbums;
         toast(e.message, true);
         return false;
-      } finally {
-        if (generation === albumGeneration) { albumLoading = false; load.disabled = false; }
       }
       return true;
     };
@@ -2584,6 +2629,19 @@ const views = {
                 ${applied.total && !isTrack && !isNumbering ? '<button class="action" data-organize-edited data-operation>Preview organization of updated files</button>' : ""}</div>`;
               const organize = $("#manual-album-result").querySelector("[data-organize-edited]");
               if (organize) organize.onclick = () => previewOrganization(applied.items.map(item => item.track_id));
+              if (isTrack && albumDialog.open && applied.total) {
+                try {
+                  const [updated] = await post("/api/tracks/selected", {track_ids: [tracks[0].id]});
+                  Object.assign(tracks[0], updated);
+                  const row = albumDialog.querySelector(`[data-edit-track="${tracks[0].id}"]`)?.closest(".album-track");
+                  if (row) {
+                    row.querySelector(".album-track-info strong").textContent = updated.title || "Untitled track";
+                    row.querySelector(".album-track-sub").textContent = `${updated.artist || "Unknown artist"} · ${updated.status || "healthy"}`;
+                  }
+                } catch (error) {
+                  toast(`Tags were saved, but the track display could not refresh: ${error.message}`, true);
+                }
+              }
               panel.replaceChildren();
               selectedAlbums.clear(); updateAlbumSelection();
               selectedTracks.clear(); updateSelection();
@@ -2629,6 +2687,15 @@ const views = {
       state.libraryBatch = Number($("#library-batch").value);
       $("#library-search").click();
     };
+    const updateInitial = () => el.querySelectorAll("[data-library-initial]").forEach(button => {
+      button.setAttribute("aria-pressed", String(button.dataset.libraryInitial === browsing.library.initial));
+    });
+    el.querySelectorAll("[data-library-initial]").forEach(button => button.onclick = () => {
+      browsing.library.initial = button.dataset.libraryInitial;
+      updateInitial();
+      searchLibrary();
+    });
+    updateInitial();
     $("#album-select-loaded").onclick = () => {
       loadedAlbums.forEach((album, key) => selectedAlbums.set(key, album)); updateAlbumSelection();
     };
@@ -2673,11 +2740,13 @@ const views = {
       };
       browsing.library = {
         ...filters, view: state.libraryView, batch: state.libraryBatch,
+        initial: browsing.library.initial,
+        albumOffset: restore ? browsing.library.albumOffset : 0,
         trackOffset: restore ? browsing.library.trackOffset : 0,
       };
       saveBrowsing();
       if (state.libraryView === "albums") return searchAlbums();
-      return pagedTable($("#library-table"), offset => post("/api/tracks/page", {...filters, limit: 50, offset}),
+      return pagedTable($("#library-table"), offset => post("/api/tracks/page", {...filters, initial: browsing.library.initial, limit: state.libraryBatch, offset}),
         ["Select", "Artist", "Album", "Title", "Genre", "Format", "Status", "Path", "Listen / Metadata"],
         t => `<tr><td><input type="checkbox" data-select-track="${t.id}" aria-label="Select ${esc(t.title || t.path)}"></td>
           <td>${esc(t.artist)}</td><td>${esc(t.album)}</td><td>${esc(t.title)}</td>
@@ -2695,6 +2764,9 @@ const views = {
           updateSelection();
         }, {
           offset: browsing.library.trackOffset,
+          limit: state.libraryBatch,
+          numbered: true,
+          onNavigate: () => { browsing.scroll.library = 0; $("#library-table").scrollIntoView({behavior: "instant", block: "start"}); },
           current: () => request === librarySearch && state.libraryView === "tracks",
           onOffset: offset => { browsing.library.trackOffset = offset; saveBrowsing(); },
         });
@@ -3210,17 +3282,6 @@ const views = {
     };
     await searchLibrary(true);
     if (!el.isConnected) return;
-    state.loadBrowsingScroll = async target => {
-      if (state.libraryView !== "albums") return;
-      while (!state.cancelScrollRestore && el.isConnected && albumOffset < albumTotal &&
-          document.documentElement.scrollHeight - window.innerHeight < target) {
-        const previousOffset = albumOffset;
-        if (!await searchAlbums(true)) break;
-        if (albumOffset <= previousOffset) break;
-        await new Promise(resolve => requestAnimationFrame(resolve));
-      }
-    };
-    state.resumeLibraryScroll = watchAlbumScroll;
     state.openLibraryReview = async (kind, jobId) => {
       const loaders = {rename: loadRenameReview, artwork: loadArtworkReview, trash: loadTrashReview,
         "bulk-lookup": loadBulkReview};

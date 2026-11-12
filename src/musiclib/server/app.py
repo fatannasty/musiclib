@@ -91,6 +91,7 @@ class TrackSearchBody(BaseModel):
     genre: str = ""
     format: str = ""
     status: str = ""
+    initial: str = ""
 
 
 class RestoreBody(BaseModel):
@@ -905,11 +906,21 @@ def create_app(config: Config) -> FastAPI:
         if body.status in ("ok", "suspect", "bad"):
             where += " AND status=?"
             params.append(body.status)
+        initial = body.initial.upper()
+        if initial and initial != "#" and (len(initial) != 1 or initial not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+            raise HTTPException(400, "Initial must be A-Z or #.")
+        artist_expr = "COALESCE(NULLIF(TRIM(artist), ''), 'Unknown Artist')"
+        if initial == "#":
+            where += f" AND UPPER(SUBSTR({artist_expr}, 1, 1)) NOT GLOB '[A-Z]'"
+        elif initial:
+            where += f" AND UPPER(SUBSTR({artist_expr}, 1, 1)) = ?"
+            params.append(initial)
         total = db.query_one(f"SELECT COUNT(*) AS n FROM tracks WHERE {where}", params)["n"]
         params.extend([limit, max(0, body.offset)])
         rows = db.query(
             "SELECT id, path, artist, album, title, genre, format, bitrate FROM tracks "
-            f"WHERE {where} ORDER BY artist, album, title, path LIMIT ? OFFSET ?",
+            f"WHERE {where} ORDER BY {artist_expr} COLLATE NOCASE, "
+            "album COLLATE NOCASE, title COLLATE NOCASE, path LIMIT ? OFFSET ?",
             params,
         )
         return {"items": [dict(row) for row in rows], "total": total, "offset": max(0, body.offset)}
@@ -917,11 +928,14 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/albums/page")
     def albums_page(
         offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
-        query: str = "", status: str = "", genre: str = "", format: str = "",
+        query: str = "", status: str = "", genre: str = "", format: str = "", initial: str = "",
     ) -> Dict[str, Any]:
+        initial = initial.upper()
+        if initial and initial != "#" and (len(initial) != 1 or initial not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+            raise HTTPException(400, "Initial must be A-Z or #.")
         page = db.album_groups_page(
             query=query.strip(), status=status, genre=genre, format=format,
-            offset=offset, limit=limit,
+            offset=offset, limit=limit, initial=initial,
         )
         items = []
         for row in page["items"]:
