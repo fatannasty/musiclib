@@ -69,6 +69,36 @@ test("tab visibility rules do not hide album and artwork result sections", () =>
   assert.doesNotMatch(styles, /(?:^|})\s*section\s*\{\s*display:\s*none\s*;/m);
 });
 
+test("album detail opens as an accessible listening dialog with reduced-motion fallback", () => {
+  const styles = html.match(/<style>([\s\S]*?)<\/style>/)[1];
+  assert.match(html, /<dialog id="library-album-page" class="album-dialog"/);
+  assert.match(html, /pageEl\.showModal\(\)/);
+  assert.match(styles, /@keyframes album-flip-in/);
+  assert.match(styles, /prefers-reduced-motion:\s*reduce[\s\S]*?album-dialog\[open\] \.album-dialog-surface \{\s*animation:\s*none/);
+  assert.match(html, /--accent-blue:/);
+  assert.match(html, /--accent-gold:/);
+});
+
+test("album track cards offer playback and individual edits without preselecting files", () => {
+  const {context} = dashboard();
+  const markup = context.albumTrackListMarkup({
+    album_artist: "Band",
+    tracks: [{id: 7, disc_no: 1, track_no: 2, title: "<Song>", artist: "Band",
+      status: "healthy", path: "/music/song.flac"}],
+  });
+  assert.match(markup, /data-play-track="7"/);
+  assert.match(markup, /data-edit-track="7"/);
+  assert.match(markup, /&lt;Song&gt;/);
+  assert.doesNotMatch(markup, /type="checkbox"[^>]*checked/);
+});
+
+test("album player stays outside the scrolling dialog surface", () => {
+  const styles = html.match(/<style>([\s\S]*?)<\/style>/)[1];
+  assert.match(html, /surface\.append\(\$\("#library-workspace"\)\);\s*pageEl\.append\(player\);/);
+  assert.match(styles, /\.album-dialog \.player\s*\{\s*position:\s*fixed;/);
+  assert.match(styles, /\.album-dialog\.album-dialog-playing \.album-dialog-surface\s*\{\s*padding-bottom:\s*\d+px;/);
+});
+
 test("track-list comparison displays uncertainty and escapes catalog and local data", () => {
   const {context} = dashboard();
   const markup = context.tracklistAuditMarkup(

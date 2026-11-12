@@ -281,7 +281,10 @@ are collapsed until opened.
 
 Library opens on an **Albums** grid grouped from scanned tags (artist, year, track
 count, and cover when a MusicBrainz ID or embedded art exists). Open an album to
-see its tracks, already selected so you can edit tags or **Find catalog matches**. Switch to **Tracks**
+open its listening-room pop-out, with a brief 3D flip, its tracks, and review actions.
+Play any original track and inspect its format, bitrate, sample rate, and bit depth;
+edit an individual track or select tracks for a batch tag edit. Files are not
+preselected; changes still require preview and confirmation. Switch to **Tracks**
 for the file table and per-track lookup. Use **Filters** to narrow results by genre,
 format, or status, then choose **Apply filters**; **Clear filters** keeps the search
 text and shows all genres, formats, and statuses.
