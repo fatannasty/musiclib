@@ -409,6 +409,7 @@ const jobNames = {
   "album-duplicates-apply": "Clean selected duplicates", rename: "Organize library", art: "Find / download artwork",
   brainz: "Check album completeness", "issues-trash": "Trash selected bad files",
   "metadata-lookup": "Look up track metadata", "metadata-album-discovery": "Discover selected album matches",
+  "artwork-discovery": "Find catalog cover candidates",
   "metadata-apply": "Save track tags",
   "album-apply": "Save album tags", "rename-preview": "Preview selected organization",
   "rename-reviewed": "Move reviewed files", "artwork-preview": "Preview artwork",
@@ -790,6 +791,7 @@ async function showJobResults(job) {
   const lists = {
     scan: [], doctor: ["results", "failures"], duplicates: ["groups"],
     rename: ["moves", "skipped_files", "errors"], art: ["albums"], "duplicates-apply": ["failures"],
+    "artwork-discovery": ["albums"],
     "album-duplicates-preview": ["groups", "tracks"], "album-duplicates-apply": ["failures", "remaining_ids"],
     "metadata-lookup": ["reviews", "errors"], "metadata-apply": ["applied", "errors"],
     "issues-trash": ["failures"], "album-apply": ["applied", "errors", "rename_errors"],
@@ -874,6 +876,18 @@ async function showJobResults(job) {
         state.libraryView = "albums"; state.tab = "library";
         await render();
       }
+    };
+    container.querySelector(".sections").append(button);
+  }
+  if (job.kind === "artwork-discovery") {
+    const button = document.createElement("button");
+    button.className = "action ghost";
+    button.textContent = "Review cover candidates";
+    button.onclick = async () => {
+      if (!leaveLibraryReview()) return;
+      state.artworkDiscoveryJob = job.id;
+      state.tab = "art";
+      await render();
     };
     container.querySelector(".sections").append(button);
   }
@@ -2998,13 +3012,31 @@ const views = {
   },
 
   async art(el) {
+    const schedule = await api("/api/artwork/schedule");
     el.innerHTML = `<div class="row">
       <button class="action" id="btn-missing" data-operation>Find missing art</button>
-      <button class="action" id="btn-dl" data-operation style="display:none">Download & embed</button>
-    </div><div id="art-out"><div class="empty">Art comes from the Cover Art Archive (MusicBrainz).</div></div>`;
+      <button class="action" id="btn-cover-candidates">Find catalog cover candidates</button>
+      <button class="action danger" id="btn-dl" data-operation style="display:none">Download & embed</button>
+    </div><p class="hint" id="art-schedule-status"></p>
+    <div id="art-candidate-results"></div>
+    <div id="art-out"><div class="empty">Cover candidates come from MusicBrainz, iTunes, and Deezer. They are never embedded automatically.</div></div>`;
+    $("#art-schedule-status").textContent = schedule.hours
+      ? `Automatic discovery runs ${schedule.hours === 24 ? "daily" : "weekly"}; next run ${new Date(schedule.next_run * 1000).toLocaleString()}. It checks up to 25 missing-art albums per run.`
+      : "Automatic discovery is off. Enable daily or weekly runs in Settings. Candidate searches do not change music files.";
     $("#btn-missing").onclick = async () => {
       const job = await runTask("art", {});
       if (el.isConnected) await showArt(job);
+    };
+    $("#btn-cover-candidates").onclick = async () => {
+      const button = $("#btn-cover-candidates");
+      button.disabled = true;
+      try {
+        const {job_id} = await post("/api/artwork/discover", {});
+        await refreshActivity();
+        const job = await pollJob(job_id, "Catalog cover discovery");
+        if (el.isConnected) await showCandidates(job);
+      } catch (error) { toast(error.message, true); }
+      finally { if (button.isConnected) button.disabled = false; }
     };
     $("#btn-dl").onclick = async () => {
       const job = await runTask("art", { apply: true });
@@ -3017,8 +3049,58 @@ const views = {
         ["Artist", "Album", "Status", "Details"],
         album => `<tr><td>${esc(album.artist)}</td><td>${esc(album.album)}</td><td>${esc(album.status)}</td><td>${esc(album.detail)}</td></tr>`);
     };
-    const previous = latestJob("art");
-    if (previous) await showArt(previous);
+    const showCandidates = async job => {
+      const response = await api(`/api/jobs/${job.id}/results/albums?limit=200`);
+      const panel = $("#art-candidate-results");
+      panel.innerHTML = `<h3>${esc(jobName(job))}${job.origin === "schedule" ? " (scheduled)" : ""}</h3>
+        <p class="hint">${response.total} albums checked; ${job.summary.candidates || 0} cover candidates found. Nothing has been written.</p>` +
+        response.items.map((album, albumIndex) => `<section class="card">
+          <h3>${esc(album.album_artist)} — ${esc(album.album)}</h3>
+          <p class="hint">${esc(album.status)} · ${(album.suggestions || []).length} candidates</p>
+          ${(album.warnings || []).map(warning => `<p role="alert">${esc(warning)}</p>`).join("")}
+          ${album.error ? `<p role="alert">${esc(album.error)}</p>` : ""}
+          ${album.suggestions?.length ? `<div class="match-grid">${album.suggestions.map((candidate, candidateIndex) => `
+            <label class="match-card"><input type="radio" name="art-candidate-${albumIndex}" value="${candidateIndex}" ${candidateIndex === 0 ? "checked" : ""}>
+              <img class="cover" alt="" loading="lazy" referrerpolicy="no-referrer" src="${esc(candidate.cover_url)}">
+              <strong>${esc(candidate.fields?.album || album.album)}</strong>
+              <em>${esc(candidate.fields?.album_artist || candidate.fields?.artist || album.album_artist)}</em>
+              <span class="tag warn">${esc(candidate.source)} · ${esc(candidate.confidence)}%</span>
+            </label>`).join("")}</div>
+            <button class="action" data-art-preview="${albumIndex}">Preview selected cover</button>
+            <p class="hint">Preview checks the current files. You must still review and confirm before embedding.</p>` :
+            `<p>No catalog cover candidate was found.</p>`}
+          <p role="status" data-art-candidate-status="${albumIndex}"></p></section>`).join("") ||
+        '<div class="empty">No albums with missing cover art were found.</div>';
+      panel.querySelectorAll("[data-art-preview]").forEach(button => button.onclick = async () => {
+        const albumIndex = Number(button.dataset.artPreview);
+        const chosen = panel.querySelector(`input[name="art-candidate-${albumIndex}"]:checked`);
+        if (!chosen) { toast("Choose a cover candidate first.", true); return; }
+        const status = panel.querySelector(`[data-art-candidate-status="${albumIndex}"]`);
+        button.disabled = true;
+        try {
+          const {job_id} = await post("/api/artwork/candidate-preview", {
+            discovery_job_id: job.id, album_index: albumIndex,
+            candidate_index: Number(chosen.value),
+          });
+          await refreshActivity();
+          await pollJob(job_id, "Artwork candidate preview");
+          state.libraryReview = {kind: "artwork", jobId: job_id};
+          state.libraryView = "albums";
+          state.tab = "library";
+          await render();
+        } catch (error) {
+          status.textContent = error.message;
+          toast(error.message, true);
+          button.disabled = false;
+        }
+      });
+    };
+    const previous = state.artworkDiscoveryJob
+      ? state.jobs.find(job => job.id === state.artworkDiscoveryJob)
+      : latestJob("artwork-discovery");
+    if (previous?.status === "done") await showCandidates(previous);
+    const previousArt = latestJob("art");
+    if (previousArt) await showArt(previousArt);
   },
 
   async missing(el) {
@@ -3171,6 +3253,9 @@ const views = {
         ${field("artwork", "folder_image", "Folder image filename")}
         ${field("artwork", "min_side", "Minimum image side (px)")}
         ${field("artwork", "replace_small", "Replace small art")}
+        <label>Automatic cover discovery <select id="set-artwork-schedule_hours">
+          ${[[0, "Off"], [24, "Daily"], [168, "Weekly"]].map(([value, label]) => `<option value="${value}" ${s.artwork.schedule_hours === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+        <p class="hint">Opt-in NAS background searches check up to 25 albums per run and save candidates in Activity. No covers are embedded automatically. Discovery runs alongside album lookup and renaming; review and applying a cover still uses the normal file-operation safeguards.</p>
       </div>
       <div class="row" style="margin-top:14px"><button class="action" id="set-save">Save settings</button>
         <span class="hint">Library: ${esc(s.library)} (change via MUSIC_DIR volume mapping)</span></div>`;
