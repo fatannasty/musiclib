@@ -92,6 +92,26 @@ test("album track cards offer playback and individual edits without preselecting
   assert.doesNotMatch(markup, /type="checkbox"[^>]*checked/);
 });
 
+test("album discovery select-all follows individual choices and can be cleared", () => {
+  const {context} = dashboard();
+  const fields = [{checked: false}, {checked: false}, {checked: false}];
+  const selectAll = {checked: false, indeterminate: false};
+  context.bindDiscoveryFieldSelection(selectAll, fields);
+  assert.equal(selectAll.checked, false);
+  assert.equal(selectAll.indeterminate, false);
+  selectAll.checked = true;
+  selectAll.onchange();
+  assert.deepEqual(fields.map(field => field.checked), [true, true, true]);
+  fields[1].checked = false;
+  fields[1].onchange();
+  assert.equal(selectAll.checked, false);
+  assert.equal(selectAll.indeterminate, true);
+  selectAll.checked = false;
+  selectAll.onchange();
+  assert.deepEqual(fields.map(field => field.checked), [false, false, false]);
+  assert.equal(selectAll.indeterminate, false);
+});
+
 test("album player stays outside the scrolling dialog surface", () => {
   const styles = html.match(/<style>([\s\S]*?)<\/style>/)[1];
   assert.match(html, /surface\.append\(\$\("#library-workspace"\)\);\s*pageEl\.append\(player\);/);

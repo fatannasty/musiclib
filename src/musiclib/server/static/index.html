@@ -190,14 +190,22 @@ details > summary { cursor: pointer; color: var(--dim); padding: 6px 0; }
 .job-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(100px, 180px) auto; gap: 12px; align-items: center; padding: 8px 0; }
 .job-row p { overflow-wrap: anywhere; }
 .activity-details { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; }
-.workspace { border: 1px solid var(--accent); border-top-width: 3px; border-radius: var(--radius); padding: 20px; margin: 20px 0; scroll-margin-top: 16px; background: var(--panel); animation: rise .22s ease both; }
-.workspace .card { box-shadow: none; }
+.workspace { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius); padding: 16px; margin: 14px 0; scroll-margin-top: 16px; background: var(--panel2); animation: rise .22s ease both; }
+.workspace .card { margin: 10px 0; padding: 14px; box-shadow: none; }
+.workspace .match-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 10px; margin: 10px 0; }
+.workspace .match-card { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 4px 10px; align-items: center; padding: 8px 10px; }
+.workspace .match-card .cover, .workspace .match-card .cover-ph { grid-column: 1; grid-row: 1 / span 3; width: 58px; aspect-ratio: 1; }
+.workspace .match-card strong, .workspace .match-card em, .workspace .match-card .tag { grid-column: 2; }
 .workspace table { min-width: 640px; }
 .workspace td.path { min-width: 180px; }
-.workspace-header { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: start; margin-bottom: 12px; }
-.workspace-steps { display: flex; flex-wrap: wrap; list-style: none; gap: 8px; margin: 8px 0; color: var(--dim); }
-.workspace-steps li { padding: 2px 8px; border-bottom: 2px solid var(--border); }
-.workspace-steps [aria-current=step] { color: var(--accent); border-color: var(--accent); }
+.workspace-header { display: flex; flex-wrap: wrap; gap: 8px 12px; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.workspace-header > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.workspace-title { margin: 0; font-size: 16px; line-height: 1.3; }
+.workspace-steps { display: flex; flex-wrap: wrap; list-style: none; gap: 4px; margin: 0; color: var(--dim); }
+.workspace-steps li { padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); font-size: 11px; }
+.workspace-steps [aria-current=step] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+.workspace > [data-workspace-status]:empty { display: none; }
+.workspace > [data-workspace-status]:not(:empty) { margin: 0 0 10px; padding: 8px 10px; border-radius: 9px; background: var(--panel); font-size: 13px; }
 .selection-actions { border-left: 2px solid var(--accent); padding-left: 12px; }
 .library-controls { padding: 20px; box-shadow: var(--shadow); }
 .library-search-row { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
@@ -310,6 +318,9 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .album-dialog .player audio { max-width: 100%; }
 .metadata-field { display: grid; grid-template-columns: minmax(100px, .7fr) 1fr 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .metadata-field:last-child { border-bottom: 0; }
+.metadata-select-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel2); }
+.metadata-select-toolbar label { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--text); font-size: 13px; font-weight: 650; }
+.metadata-select-toolbar .hint { margin: 0; }
 .player {
   position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 90;
   max-width: 1200px; margin: auto; padding: 14px 18px; border: 1px solid var(--accent);
@@ -374,6 +385,11 @@ body.player-open #toast { bottom: 260px; }
   .job-row { grid-template-columns: minmax(0, 1fr) auto; }
   .job-row progress { grid-column: 1 / -1; grid-row: 2; }
   .workspace { padding: 10px; }
+  .workspace-header { align-items: start; }
+  .workspace-header > div { align-items: start; flex-direction: column; gap: 6px; }
+  .workspace-steps { gap: 3px; }
+  .workspace-steps li { padding: 2px 6px; }
+  .workspace .card { padding: 11px; }
   body.player-open { padding-bottom: 330px; }
   body.player-open #toast { bottom: 340px; }
 }
@@ -594,6 +610,20 @@ function createReviewWorkspace(root, onClose = () => {}) {
     get active() { return current !== null; },
     get unfinished() { return current !== null && (current.busy || current.stage !== "results"); },
   };
+}
+function bindDiscoveryFieldSelection(selectAll, fields) {
+  const update = () => {
+    const selected = fields.filter(field => field.checked).length;
+    selectAll.checked = fields.length > 0 && selected === fields.length;
+    selectAll.indeterminate = selected > 0 && selected < fields.length;
+  };
+  selectAll.disabled = fields.length === 0;
+  selectAll.onchange = () => {
+    fields.forEach(field => { field.checked = selectAll.checked; });
+    update();
+  };
+  fields.forEach(field => { field.onchange = update; });
+  update();
 }
 function leaveLibraryReview() {
   return !state.libraryWorkspace || state.libraryWorkspace.leave();
@@ -1633,7 +1663,7 @@ const views = {
     </div>
     <div id="library-workspace-home">
     <div id="library-workspace" class="workspace" role="region" aria-label="Active library review" hidden>
-    <div class="workspace-header"><div><h2 data-workspace-title tabindex="-1" style="font-size:17px">Review</h2>
+    <div class="workspace-header"><div><h2 class="workspace-title" data-workspace-title tabindex="-1">Review</h2>
       <ol class="workspace-steps" aria-label="Review progress">
         <li data-workspace-step="select">1. Select</li><li data-workspace-step="preview">2. Preview</li>
         <li data-workspace-step="confirm">3. Confirm</li><li data-workspace-step="results">4. Results</li>
@@ -2913,7 +2943,7 @@ const views = {
       if (token === null) return;
       const panel = el.querySelector("#metadata-album");
       panel.innerHTML = `<div class="card"><h3>Discover album matches</h3>
-        <p>Searching ${albums.length} selected album(s). Nothing is written; each suggestion must be reviewed and applied separately.</p>
+        <p>Searching ${albums.length} selected album(s)…</p>
         <p role="status" data-discovery-status>Preparing catalog searches…</p>
         <div data-discovery-results></div></div>`;
       const status = panel.querySelector("[data-discovery-status]");
@@ -2930,7 +2960,8 @@ const views = {
         const response = await api(`/api/jobs/${job_id}/results/albums?limit=10`);
         if (!workspace.owns(token)) return;
         workspace.stage(token, "confirm");
-        status.textContent = `${response.total} albums searched. Review any suggestions below; no tags have changed.`;
+        const albumsLabel = response.total === 1 ? "album" : "albums";
+        status.textContent = `${response.total} ${albumsLabel} searched. Review suggestions below; no tags changed.`;
         response.items.forEach((item, albumIndex) => {
           const card = document.createElement("section");
           card.className = "card";
@@ -2961,9 +2992,15 @@ const views = {
                 <span class="tag ${candidate.source === "Your library" ? "ok" : "warn"}">${esc(candidate.source)}${candidate.in_library ? ` · ${candidate.in_library} tracks` : ""} · ${esc(candidate.confidence)}%</span>
               </label>`).join("")}</div>
               <p class="hint">Choose only the fields you want applied to these ${item.tracks.length} files. None are selected by default.</p>
+              <div class="metadata-select-toolbar"><label><input type="checkbox" data-discovery-select-all> Select all fields</label>
+                <span class="hint">${fields.length} available</span></div>
               <div>${fields.map(key => `<label class="metadata-field"><span><input type="checkbox" data-discovery-field="${key}"> ${albumLabels[key]}</span>
                 <span>Suggested: ${esc(suggestion.fields[key])}</span></label>`).join("")}</div>
               <button type="button" class="action" data-discovery-apply data-operation>Apply reviewed tags</button>`;
+            bindDiscoveryFieldSelection(
+              suggestionPanel.querySelector("[data-discovery-select-all]"),
+              [...suggestionPanel.querySelectorAll("[data-discovery-field]")],
+            );
             suggestionPanel.querySelectorAll('input[type="radio"]').forEach(radio => radio.onchange = () => {
               selectedIndex = Number(radio.value);
               draw();
