@@ -79,6 +79,35 @@ test("track-list comparison displays uncertainty and escapes catalog and local d
   assert.match(markup, /No files or tags were changed/);
 });
 
+test("opening saved track-list results scrolls to the report and shows loading failures", async () => {
+  const {context, document, notices} = dashboard({reducedMotion: true});
+  const container = document.querySelector("#activity-results");
+  const panel = new Element(), close = new Element(), scrolls = [];
+  container.querySelector = selector => ({
+    "[data-close-results]": close, ".results-page": panel,
+  })[selector];
+  container.scrollIntoView = options => scrolls.push(options);
+  const job = {
+    id: "saved", kind: "album-tracklist-audit", status: "done",
+    summary: {album_artist: "Artist", album: "Album"},
+  };
+  context.api = async () => ({items: [{
+    id: "release", title: "Edition", date: "", country: "", status: "",
+    tracks: [{catalog: {disc: 1, position: 1, title: "Song", duration: 95},
+      local: {disc_no: 1, track_no: 1, title: "Song", duration: 94}, flags: []}],
+    unmatched_local: [],
+  }]});
+  await context.showJobResults(job);
+  assert.equal(scrolls.length, 1);
+  assert.equal(scrolls[0].behavior, "auto");
+  assert.match(panel.innerHTML, /Edition/);
+  assert.match(panel.innerHTML, /Title matches/);
+  context.api = async () => { throw new Error("Connection failed"); };
+  await context.showJobResults(job);
+  assert.match(panel.textContent, /Could not load comparison: Connection failed/);
+  assert.match(notices[0][0], /Connection failed/);
+});
+
 test("workspace memory restores validated browsing fields without restoring reviews or selections", () => {
   const {context, saved, run} = dashboard();
   saved.set("musiclib.workspace.v1", JSON.stringify({

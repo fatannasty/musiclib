@@ -813,8 +813,17 @@ async function showJobResults(job) {
     <div class="row sections"></div><div class="results-page"></div></div>`;
   container.querySelector("[data-close-results]").onclick = () => { container.innerHTML = ""; };
   if (job.kind === "album-tracklist-audit") {
-    if (job.status === "done") await showTracklistAudit(container.querySelector(".results-page"), job);
-    else container.querySelector(".results-page").textContent = job.error || "This comparison has not completed.";
+    const panel = container.querySelector(".results-page");
+    panel.textContent = "Loading saved track-list comparison…";
+    revealReview(container);
+    if (job.status === "done") {
+      try {
+        await showTracklistAudit(panel, job);
+      } catch (error) {
+        if (panel.isConnected) panel.textContent = `Could not load comparison: ${error.message}`;
+        toast(`Could not load comparison: ${error.message}`, true);
+      }
+    } else panel.textContent = job.error || "This comparison has not completed.";
     return;
   }
   const sections = Object.entries(job.summary || {}).filter(([, value]) => typeof value === "number");
@@ -1029,6 +1038,7 @@ async function refreshActivity() {
         job => `<tr><td>${esc(jobName(job))}${job.origin === "schedule" ? " (scheduled)" : ""}</td><td>${esc(job.status === "cancelled" ? "Stopped" : friendlyLabel(job.status))}</td><td>${elapsed(job)}</td><td>${job.error ? `<p>${esc(job.error)}</p>` : ""}${job.outcomes ? `<p>${esc(outcomeSummary(job))}</p>` : ""}${
           job.status === "done" || job.outcomes ? `<button class="action ghost" data-result="${job.id}">View results</button>` :
           job.status === "cancelled" ? `Stopped at ${job.completed}${job.total == null ? "" : ` / ${job.total}`}. Completed changes remain.` :
+          job.status === "error" ? "Failed." :
           "In progress"}</td></tr>`,
         () => history.querySelectorAll("[data-result]").forEach(button => {
           button.onclick = () => showJobResults(state.jobs.find(j => j.id === button.dataset.result));
@@ -1632,7 +1642,10 @@ const views = {
             });
             await refreshActivity();
             const job = await pollJob(job_id, "Track-list comparison");
-            if (panel.isConnected) await showTracklistAudit(panel, job);
+            if (panel.isConnected) {
+              await showTracklistAudit(panel, job);
+              if (panel.isConnected) revealReview(panel);
+            }
           } catch (error) {
             if (panel.isConnected) panel.textContent = error.message;
             toast(error.message, true);
