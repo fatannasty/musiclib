@@ -714,3 +714,51 @@ test("bad-file review hides cleanup actions when no findings exist", async () =>
   assert.equal(node("#issue-select-page").disabled, true);
   assert.equal(node("#btn-trash-selected").hidden, true);
 });
+
+test("Recovery selection reveals preview only for recoverable entries", async () => {
+  const {context, document, run} = dashboard();
+  const node = selector => document.querySelector(selector);
+  const entry = {id: 42, path: "/music/song.flac", moved_to: "/trash/song.flac",
+    restored_at: null, deleted_at: "2026-01-01", reason: "Duplicate"};
+  const checkbox = new Element({selectRestore: "42"});
+  const restoreButton = new Element();
+  const el = new Element();
+  el.querySelector = selector => selector === '[data-restore="42"]' ? restoreButton :
+    document.querySelector(selector);
+  el.querySelectorAll = selector => selector === "[data-select-restore]" ? [checkbox] : [];
+  let posted;
+  context.api = async () => ({items: [entry], total: 1});
+  context.pagedTable = async (_container, load, _headers, _row, onPage) =>
+    onPage((await load(0)).items);
+  context.post = async (url, body) => { posted = {url, body}; return {job_id: "preview"}; };
+  context.refreshActivity = async () => {};
+  context.pollJob = async () => { el.isConnected = false; return {id: "preview", status: "done"}; };
+  context.loadStats = async () => {};
+  await run("views.recovery")(el);
+  assert.equal(node("#restore-selection").hidden, false);
+  assert.equal(node("#restore-preview-selected").hidden, true);
+  assert.equal(node("#restore-select-page").disabled, false);
+  assert.match(html, /Previously restored entries<\/summary>/);
+  assert.match(html, /Restore to the exact original paths shown/);
+  node("#restore-select-page").onclick();
+  assert.equal(node("#restore-count").textContent, "1 file selected for preview");
+  assert.equal(node("#restore-preview-selected").hidden, false);
+  assert.equal(node("#restore-preview-selected").textContent, "Preview 1 selected restore");
+  await node("#restore-preview-selected").onclick();
+  assert.equal(posted.url, "/api/trash/restore-preview");
+  assert.equal(JSON.stringify(posted.body.deletion_ids), "[42]");
+});
+
+test("Recovery hides selection controls when the page contains no recoverable files", async () => {
+  const {context, document, run} = dashboard();
+  const el = new Element();
+  el.querySelector = selector => document.querySelector(selector);
+  el.querySelectorAll = () => [];
+  context.api = async () => ({items: [], total: 0});
+  context.pagedTable = async (_container, load, _headers, _row, onPage) =>
+    onPage((await load(0)).items);
+  await run("views.recovery")(el);
+  assert.equal(document.querySelector("#restore-selection").hidden, true);
+  assert.equal(document.querySelector("#restore-preview-selected").hidden, true);
+  assert.equal(document.querySelector("#restore-select-page").disabled, true);
+});
