@@ -95,7 +95,7 @@ were not recorded, while retaining known release matches and expected track coun
 CLI commands reconcile on opening the catalog and after checks, cleanup, and organization.
 
 The dashboard keeps a compact Activity bar with readable task names, phase,
-file counts, elapsed time, and **Stop job**. Expand **Details, history and results**
+file counts, elapsed time, and **Stop job**. Expand **Job history and results**
 for current paths, stop behavior, saved jobs, and paginated results. File-level
 results show readable outcomes; raw records are collapsed under **Technical details**.
 Close results when finished. Failed jobs have a dismissible notice; dismissing
@@ -123,7 +123,8 @@ paths and reasons, across stops and restarts. A stopped item means its operation
 did not report completion: inspect the current file before retrying. Completed
 changes are never reported as rolled back.
 
-Activity shows a compact last-job summary. **View details** opens filterable,
+Activity shows a compact latest-result summary even while other jobs are running.
+**View results** opens filterable,
 paginated file outcomes; technical records remain collapsed. **Review failed /
 unfinished files** selects only those library tracks (plus required
 duplicate keepers), not successful files. Up to 200 tracks can be prepared at once;
@@ -271,7 +272,9 @@ Organize (rename preview/apply), Cover Art, Missing Music (MusicBrainz gaps), Us
 Library opens on an **Albums** grid grouped from scanned tags (artist, year, track
 count, and cover when a MusicBrainz ID or embedded art exists). Open an album to
 see its tracks, already selected so you can edit tags or **Find catalog matches**. Switch to **Tracks**
-for the file table and per-track lookup.
+for the file table and per-track lookup. Use **Filters** to narrow results by genre,
+format, or status, then choose **Apply filters**; **Clear filters** keeps the search
+text and shows all genres, formats, and statuses.
 
 Library uses one active review workspace, with **Select → Preview → Confirm →
 Results** progress. Opening another workflow or leaving an unfinished review asks

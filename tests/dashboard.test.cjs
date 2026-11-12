@@ -492,6 +492,71 @@ test("progress updates preserve the Stop control and its focus target", () => {
   assert.equal(count.textContent, "2 / 10 processed");
 });
 
+test("latest results stay available during other jobs without replacing the button on polling", async () => {
+  const {context, document} = dashboard();
+  const summary = document.querySelector("#activity-summary");
+  const button = new Element();
+  summary.querySelector = () => button;
+  document.querySelector("#activity-live-details").parentElement = {open: false};
+  const job = {id: "saved", kind: "scan", status: "done", summary: {scanned: 2}};
+  let jobs = [job];
+  context.api = async () => jobs;
+  context.renderCurrentJobs = () => {};
+  context.applyJobLocks = () => {};
+  let opened;
+  context.showJobResults = item => { opened = item; };
+  await context.refreshActivity();
+  assert.match(summary.innerHTML, /View results/);
+  const writes = summary.writes, handler = button.onclick;
+  jobs = [{id: "running", kind: "scan", status: "running"}, job];
+  await context.refreshActivity();
+  assert.equal(summary.writes, writes);
+  assert.equal(button.onclick, handler);
+  button.onclick();
+  assert.equal(opened.id, "saved");
+  jobs = [{id: "failed", kind: "scan", status: "error", error: "Connection failed"}];
+  await context.refreshActivity();
+  assert.match(summary.innerHTML, /Connection failed/);
+  assert.doesNotMatch(summary.innerHTML, /View results/);
+  assert.match(document.querySelector("#activity-notice").textContent, /Connection failed/);
+  jobs = [];
+  await context.refreshActivity();
+  assert.equal(summary.innerHTML, "");
+  const emptyWrites = summary.writes;
+  await context.refreshActivity();
+  assert.equal(summary.writes, emptyWrites);
+});
+
+test("library filter controls restore the count, apply, and clear without clearing search text", () => {
+  const {context, document} = dashboard();
+  const node = selector => document.querySelector(selector);
+  node("#library-query").value = "Artist";
+  node("#library-genre").value = "Jazz";
+  node("#library-format").value = "";
+  node("#library-status").value = "";
+  let searches = 0, focused = false;
+  node("#library-search").click = () => { searches++; };
+  node("#library-filters summary").focus = () => { focused = true; };
+  context.configureLibraryFilters();
+  assert.equal(node("#library-filter-count").textContent, " · 1 selected");
+  assert.equal(node("#library-filter-clear").disabled, false);
+  node("#library-status").value = "suspect";
+  node("#library-status").onchange();
+  assert.equal(node("#library-filter-count").textContent, " · 2 selected");
+  node("#library-filters").open = true;
+  node("#library-filter-apply").onclick();
+  assert.equal(searches, 1);
+  assert.equal(node("#library-filters").open, false);
+  assert.equal(focused, true);
+  node("#library-filter-clear").onclick();
+  assert.equal(searches, 2);
+  assert.equal(node("#library-query").value, "Artist");
+  assert.equal(node("#library-genre").value, "");
+  assert.equal(node("#library-status").value, "");
+  assert.equal(node("#library-filter-count").textContent, "");
+  assert.equal(node("#library-filter-clear").disabled, true);
+});
+
 test("human-readable results escape filenames and keep raw data collapsed", () => {
   const {context} = dashboard();
   const row = context.resultRow({path: "<script>unsafe</script>", error: "Permission denied"});
