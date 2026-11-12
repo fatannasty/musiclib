@@ -62,6 +62,13 @@ function dashboard({storage, reducedMotion = false} = {}) {
     run: script => vm.runInContext(script, context)};
 }
 
+test("tab visibility rules do not hide album and artwork result sections", () => {
+  const styles = html.match(/<style>([\s\S]*?)<\/style>/)[1];
+  assert.match(styles, /#main\s*>\s*section\s*\{\s*display:\s*none\s*;/);
+  assert.match(styles, /#main\s*>\s*section\.active\s*\{\s*display:\s*block\s*;/);
+  assert.doesNotMatch(styles, /(?:^|})\s*section\s*\{\s*display:\s*none\s*;/m);
+});
+
 test("track-list comparison displays uncertainty and escapes catalog and local data", () => {
   const {context} = dashboard();
   const markup = context.tracklistAuditMarkup(
