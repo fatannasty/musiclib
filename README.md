@@ -188,8 +188,10 @@ bitrate/sample-rate/bit-depth wins, complete tags and embedded art add up, broke
 files sink. Ties prefer the shorter, shallower path. In the web dashboard you can
 override the keeper per group before applying.
 
-**Duplicates** has top-of-page controls for selecting the current page or **all
-groups across pages**, plus a selection count and clear action. Confirming
+**Duplicates** shows saved candidates below **Find duplicates**. Compare each
+possible copy, choose a keeper, and include only reviewed groups. You can select
+the current page or expand **Selection across pages** to select all groups,
+including those not currently visible. Confirming
 **Move N extra copies to trash (keep K)** preserves one chosen keeper per group and
 leaves unapproved groups alone. File paths and hashes are checked against the
 review and again on disk; changed copies or missing keepers block removal.
