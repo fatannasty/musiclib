@@ -809,3 +809,79 @@ test("Organize separates preview from apply and shows destination reasons", asyn
   assert.equal(node("#btn-apply").hidden, true);
   assert.match(node("#ren-summary").textContent, /2 files moved/);
 });
+
+test("Overview workflow items open the relevant pages", async () => {
+  const {context, run} = dashboard();
+  const el = new Element();
+  context.loadStats = async () => ({
+    tracks: 1, issues: 0, dupe_groups: 0, albums_missing_art: 0,
+    albums_missing_tracks: 0, albums: 1, bytes: 1, duration_seconds: 1,
+  });
+  context.pagedTable = async () => {};
+  await run("views.overview")(el);
+  for (const tab of ["doctor", "dupes", "organize", "art", "missing", "usenet"]) {
+    assert.match(el.innerHTML, new RegExp(`class="step workflow-step" data-go="${tab}"`));
+  }
+});
+
+test("Cover Art does not offer an apply action when no albums need artwork", async () => {
+  const {context, document, run} = dashboard();
+  const el = new Element();
+  run(`state.jobs = [{kind: "art", id: "empty", status: "done",
+    summary: {applied: false, albums: []}}]`);
+  context.api = async () => ({hours: 0});
+  context.pagedTable = async () => {};
+  document.querySelector("#btn-dl").style = {};
+  await run("views.art")(el);
+  assert.equal(document.querySelector("#btn-dl").style.display, "none");
+  assert.match(document.querySelector("#art-status").textContent, /No albums without embedded artwork/);
+});
+
+test("Missing Music turns an album gap into an indexer search", async () => {
+  const {context, document, run} = dashboard();
+  const el = new Element();
+  const search = new Element({q: "Artist & Band - Album"});
+  let clicked = false;
+  document.querySelector("#btn-usearch").click = () => { clicked = true; };
+  el.querySelectorAll = selector => selector === "[data-q]" ? [search] : [];
+  context.post = async path => path === "/api/brainz/refresh" ? {job_id: "brainz"} : {};
+  context.refreshActivity = async () => {};
+  context.pollJob = async () => {};
+  context.api = async path => path === "/api/missing"
+    ? [{artist: "Artist & Band", album: "Album", missing: ["Song 1", "Song 2"]}]
+    : [];
+  context.loadStats = async () => {};
+  context.render = async () => run('state.currentTab = "usenet"');
+  await run("views.missing")(el);
+  await document.querySelector("#btn-refresh").onclick();
+  assert.match(document.querySelector("#miss-out").innerHTML, /2 missing tracks/);
+  assert.match(document.querySelector("#miss-out").innerHTML, /Show missing tracks/);
+  assert.match(document.querySelector("#miss-out").innerHTML, /Search indexers for this album/);
+  await search.onclick();
+  assert.equal(document.querySelector("#usenet-q").value, "Artist & Band - Album");
+  assert.equal(document.querySelector("#btn-usearch").disabled, false);
+  assert.equal(clicked, true);
+});
+
+test("Usenet search reports selectable downloads and confirms the queue action", async () => {
+  const {context, document, run} = dashboard();
+  const el = new Element();
+  const send = new Element({url: "https://indexer.example/result.nzb", name: "Artist - Album"});
+  el.querySelectorAll = selector => selector === "[data-url]" ? [send] : [];
+  context.api = async () => [];
+  context.post = async path => path === "/api/search"
+    ? [{score: 90, size: 1024, title: "Artist - Album", indexer: "Example", url: send.dataset.url}]
+    : {nzo_id: "queue-1"};
+  await run("views.usenet")(el);
+  const query = document.querySelector("#usenet-q");
+  const search = document.querySelector("#btn-usearch");
+  assert.equal(search.disabled, true);
+  query.value = "Artist - Album";
+  query.oninput();
+  assert.equal(search.disabled, false);
+  await search.onclick();
+  assert.match(document.querySelector("#usenet-status").textContent, /Choose one to send to SABnzbd/);
+  assert.match(document.querySelector("#usearch-out").innerHTML, /Send to SABnzbd/);
+  await send.onclick();
+  assert.match(document.querySelector("#usenet-status").textContent, /sent to SABnzbd/);
+});

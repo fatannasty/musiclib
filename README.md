@@ -273,6 +273,12 @@ and confirm),
 Organize (rename preview/apply), Cover Art, Missing Music (MusicBrainz gaps), Usenet
 (indexer search + SABnzbd queue).
 
+Overview's workflow steps open the relevant page. Cover Art separates a missing-art
+check from read-only catalog candidate discovery; downloading and embedding is a
+separate, explicit action. Missing Music shows track gaps per album, and Usenet
+search results are individually sent to SABnzbd only when selected. Advanced Settings
+are collapsed until opened.
+
 Library opens on an **Albums** grid grouped from scanned tags (artist, year, track
 count, and cover when a MusicBrainz ID or embedded art exists). Open an album to
 see its tracks, already selected so you can edit tags or **Find catalog matches**. Switch to **Tracks**

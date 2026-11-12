@@ -142,6 +142,16 @@ td.path { font-family: var(--mono); font-size: 11.5px; color: var(--dim); word-b
 .organize-controls { box-shadow: var(--shadow); }
 .organize-summary { padding: 14px; border-left: 2px solid var(--accent); background: var(--panel2); border-radius: 9px; margin: 12px 0; }
 .organize-summary:empty { display: none; }
+.workflow-step { width: 100%; text-align: left; font: inherit; font-size: 12px; color: var(--dim); border: 0; cursor: pointer; }
+.workflow-step:hover { outline: 1px solid var(--accent); }
+.art-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.art-actions .card { margin: 0; }
+.card > summary { cursor: pointer; font-weight: 650; margin-bottom: 8px; }
+.art-status { padding: 12px; border-left: 2px solid var(--accent); background: var(--panel2); border-radius: 8px; margin: 12px 0; }
+.art-status:empty { display: none; }
+.usenet-search { box-shadow: var(--shadow); }
+.usenet-results { display: grid; gap: 10px; }
+.usenet-result { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 label.check { color: var(--dim); font-size: 13px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
 select { background: var(--panel); border: 1px solid var(--control-border); color: var(--text); padding: 10px 12px; border-radius: 9px; }
 .hint { color: var(--dim); font-size: 12px; }
@@ -1163,14 +1173,15 @@ const views = {
         <button class="action ghost" id="btn-refresh">Refresh stats</button>
       </div>
       <div class="card"><h3>Recommended workflow</h3>
+        <p class="hint">Start with Scan above, then choose a workflow step to open it. Scanning catalogs your music without changing tags or files.</p>
         <div class="steps">
           <div class="step"><b>1. Scan</b> Catalog files</div>
-          <div class="step"><b>2. Bad files</b> Trash broken audio</div>
-          <div class="step"><b>3. Duplicates</b> Keep the best copy</div>
-          <div class="step"><b>4. Organize</b> Rename into folders</div>
-          <div class="step"><b>5. Cover art</b> Fetch missing art</div>
-          <div class="step"><b>6. Missing</b> Find album gaps</div>
-          <div class="step"><b>7. Usenet</b> Fill from indexers</div>
+          <button type="button" class="step workflow-step" data-go="doctor"><b>2. Bad files</b> Check, then review broken audio</button>
+          <button type="button" class="step workflow-step" data-go="dupes"><b>3. Duplicates</b> Compare copies and choose keepers</button>
+          <button type="button" class="step workflow-step" data-go="organize"><b>4. Organize</b> Preview and review folder moves</button>
+          <button type="button" class="step workflow-step" data-go="art"><b>5. Cover art</b> Find and review cover options</button>
+          <button type="button" class="step workflow-step" data-go="missing"><b>6. Missing music</b> Compare album track lists</button>
+          <button type="button" class="step workflow-step" data-go="usenet"><b>7. Usenet</b> Search indexers and choose a download</button>
         </div>
         <p style="margin-top:10px">Destructive actions ask for confirmation and default to trash (recoverable).</p></div>
       <div id="overview-lists"></div>`;
@@ -3270,13 +3281,21 @@ const views = {
 
   async art(el) {
     const schedule = await api("/api/artwork/schedule");
-    el.innerHTML = `<div class="row">
-      <button class="action" id="btn-missing" data-operation>Find missing art</button>
-      <button class="action" id="btn-cover-candidates">Find catalog cover candidates</button>
-      <button class="action danger" id="btn-dl" data-operation style="display:none">Download & embed</button>
-    </div><p class="hint" id="art-schedule-status"></p>
+    el.innerHTML = `<div class="art-actions">
+      <section class="card"><h3>Fill missing embedded artwork</h3>
+        <p>Check albums that have no cover image in their files. Review the list before choosing to download and embed artwork.</p>
+        <button class="action" id="btn-missing" data-operation>Find albums without embedded art</button>
+      </section>
+      <section class="card"><h3>Review catalog cover options</h3>
+        <p>Compare cover candidates from MusicBrainz, iTunes, and Deezer. This search does not change music files.</p>
+        <button class="action" id="btn-cover-candidates">Find catalog cover candidates</button>
+      </section>
+    </div>
+    <p class="hint" id="art-schedule-status"></p>
+    <p class="art-status" id="art-status" role="status" aria-live="polite"></p>
+    <div class="row"><button class="action danger" id="btn-dl" data-operation style="display:none"></button></div>
     <div id="art-candidate-results"></div>
-    <div id="art-out"><div class="empty">Cover candidates come from MusicBrainz, iTunes, and Deezer. They are never embedded automatically.</div></div>`;
+    <div id="art-out"><div class="empty">Run either check above to review available artwork.</div></div>`;
     $("#art-schedule-status").textContent = schedule.hours
       ? `Automatic discovery runs ${schedule.hours === 24 ? "daily" : "weekly"}; next run ${new Date(schedule.next_run * 1000).toLocaleString()}. It checks up to 25 missing-art albums per run.`
       : "Automatic discovery is off. Enable daily or weekly runs in Settings. Candidate searches do not change music files.";
@@ -3301,7 +3320,15 @@ const views = {
       await loadStats();
     };
     const showArt = async job => {
-      $("#btn-dl").style.display = !job.summary.applied && job.summary.albums ? "" : "none";
+      const albums = job.summary.albums;
+      const readyCount = Array.isArray(albums) ? albums.length : 0;
+      const canApply = !job.summary.applied && readyCount > 0;
+      $("#btn-dl").style.display = canApply ? "" : "none";
+      $("#btn-dl").textContent = canApply ? `Download and embed artwork for ${readyCount} albums` : "";
+      $("#art-status").textContent = job.summary.applied
+        ? `Artwork task finished. ${readyCount} albums were processed.`
+        : readyCount ? `Found ${readyCount} albums without embedded artwork. No files have been changed.`
+          : "No albums without embedded artwork were found.";
       await pagedTable($("#art-out"), offset => api(`/api/jobs/${job.id}/results/albums?offset=${offset}`),
         ["Artist", "Album", "Status", "Details"],
         album => `<tr><td>${esc(album.artist)}</td><td>${esc(album.album)}</td><td>${esc(album.status)}</td><td>${esc(album.detail)}</td></tr>`);
@@ -3361,25 +3388,36 @@ const views = {
   },
 
   async missing(el) {
-    el.innerHTML = `<div class="row">
-      <button class="action" id="btn-refresh" data-operation>Compare with MusicBrainz</button>
-      <span class="hint">Detects tracks your albums are missing, then fetch them from Usenet.</span>
-    </div><div id="miss-out"><div class="empty">Run a comparison to find gaps in your albums.</div></div>`;
+    el.innerHTML = `<section class="card"><h3>Compare your albums with MusicBrainz</h3>
+      <p>Check local album track lists against MusicBrainz. This is a read-only comparison; you choose what to search for afterward.</p>
+      <button class="action" id="btn-refresh" data-operation>Compare album track lists</button>
+    </section>
+    <p id="miss-status" class="art-status" role="status" aria-live="polite">Run a comparison to find albums with missing tracks.</p>
+    <div id="miss-out"></div>`;
     $("#btn-refresh").onclick = async () => {
       const { job_id } = await post("/api/brainz/refresh");
       await refreshActivity();
       await pollJob(job_id, "MusicBrainz");
       if (!el.isConnected) return;
       const gaps = await api("/api/missing");
-      if (!gaps.length) { $("#miss-out").innerHTML = `<div class="empty">No missing tracks detected.</div>`; return; }
-      $("#miss-out").innerHTML = `<table><thead><tr><th>artist</th><th>album</th><th>missing tracks</th><th></th></tr></thead><tbody>` +
-        gaps.map(g => `<tr><td>${esc(g.artist)}</td><td>${esc(g.album)}</td><td>${g.missing.map(esc).join("<br>")}</td>
-        <td><button class="action ghost" data-q="${esc(g.artist + " - " + g.album)}">Fetch via Usenet</button></td></tr>`).join("") + `</tbody></table>`;
+      $("#miss-status").textContent = gaps.length
+        ? `Found ${gaps.length} albums with missing tracks. Review the gaps, then search indexers for an album.`
+        : "No missing tracks were detected.";
+      if (!gaps.length) { $("#miss-out").innerHTML = `<div class="empty">Your albums match the MusicBrainz track lists.</div>`; return; }
+      $("#miss-out").innerHTML = `<div class="match-grid">` +
+        gaps.map(g => `<section class="card">
+          <h3>${esc(g.artist)} — ${esc(g.album)}</h3>
+          <p>${g.missing.length} missing ${g.missing.length === 1 ? "track" : "tracks"}</p>
+          <details><summary>Show missing tracks</summary><ul>${g.missing.map(track => `<li>${esc(track)}</li>`).join("")}</ul></details>
+          <button class="action ghost" data-q="${esc(g.artist + " - " + g.album)}">Search indexers for this album</button>
+        </section>`).join("") + `</div>`;
       el.querySelectorAll("[data-q]").forEach(btn => {
         btn.onclick = async () => {
           state.tab = "usenet"; await render();
           if (state.currentTab !== "usenet") return;
-          $("#usenet-q").value = btn.dataset.q; $("#btn-usearch").click();
+          $("#usenet-q").value = btn.dataset.q;
+          $("#btn-usearch").disabled = false;
+          $("#btn-usearch").click();
         };
       });
       loadStats();
@@ -3387,40 +3425,67 @@ const views = {
   },
 
   async usenet(el) {
-    el.innerHTML = `<div class="row">
-      <input type="text" id="usenet-q" placeholder="artist - album">
-      <button class="action" id="btn-usearch">Search indexers</button>
-    </div>
-    <div class="row"><div class="card" style="flex:1"><h3>SABnzbd queue</h3><div id="sab-queue" class="hint">—</div></div></div>
-    <div id="usearch-out"><div class="empty">Search your newznab indexers for music to download.</div></div>`;
+    el.innerHTML = `<section class="card usenet-search">
+      <label for="usenet-q"><strong>What album are you looking for?</strong></label>
+      <p class="hint">Enter an artist and album name, or start from Missing Music.</p>
+      <div class="row"><input type="text" id="usenet-q" placeholder="Artist - Album">
+        <button class="action" id="btn-usearch" disabled>Search indexers</button></div>
+    </section>
+    <p id="usenet-status" class="art-status" role="status" aria-live="polite"></p>
+    <details class="card"><summary>SABnzbd download queue</summary><div id="sab-queue" class="hint">Loading queue…</div></details>
+    <div id="usearch-out"><div class="empty">Search your configured indexers to compare available downloads.</div></div>`;
+    const query = $("#usenet-q");
+    const searchButton = $("#btn-usearch");
+    searchButton.disabled = true;
+    query.oninput = () => { searchButton.disabled = !query.value.trim(); };
     const loadQueue = async () => {
       try {
         const q = await api("/api/sab/queue");
         $("#sab-queue").innerHTML = q.length
-          ? `<table><tbody>${q.map(s => `<tr><td>${esc(s.filename || s.title || "?")}</td><td class="mono">${esc(s.status || "")}</td><td class="mono">${esc(s.sizeleft || "")}</td></tr>`).join("")}</tbody></table>`
+          ? `<div class="table-scroll"><table><tbody>${q.map(s => `<tr><td>${esc(s.filename || s.title || "?")}</td><td class="mono">${esc(s.status || "")}</td><td class="mono">${esc(s.sizeleft || "")}</td></tr>`).join("")}</tbody></table></div>`
           : "Queue is empty.";
       } catch (e) { $("#sab-queue").textContent = e.message; }
     };
     loadQueue();
-    $("#btn-usearch").onclick = async () => {
-      const q = $("#usenet-q").value.trim();
+    searchButton.onclick = async () => {
+      const q = query.value.trim();
       if (!q) return;
+      $("#usenet-status").textContent = `Searching your indexers for “${q}”…`;
+      searchButton.disabled = true;
       try {
         const results = await post("/api/search", { query: q });
-        if (!results.length) { $("#usearch-out").innerHTML = `<div class="empty">No results from your indexers.</div>`; return; }
-        $("#usearch-out").innerHTML = `<table><thead><tr><th>score</th><th>size</th><th>title</th><th>indexer</th><th></th></tr></thead><tbody>` +
-          results.map(r => `<tr><td class="mono">${esc(r.score)}</td><td class="mono">${fmtBytes(r.size)}</td><td>${esc(r.title)}</td><td class="hint">${esc(r.indexer)}</td>
-          <td><button class="action" data-url="${esc(r.url)}" data-name="${esc(r.title)}">Send to SABnzbd</button></td></tr>`).join("") + `</tbody></table>`;
+        if (!results.length) {
+          $("#usenet-status").textContent = `No matching downloads were found for “${q}”.`;
+          $("#usearch-out").innerHTML = `<div class="empty">Try another search or check your indexer settings.</div>`;
+          return;
+        }
+        $("#usenet-status").textContent = `${results.length} ${results.length === 1 ? "download" : "downloads"} found. Choose one to send to SABnzbd.`;
+        $("#usearch-out").innerHTML = `<div class="usenet-results">` +
+          results.map(r => `<section class="card usenet-result"><div><strong>${esc(r.title)}</strong>
+            <p class="hint">${esc(r.indexer)} · Score ${esc(r.score)} · ${fmtBytes(r.size)}</p></div>
+            <button class="action" data-url="${esc(r.url)}" data-name="${esc(r.title)}">Send to SABnzbd</button></section>`).join("") +
+          `</div>`;
         el.querySelectorAll("[data-url]").forEach(btn => {
           btn.onclick = async () => {
+            btn.disabled = true;
             try {
               const res = await post("/api/sab/add", { url: btn.dataset.url, name: btn.dataset.name });
-              toast(`Queued as ${res.nzo_id}`);
+              $("#usenet-status").textContent = `Download sent to SABnzbd (queue ID ${res.nzo_id}).`;
               loadQueue();
-            } catch (e) { toast(e.message, true); }
+            } catch (e) {
+              $("#usenet-status").textContent = e.message;
+              toast(e.message, true);
+              btn.disabled = false;
+            }
           };
         });
-      } catch (e) { toast(e.message, true); }
+      } catch (e) {
+        $("#usenet-status").textContent = e.message;
+        $("#usearch-out").innerHTML = `<div class="empty">Search could not be completed. Check your indexer settings and try again.</div>`;
+        toast(e.message, true);
+      } finally {
+        searchButton.disabled = !query.value.trim();
+      }
     };
   },
 
@@ -3452,6 +3517,7 @@ const views = {
         <p>This browser remembers your tab, applied Library search and filters, view, batch size and browsing position.
         Review drafts, file selections, playback and credentials are never included.</p>
         <button type="button" class="action ghost" id="forget-browsing">Clear saved browsing</button></div>
+      <p class="hint">Connect your services below. Open an optional section only when you need to change advanced settings.</p>
       <div class="card"><h3>SABnzbd</h3>
         ${field("sabnzbd", "url", "URL (e.g. http://NAS_IP:8080)")}
         ${field("sabnzbd", "api_key", "API key", { secret: true })}
@@ -3464,7 +3530,7 @@ const views = {
       <div class="card" style="margin-top:14px"><h3>MusicBrainz</h3>
         ${field("brainz", "contact", "Contact email (required by MusicBrainz)")}
       </div>
-      <div class="card" style="margin-top:14px"><h3>Audio identification (AcoustID)</h3>
+      <details class="card" style="margin-top:14px"><summary>Optional: Audio identification (AcoustID)</summary>
         ${field("acoustid", "api_key", "Application API key", { secret: true })}
         <label class="hint"><input type="checkbox" id="set-acoustid-clear"> Remove the saved AcoustID key</label>
         <p class="hint">Optional. Register an application at <a href="https://acoustid.org/new-application" target="_blank" rel="noopener noreferrer">acoustid.org</a> and use its application API key, not a user API key.
@@ -3472,8 +3538,8 @@ const views = {
         A fingerprint and duration go to AcoustID; recording IDs go to MusicBrainz. Audio files are not uploaded.
         Your key is saved in the NAS configuration, never returned by Settings or saved in browsing memory.
         Matches require reviewed field selection and confirmation; album editions and track numbers are not guessed.</p>
-      </div>
-      <div class="card" style="margin-top:14px"><h3>Album lookup sources and connections</h3>
+      </details>
+      <details class="card" style="margin-top:14px"><summary>Album lookup sources and connections</summary>
         <p>Choose the default for Find album matches. You can change the source for each search.</p>
         <label class="hint" for="set-catalog-album_source">Default album lookup source</label>
         <div class="row"><select id="set-catalog-album_source">${albumSourceOptions(s.catalog.album_source)}</select></div>
@@ -3484,15 +3550,15 @@ const views = {
         <p class="hint">Deezer is an additional public album/track catalog; regional availability and network access may limit results. Catalog suggestions never prove that two local files contain identical audio.</p>
         <button type="button" class="action ghost" id="test-catalogs">Test catalog connections</button>
         <div role="status" aria-live="polite" id="catalog-test-results"></div>
-      </div>
-      <div class="card" style="margin-top:14px"><h3>Organize</h3>
+      </details>
+      <details class="card" style="margin-top:14px"><summary>Organize</summary>
         ${field("organize", "template", "Filename template")}
         ${field("organize", "template_multidisc", "Multi-disc template")}
         ${field("organize", "singles_folder", "Root-level singles folder")}
         ${field("organize", "root_singles", "Group loose root tracks by genre (disable to use album templates)")}
         ${field("organize", "cleanup_empty_dirs", "Remove empty folders after moving")}
-      </div>
-      <div class="card" style="margin-top:14px"><h3>Bad files &amp; duplicates</h3>
+      </details>
+      <details class="card" style="margin-top:14px"><summary>Bad files &amp; duplicates</summary>
         ${field("doctor", "min_bitrate", "Minimum bitrate (kbps)")}
         ${field("doctor", "min_duration", "Minimum duration (seconds)")}
         ${field("doctor", "deep_decode", "Deep decode with ffmpeg")}
@@ -3504,8 +3570,8 @@ const views = {
         ${field("duplicates", "schedule_fingerprint", "Include audio fingerprints in scheduled discovery (slower)")}
         <p class="hint">Opt-in, runs inside Musiclib while the NAS app is running. First run occurs one interval after enabling.
           Refreshes the catalog, finds candidates, and reports in Activity. Never trashes files automatically. Busy jobs defer the run; Stop cancels only the current run. Set Off to disable future runs.</p>
-      </div>
-      <div class="card" style="margin-top:14px"><h3>Cover art</h3>
+      </details>
+      <details class="card" style="margin-top:14px"><summary>Cover art</summary>
         ${field("artwork", "embed", "Embed art in files")}
         ${field("artwork", "folder_image", "Folder image filename")}
         ${field("artwork", "min_side", "Minimum image side (px)")}
@@ -3513,7 +3579,7 @@ const views = {
         <label>Automatic cover discovery <select id="set-artwork-schedule_hours">
           ${[[0, "Off"], [24, "Daily"], [168, "Weekly"]].map(([value, label]) => `<option value="${value}" ${s.artwork.schedule_hours === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
         <p class="hint">Opt-in NAS background searches check up to 25 albums per run and save candidates in Activity. No covers are embedded automatically. Discovery runs alongside album lookup and renaming; review and applying a cover still uses the normal file-operation safeguards.</p>
-      </div>
+      </details>
       <div class="row" style="margin-top:14px"><button class="action" id="set-save">Save settings</button>
         <span class="hint">Library: ${esc(s.library)} (change via MUSIC_DIR volume mapping)</span></div>`;
     $("#forget-browsing").onclick = forgetBrowsing;
