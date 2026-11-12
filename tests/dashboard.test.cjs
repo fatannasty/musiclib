@@ -582,7 +582,68 @@ test("duplicate review explicitly separates keeper and other copies with escaped
   assert.match(markup, /Include this group for cleanup/);
   assert.match(markup, /Compilation/);
   assert.match(markup, /Same title &lt;not proof&gt;/);
+  assert.match(markup, /data-keep="1:10" checked/);
+  assert.match(markup, /data-keep="1:11"/);
+  assert.match(markup, /data-approve="1"/);
+  assert.match(markup, /Keep this file/);
   assert.doesNotMatch(markup, /Trash approved copies|<copy>|data-approve="1" checked/);
+});
+
+test("duplicate review keeps selections and snapshots behind confirmation", async () => {
+  const {context, document, run} = dashboard();
+  const node = selector => document.querySelector(selector);
+  const approve = new Element({approve: "1"}), keep = new Element({keep: "1:11"});
+  const el = new Element();
+  el.querySelectorAll = selector => ({
+    "[data-approve]": [approve], "[data-keep]": [keep],
+  })[selector] || [];
+  const group = {group_id: 1, keep_id: 10, members: [
+    {id: 10, path: "/music/one", file_hash: "one"},
+    {id: 11, path: "/music/two", file_hash: "two"},
+  ]};
+  context.api = async () => ({hours: 0});
+  context.pagedTable = async (_container, _load, _headers, _row, onPage) => onPage([group]);
+  await run("views.dupes")(el);
+  assert.equal(node("#btn-apply").hidden, true);
+  keep.onchange();
+  approve.checked = true;
+  approve.onchange();
+  assert.equal(node("#btn-apply").hidden, false);
+  assert.match(node("#dupe-selected").textContent, /1 keeper stays; 1 extra copy/);
+  let posted;
+  context.post = async (url, body) => { posted = {url, body}; return {job_id: "job"}; };
+  context.refreshActivity = async () => {};
+  context.pollJob = async () => ({summary: {trashed: 1}});
+  context.loadStats = async () => {};
+  context.confirm = () => false;
+  await node("#btn-apply").onclick();
+  assert.equal(posted, undefined);
+  context.confirm = () => true;
+  await node("#btn-apply").onclick();
+  assert.equal(posted.url, "/api/dupes/apply-job");
+  assert.equal(posted.body.keep_ids[1], 11);
+  assert.equal(posted.body.snapshots[10].file_hash, "one");
+  assert.equal(posted.body.snapshots[11].path, "/music/two");
+  assert.equal(posted.body.hard_delete, false);
+  assert.equal(node("#btn-apply").hidden, true);
+});
+
+test("duplicate review offers a clear next step when there are no candidates", async () => {
+  const {context, document, run} = dashboard();
+  const node = selector => document.querySelector(selector);
+  const el = new Element();
+  let groups = [];
+  context.api = async () => ({hours: 0});
+  context.pagedTable = async (_container, _load, _headers, _row, onPage) => onPage(groups);
+  context.runTask = async () => {};
+  await run("views.dupes")(el);
+  assert.equal(node("#dupe-empty").hidden, false);
+  assert.equal(node("#dupe-selection").hidden, true);
+  groups = [{group_id: 1, keep_id: 1, members: [{id: 1}, {id: 2}]}];
+  await node("#btn-find").onclick();
+  assert.equal(node("#dupe-empty").hidden, true);
+  assert.equal(node("#dupe-selection").hidden, false);
+  assert.equal(node("#btn-apply").hidden, true);
 });
 
 test("file outcome summaries distinguish unfinished files from completed changes", () => {
