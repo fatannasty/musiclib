@@ -18,9 +18,11 @@
 <style>
 :root {
   color-scheme: light;
-  --bg: #f3f7f6; --panel: #ffffff; --panel2: #edf4f2; --border: #d3e1dd;
-  --text: #18342f; --dim: #526b65; --accent: #0b7267; --accent2: #b84d24;
-  --on-accent: #ffffff; --accent-soft: #d9efea; --cover-bg: #e3efeb; --control-border: #7a928a;
+  --bg: #f7f5fb; --panel: #ffffff; --panel2: #f0edf8; --border: #dcd5e8;
+  --text: #29233d; --dim: #655d77; --accent: #6544d8; --accent2: #e56038;
+  --on-accent: #ffffff; --accent-soft: #ebe5ff; --cover-bg: #f0edff; --control-border: #8573b2;
+  --accent-blue: #2876c7; --accent-gold: #bc7600;
+  --wash-one: rgba(101,68,216,.09); --wash-two: rgba(229,96,56,.07);
   --green: #07635b; --red: #b42342; --yellow: #855000;
   --ok-bg: #e5f4ed; --bad-bg: #fff0f2; --warn-bg: #fff2d6;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -29,16 +31,19 @@
 }
 :root[data-theme=dark] {
   color-scheme: dark;
-  --bg: #101e24; --panel: #172931; --panel2: #20353e; --border: #36515b;
-  --text: #edf5f5; --dim: #afc4c6; --accent: #79d8c9; --accent2: #f8b18d;
-  --on-accent: #073b36; --accent-soft: #244b47; --cover-bg: #213d40; --control-border: #68898f;
+  --bg: #171322; --panel: #211b30; --panel2: #2b2440; --border: #45395e;
+  --text: #f5f0ff; --dim: #c0b5d3; --accent: #bca3ff; --accent2: #ff9a76;
+  --on-accent: #21143f; --accent-soft: #382d52; --cover-bg: #302643; --control-border: #9380b5;
+  --accent-blue: #83baff; --accent-gold: #ffd078;
+  --wash-one: rgba(188,163,255,.13); --wash-two: rgba(255,154,118,.09);
   --green: #89dec1; --red: #ff9aab; --yellow: #f9ce79;
   --ok-bg: #1c4239; --bad-bg: #482c37; --warn-bg: #43371e;
   --shadow: 0 4px 16px rgba(0,0,0,.12);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  background: var(--bg);
+  background: radial-gradient(ellipse at 8% 0%, var(--wash-one), transparent 38%),
+    radial-gradient(ellipse at 96% 12%, var(--wash-two), transparent 34%), var(--bg);
   color: var(--text);
   font: 15px/1.55 "Segoe UI", "Avenir Next", sans-serif;
   min-height: 100vh;
@@ -52,7 +57,7 @@ header { padding: 28px 28px 14px; max-width: 1340px; margin: auto; }
 .brand { display: flex; gap: 12px; align-items: center; }
 .brand img { width: 42px; height: 42px; }
 h1 { font-size: 27px; font-weight: 750; letter-spacing: -.04em; line-height: 1.1; }
-h1 span { color: var(--accent); }
+h1 span { color: var(--accent2); }
 .sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
 .chips { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin-top: 24px; border-bottom: 1px solid var(--border); }
 .chip {
@@ -233,6 +238,13 @@ details > summary { cursor: pointer; color: var(--dim); padding: 6px 0; }
 }
 .match-card input { position: absolute; opacity: 0; }
 .album-tile { min-width: 0; animation: rise .3s ease both; }
+.album-tile:nth-child(4n+1) { --tile-accent: var(--accent); }
+.album-tile:nth-child(4n+2) { --tile-accent: var(--accent2); }
+.album-tile:nth-child(4n+3) { --tile-accent: var(--accent-blue); }
+.album-tile:nth-child(4n) { --tile-accent: var(--accent-gold); }
+.album-tile .match-card { border-top: 3px solid var(--tile-accent, var(--accent)); }
+.album-tile .match-card:hover { border-color: var(--tile-accent, var(--accent)); box-shadow: 0 10px 24px var(--wash-one); }
+.album-card-open { margin-top: 3px; color: var(--tile-accent, var(--accent)); font-size: 11px; font-weight: 700; }
 .album-tile:nth-child(2), .widget:nth-child(2) { animation-delay: .035s; }
 .album-tile:nth-child(3), .widget:nth-child(3) { animation-delay: .07s; }
 .album-tile:nth-child(4), .widget:nth-child(4) { animation-delay: .105s; }
@@ -252,6 +264,50 @@ details > summary { cursor: pointer; color: var(--dim); padding: 6px 0; }
 button.match-card { width: 100%; color: inherit; font: inherit; text-align: left; }
 .album-hero { display: grid; grid-template-columns: 140px 1fr; gap: 16px; align-items: center; margin-bottom: 12px; }
 .album-hero .cover, .album-hero .cover-ph { width: 140px; }
+.album-dialog {
+  width: min(1120px, calc(100vw - 28px)); max-width: none;
+  max-height: calc(100vh - 28px); max-height: calc(100dvh - 28px); margin: auto; padding: 0;
+  border: 0; border-radius: 24px; overflow: visible;
+  background: transparent; color: var(--text);
+}
+.album-dialog::backdrop { background: rgba(22, 16, 38, .62); backdrop-filter: blur(7px); }
+.album-dialog-surface {
+  display: flex; flex-direction: column; max-height: calc(100vh - 28px); max-height: calc(100dvh - 28px); overflow: auto;
+  padding: clamp(16px, 3vw, 30px); border: 1px solid var(--border); border-top: 5px solid var(--accent);
+  border-radius: 24px; background: linear-gradient(145deg, var(--panel), var(--panel2) 130%);
+  box-shadow: 0 28px 90px rgba(20, 12, 38, .38);
+}
+.album-dialog[open] .album-dialog-surface { animation: album-flip-in .48s cubic-bezier(.2,.8,.25,1) both; }
+.album-dialog-content { min-width: 0; }
+.album-dialog-close { position: sticky; top: 0; z-index: 4; margin-bottom: 16px; background: var(--panel); }
+.album-detail-header { display: grid; grid-template-columns: minmax(110px, 190px) minmax(0, 1fr); gap: 22px; align-items: center; }
+.album-detail-header .cover, .album-detail-header .cover-ph { width: 100%; box-shadow: 0 12px 30px var(--wash-one); }
+.album-detail-header h2 { font-size: clamp(22px, 4vw, 34px); line-height: 1.15; overflow-wrap: anywhere; }
+.album-detail-kicker { color: var(--accent2); font-size: 12px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+.album-detail-meta { margin: 8px 0 14px; color: var(--dim); }
+.album-track-heading { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; margin: 24px 0 10px; }
+.album-track-heading h3 { font-size: 18px; }
+.album-track-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.album-track-list { display: grid; gap: 8px; list-style: none; }
+.album-track { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 12px;
+  min-width: 0; padding: 11px 14px; border: 1px solid var(--border); border-left: 3px solid var(--track-accent, var(--accent));
+  border-radius: 12px; background: var(--panel); }
+.album-track:nth-child(4n+2) { --track-accent: var(--accent2); }
+.album-track:nth-child(4n+3) { --track-accent: var(--accent-blue); }
+.album-track:nth-child(4n) { --track-accent: var(--accent-gold); }
+.album-track-pick { display: flex; gap: 6px; align-items: center; color: var(--dim); font-size: 12px; }
+.album-track-info { display: grid; min-width: 0; }
+.album-track-info strong, .album-track-info span { overflow-wrap: anywhere; }
+.album-track-position, .album-track-sub { color: var(--dim); font-size: 12px; }
+.album-track-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.album-dialog .workspace { margin: 18px 0 0; }
+.album-dialog.album-dialog-playing .album-dialog-surface { padding-bottom: 280px; }
+.album-dialog .player {
+  position: fixed; bottom: 12px; left: 14px; right: 14px; z-index: 3;
+  width: auto; max-width: 1060px; margin: 0 auto; flex: 0 0 auto;
+  border-color: var(--accent2); box-shadow: 0 -8px 24px var(--wash-two);
+}
+.album-dialog .player audio { max-width: 100%; }
 .metadata-field { display: grid; grid-template-columns: minmax(100px, .7fr) 1fr 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .metadata-field:last-child { border-bottom: 0; }
 .player {
@@ -268,11 +324,17 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 body.player-open { padding-bottom: 250px; }
 body.player-open #toast { bottom: 260px; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes album-flip-in {
+  0% { opacity: 0; transform: perspective(1200px) rotateY(-72deg) scale(.78) translateY(24px); }
+  72% { opacity: 1; transform: perspective(1200px) rotateY(5deg) scale(1.015); }
+  100% { opacity: 1; transform: perspective(1200px) rotateY(0) scale(1); }
+}
 @media (hover: none) {
   button.action:hover, .widget:hover, .match-card:hover { transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .album-dialog[open] .album-dialog-surface { animation: none; }
   button.action:hover, .widget:hover, .match-card:hover { transform: none; }
 }
 @media (max-width: 600px) {
@@ -296,6 +358,18 @@ body.player-open #toast { bottom: 260px; }
   .widget { padding: 14px; }
   .album-hero { grid-template-columns: 90px minmax(0, 1fr); gap: 12px; align-items: start; }
   .album-hero .cover, .album-hero .cover-ph { width: 90px; }
+  .album-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px); }
+  .album-dialog-surface { max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px); padding: 14px; border-radius: 18px; }
+  .album-detail-header { grid-template-columns: 84px minmax(0,1fr); gap: 12px; }
+  .album-track { grid-template-columns: auto minmax(0,1fr); gap: 8px; padding: 10px; }
+  .album-track-actions { grid-column: 2; }
+  .album-track-pick { grid-row: span 2; align-self: start; }
+  .album-dialog .player { bottom: 8px; left: 8px; right: 8px; width: auto; padding: 10px; }
+  .album-dialog .player .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 10px; }
+  .album-dialog .player .now-playing { grid-column: 1; grid-row: 1; }
+  .album-dialog .player .row > button { grid-column: 2; grid-row: 1; }
+  .album-dialog .player .row > label { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .album-dialog .player select { min-width: 0; }
   .metadata-field { grid-template-columns: 1fr; }
   .job-row { grid-template-columns: minmax(0, 1fr) auto; }
   .job-row progress { grid-column: 1 / -1; grid-row: 2; }
@@ -331,7 +405,7 @@ body.player-open #toast { bottom: 260px; }
   </details>
 </aside>
 <main id="main"></main>
-<aside id="player" class="player" aria-label="Track quality player" hidden>
+<div id="player-home"><aside id="player" class="player" aria-label="Track quality player" hidden>
   <div class="row">
     <div class="now-playing"><strong id="player-title">Track player</strong><div id="player-quality" class="hint"></div></div>
     <label>Playback <select id="player-mode">
@@ -345,7 +419,7 @@ body.player-open #toast { bottom: 260px; }
     <span id="player-time" class="hint">0:00</span>
   </div>
   <p id="player-status" class="hint" role="status" aria-live="polite"></p>
-</aside>
+</aside></div>
 <div id="toast" role="status"></div>
 <script>
 const TABS = [
@@ -614,6 +688,17 @@ async function post(path, body) {
 }
 const playback = { track: null, request: 0, source: 0, offset: 0, mode: "original", dragging: false, controller: null };
 const playButton = (id, name) => `<button class="action ghost" data-play-track="${id}" aria-label="Play ${esc(name || "track")}">Play</button>`;
+function albumTrackListMarkup(detail) {
+  return `<ol class="album-track-list">${detail.tracks.map(track =>
+    `<li class="album-track"><label class="album-track-pick"><input type="checkbox" data-select-track="${track.id}" aria-label="Select ${esc(track.title || track.path)}"><span>Select</span></label>
+      <div class="album-track-info"><span class="album-track-position">Disc ${esc(track.disc_no || "—")} · Track ${esc(track.track_no || "—")}</span>
+        <strong>${esc(track.title || "Untitled track")}</strong>
+        <span class="album-track-sub">${esc(track.artist || detail.album_artist)} · ${esc(track.status || "healthy")}</span></div>
+      <div class="album-track-actions">${playButton(track.id, track.title || track.path)}
+        <button type="button" class="action ghost" data-edit-track="${track.id}">Edit track</button></div>
+    </li>`
+  ).join("")}</ol>`;
+}
 const playbackTime = seconds => {
   seconds = Math.max(0, Math.floor(seconds || 0));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
@@ -687,6 +772,8 @@ async function playTrack(id) {
   playback.track = null;
   playback.dragging = false;
   $("#player").hidden = false;
+  const albumDialog = $("#library-album-page");
+  if (albumDialog.open) albumDialog.classList.add("album-dialog-playing");
   document.body.classList.add("player-open");
   $("#player-title").textContent = "Loading track...";
   $("#player-quality").textContent = "";
@@ -721,6 +808,7 @@ $("#player-close").onclick = () => {
   releaseAudio();
   $("#player").hidden = true;
   document.body.classList.remove("player-open");
+  $("#library-album-page").classList.remove("album-dialog-playing");
 };
 $("#player-mode").onchange = () => setPlaybackSource($("#player-mode").value, playbackPosition(), !$("#player-audio").paused);
 $("#player-audio").ontimeupdate = updatePlaybackPosition;
@@ -1543,6 +1631,7 @@ const views = {
       </div></details>
       <span class="hint" id="album-selection-hint" hidden>Search up to 10 albums at a time. Review each suggestion before saving tags.</span>
     </div>
+    <div id="library-workspace-home">
     <div id="library-workspace" class="workspace" role="region" aria-label="Active library review" hidden>
     <div class="workspace-header"><div><h2 data-workspace-title tabindex="-1" style="font-size:17px">Review</h2>
       <ol class="workspace-steps" aria-label="Review progress">
@@ -1561,15 +1650,20 @@ const views = {
     <div id="metadata-bulk" data-review-slot></div>
     <div id="metadata-search" data-review-slot></div><div id="metadata-review" data-review-slot></div>
     </fieldset>
-    </div>
+    </div></div>
     <div id="library-albums"></div>
-    <div id="library-album-page"></div>
+    <dialog id="library-album-page" class="album-dialog" aria-label="Album details"></dialog>
     <div id="library-table"></div>`;
     const selectedTracks = new Set();
     const selectedAlbums = new Map();
     const loadedAlbums = new Map();
     const workspace = createReviewWorkspace($("#library-workspace"), () => { state.libraryReview = null; });
     state.libraryWorkspace = workspace;
+    const workspaceHome = $("#library-workspace-home");
+    const playerHome = $("#player-home");
+    const player = $("#player");
+    const albumDialog = $("#library-album-page");
+    let albumOpener = null;
     const beginReview = (kind, title) => {
       captureBrowsingPosition(); saveBrowsing();
       const token = workspace.begin(kind, title);
@@ -1608,6 +1702,8 @@ const views = {
     };
     const updateSelection = () => {
       $("#metadata-selection-count").textContent = `${selectedTracks.size} tracks selected`;
+      const albumSelectionCount = albumDialog.querySelector("[data-album-selection-count]");
+      if (albumSelectionCount) albumSelectionCount.textContent = `${selectedTracks.size} selected`;
       $("#metadata-clear-selection").hidden = !selectedTracks.size;
       $("#track-selection-actions").hidden = !selectedTracks.size || state.libraryView !== "tracks";
       $("#metadata-merge-tracks").hidden = selectedTracks.size < 2;
@@ -1616,6 +1712,8 @@ const views = {
       el.querySelectorAll("[data-select-track]").forEach(input => {
         input.checked = selectedTracks.has(Number(input.dataset.selectTrack));
       });
+      const clearAlbumTracks = albumDialog.querySelector("[data-track-clear-selection]");
+      if (clearAlbumTracks) clearAlbumTracks.hidden = !selectedTracks.size;
     };
     const selectTrack = (id, checked) => {
       if (checked && selectedTracks.size >= 200 && !selectedTracks.has(id)) {
@@ -1643,15 +1741,40 @@ const views = {
       $("#library-view-tracks").setAttribute("aria-pressed", String(view === "tracks"));
       $("#library-batch-label").hidden = view !== "albums";
       $("#library-guide").textContent = view === "albums"
-        ? "Open an album to view tracks and actions, or select albums for batch lookup. Changes require review."
+        ? "Open a cover to listen and edit tracks. For tag changes, choose tracks, preview the proposed edits, then confirm."
         : "Select tracks for batch actions, or choose Lookup beside a track. Changes require review.";
       $("#library-albums").style.display = view === "albums" ? "" : "none";
-      $("#library-album-page").style.display = view === "albums" ? "" : "none";
       $("#library-table").style.display = view === "tracks" ? "" : "none";
       $("#library-album-tools").style.display = view === "albums" ? "" : "none";
       $("#library-track-tools").style.display = view === "tracks" ? "" : "none";
       updateSelection();
     };
+    const closeAlbum = () => {
+      if (!albumDialog.open || !workspace.leave()) return false;
+      ++librarySearch;
+      albumDialog.close();
+      albumDialog.classList.remove("album-dialog-playing");
+      workspaceHome.append($("#library-workspace"));
+      playerHome.append(player);
+      albumDialog.replaceChildren();
+      player.classList.remove("album-dialog-player");
+      state.libraryDetail = false;
+      pageTracks = [];
+      selectedTracks.clear();
+      $("#library-track-tools").style.display = "none";
+      updateSelection();
+      watchAlbumScroll();
+      if (albumOpener?.isConnected) albumOpener.focus({preventScroll: true});
+      albumOpener = null;
+      return true;
+    };
+    albumDialog.addEventListener("cancel", event => {
+      event.preventDefault();
+      closeAlbum();
+    });
+    albumDialog.addEventListener("click", event => {
+      if (event.target === albumDialog) closeAlbum();
+    });
     const watchAlbumScroll = () => {
       state.libraryObserver?.disconnect();
       const sentinel = el.querySelector("[data-album-more]");
@@ -1671,12 +1794,12 @@ const views = {
       if (append && (albumLoading || albumOffset >= albumTotal)) return;
       albumLoadFailed = false;
       if (!append) {
+        if (pageEl.open && !closeAlbum()) return false;
         albumGeneration++;
         state.libraryObserver?.disconnect();
         albumOffset = 0; albumTotal = 0; loadedAlbums.clear();
         pageTracks = [];
         $("#library-track-tools").style.display = "none";
-        pageEl.innerHTML = "";
         container.style.display = "";
         albumFilters = {
           query: $("#library-query").value, status: $("#library-status").value,
@@ -1703,10 +1826,12 @@ const views = {
         container.querySelector("[data-album-grid]").insertAdjacentHTML("beforeend", fresh.map(album =>
           `<div class="album-tile"><label><input type="checkbox" data-select-album="${esc(albumKey(album))}"
             aria-label="Select album ${esc(album.album)} by ${esc(album.album_artist)}"> Select album</label>
-          <button type="button" class="match-card" data-album-artist="${esc(album.album_artist)}" data-album="${esc(album.album)}">
+          <button type="button" class="match-card" data-album-artist="${esc(album.album_artist)}"
+            data-album="${esc(album.album)}" data-cover="${esc(album.cover_url || "")}">
             ${albumCover(album.cover_url)}
             <strong>${esc(album.album)}</strong>
             <em>${esc(album.album_artist)} · ${esc(album.year || "—")} · ${album.track_count} tracks${album.bad_count ? ` · ${album.bad_count} bad` : ""}</em>
+            <span class="album-card-open">Open album · listen · edit</span>
           </button></div>`
         ).join(""));
         container.querySelector("[data-album-count]").textContent = page.total ?
@@ -1719,7 +1844,9 @@ const views = {
           updateAlbumSelection();
         });
         container.querySelectorAll("[data-album]").forEach(button => {
-          button.onclick = () => openAlbum(button.dataset.albumArtist, button.dataset.album);
+          button.onclick = () => openAlbum(
+            button.dataset.albumArtist, button.dataset.album, button.dataset.cover, button
+          );
         });
         updateAlbumSelection();
         watchAlbumScroll();
@@ -1737,62 +1864,81 @@ const views = {
       }
       return true;
     };
-    const openAlbum = async (albumArtist, album) => {
+    const openAlbum = async (albumArtist, album, coverUrl, opener) => {
       captureBrowsingPosition(); saveBrowsing();
       if (!workspace.leave()) return;
       state.cancelScrollRestore = true;
       const request = ++librarySearch;
+      state.libraryDetail = true;
+      state.libraryObserver?.disconnect();
+      albumOpener = opener;
+      const pageEl = $("#library-album-page");
+      pageEl.innerHTML = `<div class="album-dialog-surface">
+        <div class="album-dialog-content">
+          <button type="button" class="action ghost album-dialog-close" data-back>← Back to albums</button>
+          <div class="album-detail-header">${albumCover(coverUrl)}
+            <div><p class="album-detail-kicker">Listen and review</p>
+              <h2 id="album-dialog-title">${esc(album)}</h2><p class="album-detail-meta">${esc(albumArtist)}</p>
+              <p role="status">Loading album tracks…</p></div>
+          </div>
+        </div></div>`;
+      pageEl.setAttribute("aria-labelledby", "album-dialog-title");
+      const surface = pageEl.querySelector(".album-dialog-surface");
+      surface.append($("#library-workspace"));
+      pageEl.append(player);
+      player.classList.add("album-dialog-player");
+      if (!player.hidden) pageEl.classList.add("album-dialog-playing");
+      pageEl.querySelector("[data-back]").onclick = closeAlbum;
+      pageEl.showModal();
+      pageEl.querySelector("[data-back]").focus({preventScroll: true});
       const params = new URLSearchParams({
         album_artist: albumArtist, album, status: $("#library-status").value,
       });
       try {
         const detail = await api(`/api/albums/detail?${params}`);
-        if (!el.isConnected || request !== librarySearch || state.libraryView !== "albums") return;
-        state.libraryObserver?.disconnect();
-        state.libraryDetail = true;
-        $("#library-albums").style.display = "none";
-        const pageEl = $("#library-album-page");
+        if (!el.isConnected || request !== librarySearch || !pageEl.open || state.libraryView !== "albums") return;
         pageTracks = detail.tracks;
         $("#library-track-tools").style.display = "";
         selectedTracks.clear();
-        detail.tracks.slice(0, 200).forEach(track => selectedTracks.add(track.id));
         updateSelection();
-        pageEl.innerHTML = `<div class="card">
-          <button class="action ghost" data-back>Back to albums</button>
-          <div class="album-hero">${albumCover(detail.cover_url)}
-            <div><h3>${esc(detail.album)}</h3>
-            <p>${esc(detail.album_artist)} · ${esc(detail.year || "—")} · ${detail.track_count} tracks${detail.bad_count ? ` · ${detail.bad_count} bad` : ""}</p>
-            <button class="action ghost" data-tracklist-audit data-lookup-operation>Compare track lists</button>
-            <div class="row selection-actions" data-album-selection-actions>
-              <button class="action" data-edit-album data-operation>Edit album tags</button>
-              <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button>
-              <details class="action-menu"><summary>More album actions</summary><div class="menu-items">
-                <button class="action ghost" data-number-album data-operation>Renumber selected</button>
-                <button class="action ghost" data-artwork-album data-operation>Change artwork</button>
-                <button class="action ghost" data-rename-album data-operation>Preview organization</button>
-                <button class="action ghost" data-dupes-album data-operation>Review album duplicates</button>
-              </div></details>
-              <details class="action-menu"><summary>Remove files</summary><div class="menu-items">
-                <button class="action danger" data-trash-album data-operation>Trash selected</button>
-              </div></details>
-            </div></div>
+        pageEl.querySelector(".album-dialog-content").innerHTML = `<button type="button" class="action ghost album-dialog-close" data-back>← Back to albums</button>
+          <header class="album-detail-header">${albumCover(detail.cover_url)}
+          <div><p class="album-detail-kicker">Album listening room</p>
+              <h2 id="album-dialog-title">${esc(detail.album)}</h2>
+              <p class="album-detail-meta">${esc(detail.album_artist)} · ${esc(detail.year || "—")} · ${detail.track_count} tracks${detail.bad_count ? ` · ${detail.bad_count} need review` : ""}</p>
+              <div class="row"><button class="action ghost" data-tracklist-audit data-lookup-operation>Compare track lists</button>
+                <span class="hint">Play the original file to listen and inspect its audio quality.</span></div>
+              <div class="row selection-actions" data-album-selection-actions hidden>
+                <button class="action" data-edit-album data-operation>Edit selected tags</button>
+                <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button>
+                <details class="action-menu"><summary>More actions</summary><div class="menu-items">
+                  <button class="action ghost" data-number-album data-operation>Renumber selected</button>
+                  <button class="action ghost" data-artwork-album data-operation>Change artwork</button>
+                  <button class="action ghost" data-rename-album data-operation>Preview organization</button>
+                  <button class="action ghost" data-dupes-album data-operation>Review duplicates</button>
+                  <button class="action danger" data-trash-album data-operation>Preview trash</button>
+                </div></details>
+              </div>
+            </div>
+          </header>
+          <div class="album-track-heading"><div><h3>Tracks</h3>
+            <p class="hint">Play any track, inspect its format/bitrate, or edit just that track.</p></div>
+            <div class="album-track-tools"><button class="action ghost" data-track-select-page>Select first ${Math.min(detail.tracks.length, 200)} tracks</button>
+              <button class="action ghost" data-track-clear-selection hidden>Clear selection</button>
+              <span class="hint" data-album-selection-count role="status">0 selected</span></div>
           </div>
-          ${detail.track_count > 200 ? '<p class="hint">Only the first 200 tracks are selected. Edit larger albums in batches.</p>' : ''}
+          ${detail.track_count > 200 ? '<p class="hint">Batch actions are limited to 200 tracks. Choose up to 200 at a time; per-track edits are always available.</p>' : ''}
           <div data-tracklist-audit-results role="region" aria-label="Track-list comparison"></div>
-          <div class="table-scroll"><table><thead><tr><th>Select</th><th>Disc</th><th>Track</th><th>Title</th><th>Artist</th><th>Status</th><th>Listen / Edit</th></tr></thead>
-          <tbody>${detail.tracks.map(track =>
-            `<tr><td><input type="checkbox" data-select-track="${track.id}" aria-label="Select ${esc(track.title || track.path)}"></td>
-            <td>${esc(track.disc_no || "—")}</td><td>${esc(track.track_no || "—")}</td>
-            <td>${esc(track.title)}</td><td>${esc(track.artist)}</td><td>${esc(track.status)}</td>
-            <td>${playButton(track.id, track.title || track.path)} <button class="action ghost" data-edit-track="${track.id}">Edit track</button></td></tr>`
-          ).join("")}</tbody></table></div></div>`;
-        pageEl.querySelector("[data-back]").onclick = () => {
-          if (!workspace.leave()) return;
-          pageEl.innerHTML = ""; $("#library-albums").style.display = "";
-          $("#library-track-tools").style.display = "none";
-          state.libraryDetail = false;
-          pageTracks = []; selectedTracks.clear(); updateSelection(); watchAlbumScroll();
-          window.scrollTo({top: browsing.scroll.library, behavior: "instant"});
+          ${albumTrackListMarkup(detail)}`;
+        pageEl.setAttribute("aria-labelledby", "album-dialog-title");
+        pageEl.querySelector("[data-back]").onclick = closeAlbum;
+        pageEl.querySelector("[data-track-select-page]").onclick = () => {
+          detail.tracks.slice(0, 200).forEach(track => selectTrack(track.id, true));
+          updateSelection();
+        };
+        pageEl.querySelector("[data-track-clear-selection]").onclick = () => {
+          selectedTracks.clear();
+          updateSelection();
         };
         pageEl.querySelector("[data-dupes-album]").onclick = () =>
           reviewAlbumDuplicates(detail.tracks.filter(track => selectedTracks.has(track.id)).map(track => track.id));
@@ -1835,7 +1981,16 @@ const views = {
         bindAlbumActions(pageEl, detail);
         updateSelection();
         await refreshActivity();
-      } catch (e) { toast(e.message, true); }
+      } catch (e) {
+        if (request === librarySearch && pageEl.open) {
+          const content = pageEl.querySelector(".album-dialog-content");
+          content.innerHTML = `<button type="button" class="action ghost album-dialog-close" data-back>← Back to albums</button>
+            <section class="card" role="alert"><h2 id="album-dialog-title">Could not open this album</h2><p>${esc(e.message)}</p></section>`;
+          pageEl.querySelector("[data-back]").onclick = closeAlbum;
+          pageEl.querySelector("[data-back]").focus({preventScroll: true});
+          toast(e.message, true);
+        }
+      }
     };
     const previewOrganization = async trackIds => {
       const token = beginReview("rename", "Review file organization");
