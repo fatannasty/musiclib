@@ -125,7 +125,7 @@ class JobRegistry:
             "completed": 0, "total": None, "current": "", "error": None,
             "summary": None, "read_only": read_only,
             "cancel_requested": False,
-            "origin": origin,
+            "origin": origin, "lane": lane,
         }
         try:
             with self._state_lock:

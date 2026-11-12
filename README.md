@@ -535,6 +535,15 @@ selected or written automatically, stale or changed files are refused, and album
 with more than 200 tracks are skipped with an explanation. Use **Select loaded
 albums** to choose a page, or pick fewer albums for a batch.
 
+On an album page, **Compare track lists** searches up to six MusicBrainz editions
+in a read-only background job, which can run alongside cover discovery. Open its
+saved results in Activity to compare catalog and local titles, disc/track numbers,
+and available durations. Only unique normalized titles are paired; repeated titles
+and unmatched tracks require manual investigation. A difference does not prove a
+track is missing or that an edition is correct. The report is a snapshot, includes
+healthy, suspect, and bad tracks, and never changes tags or files. Albums over
+200 tracks are not compared. Provider errors are shown per edition.
+
 **Settings → Album lookup sources and connections → Test catalog connections**
 checks that MusicBrainz, iTunes, and Deezer each respond from the NAS. This sends
 small test searches; it does not change library metadata. Results distinguish a
