@@ -655,3 +655,62 @@ test("file outcome summaries distinguish unfinished files from completed changes
   assert.match(row, /Stopped/);
   assert.match(row, /Check current state before retrying/);
 });
+
+test("bad-file review separates checking, filtered selection, and recoverable trash", async () => {
+  const {context, document, run} = dashboard();
+  const node = selector => document.querySelector(selector);
+  const issue = {track_id: 7, path: "/music/broken.mp3", severity: "bad",
+    kind: "decode_error", detail: "Decode failed"};
+  const checkbox = new Element({trashTrack: "7"});
+  const el = new Element();
+  el.querySelectorAll = selector => selector === "[data-trash-track]" ? [checkbox] : [];
+  let trashed;
+  context.api = async () => ({items: [issue], total: 1});
+  context.pagedTable = async (_container, load, _headers, _row, onPage) =>
+    onPage((await load(0)).items);
+  context.post = async (url, body) => { trashed = {url, body}; return {job_id: "trash-job"}; };
+  context.refreshActivity = async () => {};
+  context.pollJob = async () => ({summary: {trashed: 1, failed: 0}});
+  context.loadStats = async () => {};
+  await run("views.doctor")(el);
+  assert.equal(node("#doctor-bulk-trash").hidden, false);
+  assert.equal(node("#issue-selection").hidden, false);
+  assert.equal(node("#btn-trash-selected").hidden, true);
+  assert.match(html, /id="btn-remove" data-operation>Trash all currently broken files/);
+  assert.equal(node("#issue-filter-count").textContent, "");
+  node("#issue-select-page").onclick();
+  assert.equal(node("#issue-selected").textContent, "1 file selected");
+  assert.equal(node("#btn-trash-selected").hidden, false);
+  assert.equal(node("#btn-trash-selected").textContent, "Trash 1 selected file");
+  node("#issue-severity").value = "bad";
+  node("#issue-kind").value = "decode_error";
+  node("#issue-kind").onchange();
+  assert.equal(node("#issue-selected").textContent,
+    "No files selected. Select this page or choose all matching files.");
+  assert.equal(node("#issue-selection").hidden, false);
+  assert.equal(node("#btn-trash-selected").hidden, true);
+  assert.equal(node("#issue-filter-count").textContent, " · 2 selected");
+  context.confirm = () => false;
+  await node("#btn-remove").onclick();
+  assert.equal(trashed, undefined);
+  node("#issue-select-page").onclick();
+  context.confirm = () => true;
+  await node("#btn-trash-selected").onclick();
+  assert.equal(trashed.url, "/api/issues/trash");
+  assert.equal(JSON.stringify(trashed.body.track_ids), "[7]");
+});
+
+test("bad-file review hides cleanup actions when no findings exist", async () => {
+  const {context, document, run} = dashboard();
+  const node = selector => document.querySelector(selector);
+  const el = new Element();
+  el.querySelectorAll = () => [];
+  context.api = async () => ({items: [], total: 0});
+  context.pagedTable = async (_container, load, _headers, _row, onPage) =>
+    onPage((await load(0)).items);
+  await run("views.doctor")(el);
+  assert.equal(node("#doctor-bulk-trash").hidden, true);
+  assert.equal(node("#issue-selection").hidden, true);
+  assert.equal(node("#issue-select-page").disabled, true);
+  assert.equal(node("#btn-trash-selected").hidden, true);
+});
