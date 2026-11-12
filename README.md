@@ -512,6 +512,23 @@ connections**, or override it for each search. If a catalog fails, use **Search
 library only** without losing your album/artist search terms, or use **Edit album
 tags** on an album page for manual corrections.
 
+In the Albums view, select up to **10 albums** and use **Find matches for selected
+albums** to search their suggestions in one background job. Choose the lookup
+source before starting; only selected albums and providers are searched, one album
+at a time. Per-album no-match, provider-error, and successful results are shown
+separately, so one failure does not discard the rest of the batch. Each result
+retains the file paths and hashes from lookup. Review candidate editions
+independently, select the fields to apply, and confirm for each album. Nothing is
+selected or written automatically, stale or changed files are refused, and albums
+with more than 200 tracks are skipped with an explanation. Use **Select loaded
+albums** to choose a page, or pick fewer albums for a batch.
+
+**Settings → Album lookup sources and connections → Test catalog connections**
+checks that MusicBrainz, iTunes, and Deezer each respond from the NAS. This sends
+small test searches; it does not change library metadata. Results distinguish a
+service response from connection or DNS errors. The test shares the catalog-search
+lane with metadata lookups and respects the IPv4-only setting.
+
 The same settings include **Use IPv4-only catalog connections**, which applies
 to interactive album and track metadata searches (including bulk track lookups).
 It avoids the initial automatic IPv4/IPv6 attempt when a NAS has broken IPv6

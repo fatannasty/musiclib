@@ -408,7 +408,8 @@ const jobNames = {
   "duplicates-apply": "Trash duplicate copies", "album-duplicates-preview": "Compare selected duplicates",
   "album-duplicates-apply": "Clean selected duplicates", rename: "Organize library", art: "Find / download artwork",
   brainz: "Check album completeness", "issues-trash": "Trash selected bad files",
-  "metadata-lookup": "Look up track metadata", "metadata-apply": "Save track tags",
+  "metadata-lookup": "Look up track metadata", "metadata-album-discovery": "Discover selected album matches",
+  "metadata-apply": "Save track tags",
   "album-apply": "Save album tags", "rename-preview": "Preview selected organization",
   "rename-reviewed": "Move reviewed files", "artwork-preview": "Preview artwork",
   "artwork-reviewed": "Save reviewed artwork", "trash-preview": "Preview selected trash",
@@ -1325,7 +1326,12 @@ const views = {
       <button class="action ghost" id="album-select-loaded">Select loaded albums</button>
       <button class="action ghost" id="album-clear">Clear album selection</button>
       <span class="hint" id="album-selection-count" role="status">0 albums selected</span>
+      <label id="album-bulk-source-label" hidden>Lookup source
+        <select id="album-bulk-source">${albumSourceOptions("all")}</select>
+      </label>
+      <button class="action" id="metadata-albums-bulk" data-lookup-operation hidden>Find matches for selected albums</button>
       <button class="action" id="album-merge" data-operation hidden>Merge selected albums</button>
+      <span class="hint">Batch discovery searches up to 10 selected albums at a time. Suggestions are reviewed individually; tags are never changed automatically.</span>
     </div>
     <div id="library-workspace" class="workspace" role="region" aria-label="Active library review" hidden>
     <div class="workspace-header"><div><h2 data-workspace-title tabindex="-1" style="font-size:17px">Review</h2>
@@ -1381,6 +1387,8 @@ const views = {
     const updateAlbumSelection = () => {
       $("#album-selection-count").textContent = `${selectedAlbums.size} albums selected`;
       $("#album-merge").hidden = selectedAlbums.size < 2;
+      $("#metadata-albums-bulk").hidden = selectedAlbums.size === 0;
+      $("#album-bulk-source-label").hidden = selectedAlbums.size === 0;
       el.querySelectorAll("[data-select-album]").forEach(input => {
         input.checked = selectedAlbums.has(input.dataset.selectAlbum);
       });
@@ -2175,6 +2183,7 @@ const views = {
       api("/api/genres"), api("/api/formats"), api("/api/settings"),
     ]);
     if (!el.isConnected) return;
+    $("#album-bulk-source").value = settings.catalog.album_source;
     $("#library-genre").insertAdjacentHTML("beforeend", genreRows.map(g => `<option>${esc(g)}</option>`).join(""));
     $("#library-format").insertAdjacentHTML("beforeend", formatRows.map(f => `<option>${esc(f)}</option>`).join(""));
     $("#library-query").value = browsing.library.query;
@@ -2493,6 +2502,126 @@ const views = {
     const albumLabels = {
       album: "Album", album_artist: "Album artist", artist: "Artist",
       year: "Year", genre: "Genre", mbid_release: "Release ID",
+    };
+    $("#metadata-albums-bulk").onclick = async () => {
+      if (!selectedAlbums.size) { toast("Select one or more albums first.", true); return; }
+      if (selectedAlbums.size > 10) {
+        toast("Discover matches for up to 10 selected albums at a time. Clear the selection and choose a smaller batch.", true);
+        return;
+      }
+      const albums = [...selectedAlbums.values()].map(album => ({
+        album_artist: album.album_artist, album: album.album,
+      }));
+      const token = beginReview("album-discovery", "Discover selected album matches");
+      if (token === null) return;
+      const panel = el.querySelector("#metadata-album");
+      panel.innerHTML = `<div class="card"><h3>Discover album matches</h3>
+        <p>Searching ${albums.length} selected album(s). Nothing is written; each suggestion must be reviewed and applied separately.</p>
+        <p role="status" data-discovery-status>Preparing catalog searches…</p>
+        <div data-discovery-results></div></div>`;
+      const status = panel.querySelector("[data-discovery-status]");
+      const results = panel.querySelector("[data-discovery-results]");
+      workspace.busy(token, true); workspace.stage(token, "preview");
+      try {
+        const {job_id} = await post("/api/metadata/albums-suggest", {
+          albums, source: $("#album-bulk-source").value,
+        });
+        if (!workspace.owns(token)) return;
+        rememberReview("album-discovery", job_id);
+        await refreshActivity();
+        await pollJob(job_id, "Album match discovery");
+        const response = await api(`/api/jobs/${job_id}/results/albums?limit=10`);
+        if (!workspace.owns(token)) return;
+        workspace.stage(token, "confirm");
+        status.textContent = `${response.total} albums searched. Review any suggestions below; no tags have changed.`;
+        response.items.forEach((item, albumIndex) => {
+          const card = document.createElement("section");
+          card.className = "card";
+          card.dataset.albumDiscoveryIndex = albumIndex;
+          card.innerHTML = `<h3>${esc(item.album_artist)} — ${esc(item.album)}</h3>
+            <p class="hint">${esc(item.tracks?.length || 0)} tracks · ${esc(item.source || "")} · ${esc(item.status)}</p>
+            ${(item.warnings || []).map(message => `<p role="alert">${esc(message)}</p>`).join("")}
+            ${item.error ? `<p role="alert">${esc(item.error)}</p>` : ""}
+            <div data-discovery-suggestions></div><p role="status" data-discovery-apply-status></p>`;
+          results.append(card);
+          const suggestionPanel = card.querySelector("[data-discovery-suggestions]");
+          if (!item.suggestions?.length) {
+            suggestionPanel.innerHTML = item.status === "no-matches"
+              ? "<p>No matches were found. Existing tags were not changed.</p>"
+              : "";
+            return;
+          }
+          let selectedIndex = 0;
+          const draw = () => {
+            const suggestion = item.suggestions[selectedIndex];
+            const fields = Object.keys(albumLabels).filter(key => suggestion.fields[key] != null);
+            suggestionPanel.innerHTML = `<div class="match-grid">${item.suggestions.map((candidate, index) =>
+              `<label class="match-card ${index === selectedIndex ? "selected" : ""}">
+                <input type="radio" name="album-discovery-${albumIndex}" value="${index}" ${index === selectedIndex ? "checked" : ""}>
+                ${coverMarkup(candidate)}
+                <strong>${esc(candidate.fields.album)}</strong>
+                <em>${esc(candidate.fields.album_artist || candidate.fields.artist || "Unknown artist")} (${esc(candidate.fields.year || "—")})</em>
+                <span class="tag ${candidate.source === "Your library" ? "ok" : "warn"}">${esc(candidate.source)}${candidate.in_library ? ` · ${candidate.in_library} tracks` : ""} · ${esc(candidate.confidence)}%</span>
+              </label>`).join("")}</div>
+              <p class="hint">Choose only the fields you want applied to these ${item.tracks.length} files. None are selected by default.</p>
+              <div>${fields.map(key => `<label class="metadata-field"><span><input type="checkbox" data-discovery-field="${key}"> ${albumLabels[key]}</span>
+                <span>Suggested: ${esc(suggestion.fields[key])}</span></label>`).join("")}</div>
+              <button type="button" class="action" data-discovery-apply data-operation>Apply reviewed tags</button>`;
+            suggestionPanel.querySelectorAll('input[type="radio"]').forEach(radio => radio.onchange = () => {
+              selectedIndex = Number(radio.value);
+              draw();
+            });
+            suggestionPanel.querySelector("[data-discovery-apply]").onclick = async () => {
+              const chosen = [...suggestionPanel.querySelectorAll("[data-discovery-field]:checked")]
+                .map(input => input.dataset.discoveryField);
+              if (!chosen.length) { toast("Select at least one album field.", true); return; }
+              if (!confirm(`Apply ${chosen.length} selected field(s) to ${item.tracks.length} files?`)) return;
+              workspace.busy(token, true);
+              panel.querySelectorAll("[data-discovery-apply]").forEach(button => { button.disabled = true; });
+              card.querySelector("[data-discovery-apply-status]").textContent = "Saving reviewed tags. Progress is in Activity.";
+              try {
+                const values = Object.fromEntries(chosen.map(key => [key, suggestion.fields[key]]));
+                const {job_id: applyId} = await post("/api/metadata/album-apply", {
+                  track_ids: item.tracks.map(track => track.id), fields: chosen, values,
+                  snapshots: Object.fromEntries(item.tracks.map(track => [
+                    track.id, {path: track.path, file_hash: track.file_hash},
+                  ])),
+                });
+                await refreshActivity();
+                await pollJob(applyId, "Reviewed album tag update");
+                const [applied, errors] = await Promise.all([
+                  api(`/api/jobs/${applyId}/results/applied?limit=200`),
+                  api(`/api/jobs/${applyId}/results/errors?limit=200`),
+                ]);
+                if (!workspace.owns(token)) return;
+                card.querySelector("[data-discovery-apply-status]").textContent =
+                  `${applied.total} files updated; ${errors.total} failed.`;
+                if (errors.total) {
+                  card.querySelector("[data-discovery-apply-status]").insertAdjacentHTML(
+                    "afterend", errors.items.map(error =>
+                      `<p role="alert">${esc(error.path || error.track_id)}: ${esc(error.error)}</p>`).join(""),
+                  );
+                }
+                suggestionPanel.replaceChildren();
+                await $("#library-search").onclick();
+                await loadStats();
+              } catch (error) {
+                card.querySelector("[data-discovery-apply-status]").textContent = error.message;
+                toast(error.message, true);
+              } finally {
+                workspace.busy(token, false);
+                panel.querySelectorAll("[data-discovery-apply]").forEach(button => { button.disabled = false; });
+              }
+            };
+          };
+          draw();
+        });
+      } catch (error) {
+        if (workspace.owns(token)) {
+          status.textContent = `Album discovery failed. No files were changed: ${error.message}`;
+          workspace.fail(token, error.message);
+        }
+      } finally { workspace.busy(token, false); }
     };
     $("#metadata-album-bulk").onclick = async () => {
       if (!selectedTracks.size) { toast("Select tracks to tag as one album first.", true); return; }
@@ -3014,6 +3143,8 @@ const views = {
         automatically retry once over IPv4. Enable this if IPv6 is unreliable on the NAS. Proxy settings and TLS verification are preserved.</p>
         <p class="hint">Library-only searches and manual tag edits work offline. Changing providers cannot repair a disconnected NAS.</p>
         <p class="hint">Deezer is an additional public album/track catalog; regional availability and network access may limit results. Catalog suggestions never prove that two local files contain identical audio.</p>
+        <button type="button" class="action ghost" id="test-catalogs">Test catalog connections</button>
+        <div role="status" aria-live="polite" id="catalog-test-results"></div>
       </div>
       <div class="card" style="margin-top:14px"><h3>Organize</h3>
         ${field("organize", "template", "Filename template")}
@@ -3049,6 +3180,20 @@ const views = {
     $("#idx-add").onclick = () => {
       $("#idx-list").insertAdjacentHTML("beforeend", idxRow({ name: "", url: "", categories: "3000" }));
       bindDel();
+    };
+    $("#test-catalogs").onclick = async event => {
+      const button = event.currentTarget;
+      const output = $("#catalog-test-results");
+      button.disabled = true;
+      output.textContent = "Testing provider connections…";
+      try {
+        const result = await post("/api/catalogs/check", {});
+        output.innerHTML = result.providers.map(provider =>
+          `<p class="hint"><strong>${esc(provider.provider)}:</strong> ${esc(provider.status)} · ${esc(provider.duration_ms)} ms · ${esc(provider.message)}</p>`
+        ).join("");
+      } catch (error) {
+        output.textContent = error.message;
+      } finally { button.disabled = false; }
     };
     const val = (sec, key) => {
       const node = $(`#set-${sec}-${key}`);

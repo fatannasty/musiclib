@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -358,6 +359,34 @@ def lookup_track(
         return []
     return sorted([*_merge_candidates(musicbrainz_hits, itunes_hits), *deezer_hits],
                   key=lambda item: item["confidence"], reverse=True)
+
+
+def check_catalog_connections(ipv4_only: bool = False) -> List[Dict[str, Any]]:
+    checks = (
+        ("MusicBrainz", search_musicbrainz_releases, ("", "musiclib connection test")),
+        ("iTunes", search_itunes_albums, ("musiclib", "connection test")),
+        ("Deezer", search_deezer_albums, ("musiclib", "connection test")),
+    )
+
+    def check(provider: str, search: Callable[..., Any], args: Tuple[str, str]) -> Dict[str, Any]:
+        started = time.monotonic()
+        try:
+            search(*args, ipv4_only=ipv4_only)
+        except RuntimeError as exc:
+            return {
+                "provider": provider, "status": "error",
+                "message": str(exc), "duration_ms": round((time.monotonic() - started) * 1000),
+            }
+        return {
+            "provider": provider, "status": "connected",
+            "message": "Service responded successfully.", "duration_ms": round((time.monotonic() - started) * 1000),
+        }
+
+    with ThreadPoolExecutor(max_workers=len(checks)) as pool:
+        futures = [
+            pool.submit(check, provider, search, args) for provider, search, args in checks
+        ]
+        return [future.result() for future in futures]
 
 
 def write_audio_tags(
