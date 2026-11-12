@@ -266,8 +266,10 @@ musiclib serve               # http://127.0.0.1:8000
 ```
 
 Tabs: Overview (stats widgets, scan, issues), Duplicates (review and re-pick keepers),
-Bad Files (doctor, including selected-file trash with per-file errors), Library (album grid from the scanned catalog, album pages, and track search; tag suggestions
-field by field; nothing is selected or written until you choose fields and confirm),
+Bad Files (review filtered diagnostics, including selected-file trash with per-file
+errors), Library (album grid from the scanned catalog, album pages, and track search;
+tag suggestions field by field; nothing is selected or written until you choose fields
+and confirm),
 Organize (rename preview/apply), Cover Art, Missing Music (MusicBrainz gaps), Usenet
 (indexer search + SABnzbd queue).
 
@@ -572,10 +574,12 @@ current Organize templates after tags are saved. Files moved or changed while
 album suggestions were loading are skipped at apply time; run a fresh search
 before applying to those files.
 
-On Bad Files, **Trash selected** moves the files you check even if a check has not
-just finished. Permission or lock errors are reported per file and do not abort the
-rest of the batch. **Trash all bad files** still skips warnings.
-Top-of-page **Select all matching files** includes every page under the current
+On Bad Files, run the non-destructive **Check files** action, then review and filter
+the findings. Select only the files you want to move to recoverable trash.
+Permission or lock errors are reported per file and do not abort the rest of the
+batch. The separate **Trash all currently broken files** option is collapsed until
+needed, rechecks before moving, and never includes warnings.
+**Select all matching files** includes every page under the current
 severity/type filters and selects each file once even if it has several issues.
 Changing filters clears the selection. Large confirmed selections run as one
 background job in bounded batches; the old 200-file per-request limit no longer

@@ -130,6 +130,11 @@ td.path { font-family: var(--mono); font-size: 11.5px; color: var(--dim); word-b
 .duplicate-selection { padding: 14px; border-left: 2px solid var(--accent); background: var(--panel2); border-radius: 9px; margin-bottom: 16px; }
 .duplicate-selection .row { margin: 8px 0 0; }
 .duplicate-selection details { margin-top: 8px; }
+.doctor-controls { box-shadow: var(--shadow); }
+.doctor-selection { padding: 14px; border-left: 2px solid var(--accent); background: var(--panel2); border-radius: 9px; margin: 12px 0 16px; }
+.doctor-selection .row { margin: 8px 0 0; }
+.doctor-selection details { margin-top: 8px; }
+.doctor-bulk-trash { border-color: var(--border); }
 label.check { color: var(--dim); font-size: 13px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
 select { background: var(--panel); border: 1px solid var(--control-border); color: var(--text); padding: 10px 12px; border-radius: 9px; }
 .hint { color: var(--dim); font-size: 12px; }
@@ -1344,27 +1349,52 @@ const views = {
   },
 
   async doctor(el) {
-    el.innerHTML = `<div class="row">
-      <button class="action" id="btn-check" data-operation>Check files</button>
-      <button class="action danger" id="btn-remove" data-operation style="display:none">Trash all bad files</button>
-      <button class="action danger" id="btn-trash-selected" data-operation>Trash selected</button>
-      <label class="check"><input type="checkbox" id="opt-deep" checked> deep decode (ffmpeg)</label>
-    </div><div class="row">
-      <button class="action ghost" id="issue-select-page">Select this page</button>
-      <button class="action ghost" id="issue-select-all">Select all matching files</button>
-      <button class="action ghost" id="issue-clear">Clear selection</button>
-      <span class="hint" id="issue-selected" role="status">0 files selected</span>
-    </div><div class="row">
-      <select id="issue-severity" aria-label="Issue severity"><option value="">All severities</option><option value="bad">Bad — broken files</option><option value="warn">Warnings — review only</option></select>
-      <select id="issue-kind" aria-label="Issue type"><option value="">All issue types</option><option value="decode_error">Audio corruption</option>
-      <option value="unparseable">Unreadable audio</option><option value="missing_file">Missing file</option><option value="missing_tags">Missing metadata</option>
-      <option value="low_bitrate">Low bitrate</option><option value="short_file">Short file</option></select>
-    </div><p class="hint">Select files to trash even if a full check has not just finished. Permission errors are listed per file and do not stop the rest. Warnings are not included in Trash all bad files.</p>
-    <div id="doc-summary"></div><div id="doc-out"></div>`;
+    el.innerHTML = `<div class="card doctor-controls">
+      <h3>Check audio files</h3>
+      <p>Find broken files and warnings. Checking does not change your music.</p>
+      <div class="row"><button class="action" id="btn-check" data-operation>Check files</button></div>
+      <details><summary>Check options</summary>
+        <label class="check"><input type="checkbox" id="opt-deep" checked> Deep audio decode (slower; checks for corruption)</label>
+      </details>
+    </div>
+    <h3>Review findings</h3>
+    <p class="hint">Warnings are for review only. Only files marked broken can be removed with the bulk action below.</p>
+    <details class="doctor-filters"><summary>Filter findings<span id="issue-filter-count"></span></summary>
+      <div class="row" style="margin-top:10px">
+        <label>Severity <select id="issue-severity" aria-label="Issue severity"><option value="">All severities</option><option value="bad">Bad — broken files</option><option value="warn">Warnings — review only</option></select></label>
+        <label>Issue type <select id="issue-kind" aria-label="Issue type"><option value="">All issue types</option><option value="decode_error">Audio corruption</option>
+        <option value="unparseable">Unreadable audio</option><option value="missing_file">Missing file</option><option value="missing_tags">Missing metadata</option>
+        <option value="low_bitrate">Low bitrate</option><option value="short_file">Short file</option></select></label>
+      </div>
+    </details>
+    <div class="doctor-selection" id="issue-selection" hidden>
+      <span id="issue-selected" role="status">No files selected. Select this page or choose all matching files.</span>
+      <div class="row">
+        <button class="action ghost" id="issue-select-page">Select this page</button>
+        <button class="action ghost" id="issue-clear" hidden>Clear selection</button>
+        <button class="action danger" id="btn-trash-selected" data-operation hidden>Trash selected files</button>
+      </div>
+      <details><summary>Select across pages</summary>
+        <p class="hint">This selects every file matching your current filters, including files on other pages.</p>
+        <button class="action ghost" id="issue-select-all">Select all matching files</button>
+      </details>
+    </div>
+    <div id="doc-summary" role="status"></div><div id="doc-out"></div>
+    <details class="card doctor-bulk-trash" id="doctor-bulk-trash" hidden>
+      <summary>Trash all files marked broken</summary>
+      <p>This rechecks files before moving them to recoverable trash. Warnings are not included.</p>
+      <button class="action danger" id="btn-remove" data-operation>Trash all currently broken files</button>
+    </details>`;
     const selected = new Set();
     let currentIssues = [];
     const updateTrashSelection = () => {
-      $("#issue-selected").textContent = `${selected.size} files selected`;
+      $("#issue-selection").hidden = selected.size === 0 && currentIssues.length === 0;
+      $("#issue-selected").textContent = selected.size
+        ? `${selected.size} ${selected.size === 1 ? "file" : "files"} selected`
+        : "No files selected. Select this page or choose all matching files.";
+      $("#issue-clear").hidden = selected.size === 0;
+      $("#btn-trash-selected").hidden = selected.size === 0;
+      $("#btn-trash-selected").textContent = `Trash ${selected.size} selected ${selected.size === 1 ? "file" : "files"}`;
       el.querySelectorAll("[data-trash-track]").forEach(input => {
         input.checked = selected.has(Number(input.dataset.trashTrack));
       });
@@ -1386,8 +1416,11 @@ const views = {
     };
     const showIssues = async () => {
       const severity = $("#issue-severity").value, kind = $("#issue-kind").value;
+      const filterCount = [severity, kind].filter(Boolean).length;
+      $("#issue-filter-count").textContent = filterCount ? ` · ${filterCount} selected` : "";
+      $("#issue-select-page").disabled = true;
       const bad = await api("/api/issues/page?offset=0&limit=1&severity=bad");
-      $("#btn-remove").style.display = bad.total ? "" : "none";
+      $("#doctor-bulk-trash").hidden = !bad.total;
       await pagedTable($("#doc-out"),
         offset => api(`/api/issues/page?offset=${offset}&severity=${encodeURIComponent(severity)}&kind=${encodeURIComponent(kind)}`),
         ["Select", "Severity", "Issue", "Details", "File", "Listen"],
@@ -1395,6 +1428,7 @@ const views = {
           <td>${esc(i.severity)}</td><td>${esc(i.kind)}</td><td>${esc(i.detail)}</td><td class="path">${esc(i.path)}</td><td>${playButton(i.track_id, i.path)}</td></tr>`,
         items => {
           currentIssues = items;
+          $("#issue-select-page").disabled = items.length === 0;
           el.querySelectorAll("[data-trash-track]").forEach(input => input.onchange = () => {
             const id = Number(input.dataset.trashTrack);
             if (input.checked) selected.add(id); else selected.delete(id);
