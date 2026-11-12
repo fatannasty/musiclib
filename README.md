@@ -295,7 +295,9 @@ before discarding its choices. A running review cannot be replaced in place;
 you can leave it after confirmation and monitor its job in Activity. Closing a
 review does not stop or undo an accepted job. Late responses from a discarded
 review cannot replace the current one. Draft choices are not saved across page
-reloads; saved job previews can be reopened from Activity, one at a time.
+reloads; saved job previews can be reopened from Activity, one at a time. Review
+workspaces keep progress and catalog candidates compact so the current decision
+stays prominent.
 
 Selection actions appear only when relevant. On an album page, **Edit album
 tags** and **Find catalog matches** are the main actions. Open **More album actions**
@@ -304,6 +306,10 @@ keeps trash separate. In Tracks view, **Catalog lookup** contains **Find album
 matches** and **Look up each track**. Select at least two tracks/albums to see
 merge actions. Duplicates keeps its manual file picker under **Choose duplicate
 files manually**. No tools or navigation tabs have been removed.
+
+Album discovery shows each candidate with its suggested tag fields. Choose fields
+individually or use **Select all fields** for that album; nothing is selected or
+saved automatically, and each apply still requires confirmation.
 
 Choose **50, 100, 150, or 200 Albums per load**. Scrolling near the bottom appends
 the next batch instead of replacing existing albums; **Load more albums** also
