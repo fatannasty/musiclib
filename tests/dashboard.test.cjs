@@ -762,3 +762,50 @@ test("Recovery hides selection controls when the page contains no recoverable fi
   assert.equal(document.querySelector("#restore-preview-selected").hidden, true);
   assert.equal(document.querySelector("#restore-select-page").disabled, true);
 });
+
+test("Organize separates preview from apply and shows destination reasons", async () => {
+  const {context, document, run} = dashboard();
+  const node = selector => document.querySelector(selector);
+  const el = new Element();
+  const section = new Element({section: "moves"});
+  section.click = () => {};
+  el.querySelector = selector => selector === "[data-section]" ? section :
+    document.querySelector(selector);
+  el.querySelectorAll = selector => selector === "[data-section]" ? [section] : [];
+  let applyCalls = 0, confirmation = false, rendered;
+  const plan = {summary: {applied: false, to_move: 2, moved: 0,
+    already_ok: 3, skipped: 1, errors: 0}};
+  context.runTask = async (_kind, body) => {
+    if (body.apply) {
+      applyCalls++;
+      return {summary: {applied: true, to_move: 2, moved: 2,
+        already_ok: 3, skipped: 1, errors: 0}};
+    }
+    return plan;
+  };
+  context.pagedTable = async (_container, _load, headers, row) => {
+    rendered = {headers, row: row({source: "/from/song.flac", target: "/to/song.flac",
+      status: "blocked", reason: "<destination occupied>"})};
+  };
+  context.confirm = () => confirmation;
+  context.loadStats = async () => {};
+  await run("views.organize")(el);
+  assert.equal(node("#btn-apply").hidden, true);
+  await node("#btn-plan").onclick();
+  assert.equal(node("#btn-apply").hidden, false);
+  assert.equal(node("#btn-apply").textContent, "Apply organization");
+  assert.match(node("#ren-summary").textContent, /2 destinations to review/);
+  assert.match(node("#ren-summary").textContent, /3 already organized/);
+  assert.match(html, /Applying creates a fresh plan/);
+  section.onclick();
+  assert.equal(JSON.stringify(rendered.headers),
+    JSON.stringify(["Current location", "New location", "Review status"]));
+  assert.match(rendered.row, /&lt;destination occupied&gt;/);
+  await node("#btn-apply").onclick();
+  assert.equal(applyCalls, 0);
+  confirmation = true;
+  await node("#btn-apply").onclick();
+  assert.equal(applyCalls, 1);
+  assert.equal(node("#btn-apply").hidden, true);
+  assert.match(node("#ren-summary").textContent, /2 files moved/);
+});
