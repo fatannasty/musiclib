@@ -311,7 +311,8 @@ individually or use **Select all fields** for that album; nothing is selected or
 saved automatically, and each apply still requires confirmation.
 
 Choose **25, 50, or 100 items per page** and use the numbered controls below the
-results. The artist initial index filters the entire matching library in both
+results. The artist initial index runs A–Z in a single column on the left (a
+horizontal scrollable strip on phones) and filters the entire matching library in both
 views; **#** includes names starting with a number, symbol, or non-ASCII letter.
 Album selections survive page and filter changes until cleared or successfully
 merged. Closing an edit review returns to the track and its previous position.
