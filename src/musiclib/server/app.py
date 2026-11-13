@@ -3,15 +3,18 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
+import sqlite3
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
 from mutagen import MutagenError
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ..artwork import CAA_FRONT_THUMB, Artwork, read_cover
 from ..artwork_discovery import discover_artwork_batch, download_candidate_cover
@@ -39,6 +42,17 @@ from ..scanner import Scanner, file_hash
 from ..trash_review import TrashReview
 from ..usenet import Sabnzbd, SabnzbdError, search_all
 from .artwork_schedule import ArtworkSchedule
+from .auth import (
+    SESSION_COOKIE,
+    SESSION_SECONDS,
+    AuthService,
+    LoginLimiter,
+    hash_password,
+    valid_password,
+    valid_username,
+    verify_csrf,
+    verify_password,
+)
 from .duplicate_schedule import DuplicateSchedule
 from .jobs import JobRegistry
 from .playback import MEDIA_TYPES, Playback
@@ -104,6 +118,21 @@ class PlaylistTracksBody(BaseModel):
 
 class PlaylistOrderBody(BaseModel):
     entry_ids: List[int] = Field(max_length=10000)
+
+
+class LoginBody(BaseModel):
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=128)
+
+
+class PasswordBody(BaseModel):
+    current_password: str = Field(max_length=128)
+    new_password: str = Field(max_length=128)
+
+
+class CreateUserBody(BaseModel):
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=128)
 
 
 class RestoreBody(BaseModel):
@@ -248,8 +277,18 @@ def _coerce(value: Any, current: Any) -> Any:
     return "" if value is None else str(value).strip()
 
 
-def create_app(config: Config) -> FastAPI:
+def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAPI:
     app = FastAPI(title="musiclib", docs_url=None, redoc_url=None)
+    auth_required = config.auth_required if require_auth is None else require_auth
+    cookie_secure = os.environ.get("MUSICLIB_COOKIE_SECURE", "true").strip().lower() not in (
+        "0", "false", "no",
+    )
+    allowed_hosts = [
+        item.strip() for item in os.environ.get("MUSICLIB_ALLOWED_HOSTS", "").split(",")
+        if item.strip()
+    ]
+    if allowed_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
     db = Database(config.db_path)
     Scanner(config, db).rebuild_albums()
 
@@ -259,6 +298,100 @@ def create_app(config: Config) -> FastAPI:
 
     jobs = JobRegistry(db, after_write=refresh_album_summaries)
     playback = Playback(config, db)
+    auth = AuthService(db)
+    login_limiter = LoginLimiter()
+
+    def same_origin(request: Request) -> bool:
+        origin = request.headers.get("origin", "")
+        host = request.headers.get("host", "").lower()
+        parsed = urlsplit(origin)
+        expected_scheme = "https" if cookie_secure else "http"
+        if parsed.scheme != expected_scheme or not parsed.netloc or not host:
+            return False
+        if parsed.username or parsed.password or parsed.netloc.lower() != host:
+            return False
+        return request.headers.get("sec-fetch-site", "same-origin") == "same-origin"
+
+    def user_route_allowed(method: str, path: str) -> bool:
+        if path.startswith("/api/auth/"):
+            if method == "GET" and path == "/api/auth/session":
+                return True
+            return path in ("/api/auth/logout", "/api/auth/password")
+        if method == "GET":
+            exact = {
+                "/api/stats", "/api/playback/formats", "/api/genres", "/api/formats",
+                "/api/albums", "/api/albums/page", "/api/albums/detail",
+                "/api/tracks/page", "/api/tracks/search",
+            }
+            return path in exact or bool(re.fullmatch(
+                r"/api/(?:tracks/\d+/(?:playback|audio|cover)|playlists(?:/\d+(?:/tracks(?:/\d+|/order)?)?)?)",
+                path,
+            ))
+        if method == "POST":
+            return path in ("/api/tracks/page", "/api/tracks/search", "/api/playlists") or bool(
+                re.fullmatch(r"/api/playlists/\d+/tracks", path)
+            )
+        if method == "PUT":
+            return bool(re.fullmatch(r"/api/playlists/\d+/tracks/order", path))
+        if method in ("PATCH", "DELETE"):
+            return bool(re.fullmatch(
+                r"/api/playlists/\d+(?:/tracks/\d+)?", path
+            ))
+        return False
+
+    def secure_response(response: Response) -> Response:
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.middleware("http")
+    async def enforce_authentication(request: Request, call_next):
+        path = request.url.path
+        user = None
+        if auth_required and path.startswith("/api/"):
+            token = request.cookies.get(SESSION_COOKIE, "")
+            session = auth.session(token) if token else None
+            if session:
+                user = session
+                request.state.auth_user = session
+            if path == "/api/auth/login":
+                if request.method != "POST" or not same_origin(request):
+                    return secure_response(JSONResponse(
+                        {"detail": "Same-origin login requests are required."}, 403
+                    ))
+            elif path == "/api/auth/session":
+                pass
+            elif user is None:
+                return secure_response(JSONResponse(
+                    {"detail": "Authentication required."}, 401
+                ))
+            else:
+                if request.method not in ("GET", "HEAD", "OPTIONS"):
+                    if not same_origin(request):
+                        return secure_response(JSONResponse(
+                            {"detail": "Same-origin requests are required."}, 403
+                        ))
+                    csrf = request.headers.get("x-csrf-token", "")
+                    if not verify_csrf(csrf, session["csrf_hash"]):
+                        return secure_response(JSONResponse(
+                            {"detail": "A valid CSRF token is required."}, 403
+                        ))
+                if user["role"] != "admin" and not user_route_allowed(
+                    request.method, path
+                ):
+                    return secure_response(JSONResponse(
+                        {"detail": "Administrator access required."}, 403
+                    ))
+        elif not auth_required:
+            request.state.auth_user = {
+                "id": None, "username": "test", "role": "admin", "csrf_hash": "",
+                "token_hash": "",
+            }
+        response = await call_next(request)
+        return secure_response(response)
 
     def sab_client() -> Sabnzbd:
         if not config.sabnzbd.get("api_key"):
@@ -273,6 +406,103 @@ def create_app(config: Config) -> FastAPI:
     def favicon() -> FileResponse:
         return FileResponse(STATIC_DIR / "musiclib.svg", media_type="image/svg+xml")
 
+    @app.get("/api/auth/session")
+    def auth_session(request: Request) -> Dict[str, Any]:
+        user = getattr(request.state, "auth_user", None)
+        if not user:
+            return {"authenticated": False}
+        token = request.cookies.get(SESSION_COOKIE, "")
+        return {
+            "authenticated": True,
+            "user": {
+                "id": user["id"], "username": user["username"], "role": user["role"],
+            },
+            "csrf_token": auth.csrf_token(token) if token else "",
+        }
+
+    @app.post("/api/auth/login")
+    def auth_login(body: LoginBody, request: Request) -> Response:
+        remote = request.client.host if request.client else "unknown"
+        limit_key = f"{remote}:{body.username.strip().casefold()}"
+        retry_after = login_limiter.retry_after(limit_key)
+        if retry_after:
+            raise HTTPException(
+                429, "Too many sign-in attempts. Try again shortly.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        user = auth.login(body.username, body.password)
+        if user is None:
+            login_limiter.failed(limit_key)
+            raise HTTPException(401, "Invalid username or password.")
+        login_limiter.succeeded(limit_key)
+        token, csrf_token, _expires_at = auth.create_session(user["id"])
+        response = JSONResponse({
+            "authenticated": True,
+            "user": {"id": user["id"], "username": user["username"], "role": user["role"]},
+            "csrf_token": csrf_token,
+        })
+        response.set_cookie(
+            SESSION_COOKIE, token, max_age=SESSION_SECONDS, httponly=True,
+            secure=cookie_secure, samesite="strict", path="/",
+        )
+        return response
+
+    def current_user(request: Request) -> Dict[str, Any]:
+        return request.state.auth_user
+
+    def playlist_owner(request: Request) -> Optional[int]:
+        user = current_user(request)
+        return None if user["role"] == "admin" else int(user["id"])
+
+    @app.post("/api/auth/logout")
+    def auth_logout(request: Request) -> Response:
+        token = request.cookies.get(SESSION_COOKIE, "")
+        if token:
+            auth.revoke_session(token)
+        response = JSONResponse({"logged_out": True})
+        response.delete_cookie(
+            SESSION_COOKIE, secure=cookie_secure, httponly=True,
+            samesite="strict", path="/"
+        )
+        return response
+
+    @app.post("/api/auth/password")
+    def auth_change_password(body: PasswordBody, request: Request) -> Dict[str, bool]:
+        user = current_user(request)
+        stored = db.get_user_by_username(user["username"])
+        if not stored or not verify_password(body.current_password, stored["password_hash"]):
+            raise HTTPException(400, "Current password is incorrect.")
+        if not valid_password(body.new_password):
+            raise HTTPException(400, "Use a password between 12 and 128 characters.")
+        db.update_user_password(user["id"], hash_password(body.new_password))
+        db.delete_user_sessions(user["id"], user["token_hash"])
+        return {"changed": True}
+
+    @app.get("/api/auth/users")
+    def auth_users() -> List[Dict[str, Any]]:
+        return db.users()
+
+    @app.post("/api/auth/users")
+    def auth_create_user(body: CreateUserBody) -> Dict[str, Any]:
+        username = body.username.strip().lower()
+        if not valid_username(username):
+            raise HTTPException(
+                400, "Usernames must be 3–32 characters and use letters, numbers, dots, hyphens, or underscores."
+            )
+        if not valid_password(body.password):
+            raise HTTPException(400, "Use a password between 12 and 128 characters.")
+        try:
+            user_id = db.create_user(username, hash_password(body.password), role="user")
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "That username is already in use.") from exc
+        return db.get_user(user_id)
+
+    @app.delete("/api/auth/users/{user_id}")
+    def auth_delete_user(user_id: int) -> Dict[str, bool]:
+        if not db.delete_user(user_id):
+            raise HTTPException(404, "User not found or administrator accounts cannot be removed.")
+        return {"deleted": True}
+
     @app.get("/api/stats")
     def stats() -> Dict[str, Any]:
         return db.stats()
@@ -286,67 +516,78 @@ def create_app(config: Config) -> FastAPI:
         return playback.format_inventory()
 
     @app.get("/api/playlists")
-    def playlists() -> List[Dict[str, Any]]:
-        return db.playlists()
+    def playlists(request: Request) -> List[Dict[str, Any]]:
+        return db.playlists(playlist_owner(request))
 
     @app.post("/api/playlists")
-    def playlist_create(body: PlaylistBody) -> Dict[str, Any]:
+    def playlist_create(body: PlaylistBody, request: Request) -> Dict[str, Any]:
         name = body.name.strip()
         if not name or len(name) > 80:
             raise HTTPException(422, "Playlist names must contain 1 to 80 non-space characters.")
-        playlist_id = db.create_playlist(name)
-        return db.playlist(playlist_id)
+        user_id = current_user(request)["id"]
+        playlist_id = db.create_playlist(name, int(user_id) if user_id else None)
+        return db.playlist(playlist_id, playlist_owner(request))
 
     @app.get("/api/playlists/{playlist_id}")
-    def playlist_detail(playlist_id: int) -> Dict[str, Any]:
-        playlist = db.playlist(playlist_id)
+    def playlist_detail(playlist_id: int, request: Request) -> Dict[str, Any]:
+        playlist = db.playlist(playlist_id, playlist_owner(request))
         if playlist is None:
             raise HTTPException(404, "Playlist not found.")
         return playlist
 
     @app.patch("/api/playlists/{playlist_id}")
-    def playlist_rename(playlist_id: int, body: PlaylistBody) -> Dict[str, Any]:
+    def playlist_rename(
+        playlist_id: int, body: PlaylistBody, request: Request,
+    ) -> Dict[str, Any]:
         name = body.name.strip()
         if not name or len(name) > 80:
             raise HTTPException(422, "Playlist names must contain 1 to 80 non-space characters.")
-        if not db.rename_playlist(playlist_id, name):
+        if not db.rename_playlist(playlist_id, name, playlist_owner(request)):
             raise HTTPException(404, "Playlist not found.")
-        return db.playlist(playlist_id)
+        return db.playlist(playlist_id, playlist_owner(request))
 
     @app.delete("/api/playlists/{playlist_id}")
-    def playlist_delete(playlist_id: int) -> Dict[str, bool]:
-        if not db.delete_playlist(playlist_id):
+    def playlist_delete(playlist_id: int, request: Request) -> Dict[str, bool]:
+        if not db.delete_playlist(playlist_id, playlist_owner(request)):
             raise HTTPException(404, "Playlist not found.")
         return {"deleted": True}
 
     @app.post("/api/playlists/{playlist_id}/tracks")
     def playlist_add_tracks(
-        playlist_id: int, body: PlaylistTracksBody,
+        playlist_id: int, body: PlaylistTracksBody, request: Request,
     ) -> Dict[str, Any]:
         if len(set(body.track_ids)) != len(body.track_ids):
             raise HTTPException(422, "Choose each track only once per add operation.")
         for track_id in body.track_ids:
             playback.source(track_id)
-        if not db.append_playlist_tracks(playlist_id, body.track_ids):
+        if not db.append_playlist_tracks(
+            playlist_id, body.track_ids, playlist_owner(request)
+        ):
             raise HTTPException(404, "Playlist not found.")
-        return db.playlist(playlist_id)
+        return db.playlist(playlist_id, playlist_owner(request))
 
     @app.delete("/api/playlists/{playlist_id}/tracks/{entry_id}")
-    def playlist_remove_track(playlist_id: int, entry_id: int) -> Dict[str, Any]:
-        if not db.remove_playlist_track(playlist_id, entry_id):
+    def playlist_remove_track(
+        playlist_id: int, entry_id: int, request: Request,
+    ) -> Dict[str, Any]:
+        if not db.remove_playlist_track(
+            playlist_id, entry_id, playlist_owner(request)
+        ):
             raise HTTPException(404, "Playlist item not found.")
-        return db.playlist(playlist_id)
+        return db.playlist(playlist_id, playlist_owner(request))
 
     @app.put("/api/playlists/{playlist_id}/tracks/order")
     def playlist_reorder_tracks(
-        playlist_id: int, body: PlaylistOrderBody,
+        playlist_id: int, body: PlaylistOrderBody, request: Request,
     ) -> Dict[str, Any]:
         try:
-            if not db.reorder_playlist_tracks(playlist_id, body.entry_ids):
+            if not db.reorder_playlist_tracks(
+                playlist_id, body.entry_ids, playlist_owner(request)
+            ):
                 raise HTTPException(404, "Playlist not found.")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return db.playlist(playlist_id)
+        return db.playlist(playlist_id, playlist_owner(request))
 
     @app.get("/api/tracks/{track_id}/audio")
     async def track_audio(

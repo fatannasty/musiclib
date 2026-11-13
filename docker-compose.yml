@@ -9,6 +9,8 @@ services:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
       - PORT=8000
+      - MUSICLIB_COOKIE_SECURE=${MUSICLIB_COOKIE_SECURE:-true}
+      - MUSICLIB_ALLOWED_HOSTS=${MUSICLIB_ALLOWED_HOSTS:-}
     volumes:
       - ${MUSIC_DIR:-/volume1/music}:/music:rw
       - ${DATA_DIR:-./appdata}:/data:rw

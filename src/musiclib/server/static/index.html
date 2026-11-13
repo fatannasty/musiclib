@@ -41,6 +41,7 @@
   --shadow: 0 4px 16px rgba(0,0,0,.12);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
 body {
   background: radial-gradient(ellipse at 8% 0%, var(--wash-one), transparent 38%),
     radial-gradient(ellipse at 96% 12%, var(--wash-two), transparent 34%), var(--bg);
@@ -54,6 +55,7 @@ button, input, select { accent-color: var(--accent); }
 :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 header { padding: 28px 28px 14px; max-width: 1340px; margin: auto; }
 .topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.topbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .brand { display: flex; gap: 12px; align-items: center; }
 .brand img { width: 42px; height: 42px; }
 h1 { font-size: 27px; font-weight: 750; letter-spacing: -.04em; line-height: 1.1; }
@@ -119,6 +121,22 @@ td.path { font-family: var(--mono); font-size: 11.5px; color: var(--dim); word-b
 .card h3 { font-size: 15px; margin-bottom: 6px; }
 .card p { color: var(--dim); font-size: 13px; }
 .empty { color: var(--dim); padding: 30px; text-align: center; }
+.auth-screen { max-width: 460px; margin: 8vh auto 40px; }
+.auth-screen h2 { font-size: 25px; margin-bottom: 8px; }
+.auth-screen form { display: grid; gap: 14px; margin-top: 20px; }
+.auth-screen label { display: grid; gap: 5px; font-size: 13px; }
+.auth-screen input { width: 100%; }
+.auth-error { min-height: 1.5em; color: var(--red); }
+.player-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
+.player-album-card { min-width: 0; overflow: hidden; padding: 0; text-align: left; }
+.player-album-cover { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--cover-bg); }
+.player-album-copy { display: grid; gap: 2px; padding: 12px; }
+.player-album-copy strong, .player-album-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-album-copy span { color: var(--dim); font-size: 12px; }
+.player-track-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.player-track-row:last-child { border-bottom: 0; }
+.account-user { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.account-user:last-child { border-bottom: 0; }
 #toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel); border: 1px solid var(--border); padding: 12px 18px; border-radius: 12px; display: none; max-width: min(420px, calc(100vw - 32px)); z-index: 99; box-shadow: var(--shadow); animation: rise .2s ease both; }
 #toast.err { border-color: var(--red); }
 .group { border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
@@ -400,6 +418,11 @@ body.player-queue-open #toast { bottom: 470px; }
   .match-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .match-card { padding: 8px; }
   .library-results { display: block; }
+  .auth-screen { margin: 5vh 12px 30px; }
+  .player-library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .player-album-copy { padding: 9px; }
+  .player-track-row { grid-template-columns: minmax(0, 1fr); }
+  .account-user { align-items: flex-start; }
   .library-index { position: static; display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 4px; margin: 0 0 12px; padding-bottom: 4px; }
   .library-index-title { flex: 0 0 auto; align-self: center; margin-right: 4px; white-space: nowrap; }
   .library-index button { flex: 0 0 auto; }
@@ -445,13 +468,15 @@ body.player-queue-open #toast { bottom: 470px; }
 <header>
   <div class="topbar"><div class="brand"><img src="/favicon.svg" alt=""><div><h1>music<span>lib</span></h1>
     <div class="sub" id="dbpath">Your music library workspace</div></div></div>
-    <button class="action ghost" id="theme-toggle" type="button" aria-pressed="false">Dark mode</button>
+    <div class="topbar-actions"><span id="signed-in-user" class="hint" hidden></span>
+      <button class="action ghost" id="sign-out" type="button" hidden>Sign out</button>
+      <button class="action ghost" id="theme-toggle" type="button" aria-pressed="false">Dark mode</button></div>
   </div>
   <div class="chips" id="chips"></div>
   <details class="library-details"><summary>More library details</summary><div class="chips" id="detail-chips"></div></details>
 </header>
 <nav id="nav" aria-label="Main navigation"></nav>
-<aside class="activity" aria-label="Library activity">
+<aside id="activity" class="activity" aria-label="Library activity">
   <div class="activity-heading"><div class="activity-title"><h2>Activity</h2><span class="activity-state" id="activity-state">Loading…</span></div><span id="activity-lock" class="hint"></span></div>
   <div id="activity-current">Loading activity...</div>
   <div id="activity-summary" role="status"></div>
@@ -502,7 +527,8 @@ body.player-queue-open #toast { bottom: 470px; }
 <script>
 const TABS = [
   ["overview", "Overview"], ["dupes", "Duplicates"], ["doctor", "Bad Files"],
-  ["library", "Library"], ["playlists", "Playlists"], ["recovery", "Recovery"],
+  ["library", "Library"], ["player", "Player"], ["playlists", "Playlists"],
+  ["account", "Account"], ["recovery", "Recovery"],
   ["organize", "Organize"], ["art", "Cover Art"], ["missing", "Missing Music"],
   ["usenet", "Usenet"], ["settings", "Settings"],
 ];
@@ -511,7 +537,9 @@ const pageDescriptions = {
   dupes: "Compare copies and keep the version you want.",
   doctor: "Review audio issues before removing files.",
   library: "Browse, listen and make reviewed changes to your music.",
+  player: "Browse albums, choose a track, and listen through the album in order.",
   playlists: "Create playlists, manage playback order, and inspect format readiness.",
+  account: "Manage your sign-in and Musiclib accounts.",
   recovery: "Review and restore files from the musiclib trash.",
   organize: "Preview a cleaner folder structure before moving files.",
   art: "Find missing artwork for your albums.",
@@ -520,6 +548,11 @@ const pageDescriptions = {
   settings: "Configure your library and connected services.",
 };
 const state = { tab: "overview", jobs: [], libraryView: "albums", libraryBatch: 50 };
+const authState = {user: null, csrfToken: ""};
+function visibleTabs() {
+  if (authState.user?.role === "admin") return TABS;
+  return TABS.filter(([id]) => ["player", "playlists", "account"].includes(id));
+}
 const BROWSING_KEY = "musiclib.workspace.v1";
 const defaultBrowsing = () => ({
   version: 1, tab: "overview",
@@ -777,8 +810,13 @@ function revealReview(element) {
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   element.scrollIntoView({behavior: reduced ? "auto" : "smooth", block: "start"});
 }
-async function api(path, opts) {
-  const res = await fetch(path, opts);
+async function api(path, opts = {}) {
+  const headers = {...(opts.headers || {})};
+  const method = (opts.method || "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && authState.csrfToken) {
+    headers["X-CSRF-Token"] = authState.csrfToken;
+  }
+  const res = await fetch(path, {...opts, headers, credentials: "same-origin"});
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch {}
@@ -1520,6 +1558,139 @@ async function loadStats() {
 }
 
 const views = {
+  async player(el) {
+    el.innerHTML = `<div class="card">
+      <div class="library-search-row"><label class="library-search-field" for="player-album-query">Find an album
+        <input type="search" id="player-album-query" placeholder="Album or artist"></label>
+        <button class="action" id="player-album-search">Search albums</button></div>
+    </div><div class="player-library-grid" id="player-albums" aria-live="polite"></div>
+    <div class="row" style="justify-content:center;margin-top:16px">
+      <button class="action ghost" id="player-albums-prev">Previous page</button>
+      <span class="hint" id="player-albums-page"></span>
+      <button class="action ghost" id="player-albums-next">Next page</button>
+    </div><div id="player-album-detail"></div>`;
+    const pageSize = 25;
+    let offset = 0, total = 0, request = 0;
+    const loadPage = async () => {
+      const current = ++request;
+      const query = $("#player-album-query").value.trim();
+      const params = new URLSearchParams({offset: String(offset), limit: String(pageSize), query});
+      const page = await api(`/api/albums/page?${params}`);
+      if (!el.isConnected || current !== request) return;
+      total = page.total;
+      $("#player-albums").innerHTML = page.items.map(album => {
+        const cover = album.cover_url ?
+          `<img class="player-album-cover" src="${esc(album.cover_url)}" alt="" loading="lazy">` :
+          `<div class="player-album-cover cover-ph" aria-hidden="true">♫</div>`;
+        return `<button type="button" class="card player-album-card"
+          data-player-album-artist="${esc(album.album_artist)}" data-player-album="${esc(album.album)}">
+          ${cover}<span class="player-album-copy"><strong>${esc(album.album)}</strong>
+          <span>${esc(album.album_artist)} · ${esc(album.year || "Year unknown")} · ${album.track_count} tracks</span></span></button>`;
+      }).join("") || `<div class="empty">No albums found. Try a different search.</div>`;
+      $("#player-albums-page").textContent = total ?
+        `${offset + 1}–${Math.min(offset + pageSize, total)} of ${total}` : "0 albums";
+      $("#player-albums-prev").disabled = offset === 0;
+      $("#player-albums-next").disabled = offset + pageSize >= total;
+      $("#player-albums").querySelectorAll("[data-player-album]").forEach(button => {
+        button.onclick = () => loadAlbum(button.dataset.playerAlbumArtist, button.dataset.playerAlbum);
+      });
+    };
+    const loadAlbum = async (artist, album) => {
+      const params = new URLSearchParams({album_artist: artist, album});
+      const detail = await api(`/api/albums/detail?${params}`);
+      if (!el.isConnected) return;
+      $("#player-album-detail").innerHTML = `<section class="card" aria-labelledby="player-album-title">
+        <div class="album-detail-header">${detail.cover_url ?
+          `<img class="cover" src="${esc(detail.cover_url)}" alt="" loading="lazy">` :
+          `<div class="cover-ph" aria-hidden="true">♫</div>`}
+          <div><p class="album-detail-kicker">Album player</p><h3 id="player-album-title">${esc(detail.album)}</h3>
+            <p class="album-detail-meta">${esc(detail.album_artist)} · ${esc(detail.year || "Year unknown")} · ${detail.track_count} tracks</p>
+            <button type="button" class="action" id="player-play-album">Play album</button></div>
+        </div><ol class="album-track-list">${detail.tracks.map((track, index) =>
+          `<li class="player-track-row"><div><strong>${esc(track.title || `Track ${index + 1}`)}</strong>
+            <div class="hint">${esc(track.artist || detail.album_artist)} · Disc ${esc(track.disc_no || 1)} · Track ${esc(track.track_no || index + 1)}</div></div>
+            <div class="row"><button type="button" class="action ghost" data-player-track-index="${index}">Play from here</button>
+            <button type="button" class="action ghost" data-add-playlist-track="${track.id}">Add to playlist</button></div></li>`
+        ).join("")}</ol></section>`;
+      const queue = detail.tracks.map(track => ({
+        id: track.id, artist: track.artist || detail.album_artist, title: track.title,
+      }));
+      $("#player-play-album").onclick = () => playQueue(queue, 0);
+      $("#player-album-detail").querySelectorAll("[data-player-track-index]").forEach(button => {
+        button.onclick = () => playQueue(queue, Number(button.dataset.playerTrackIndex));
+      });
+    };
+    $("#player-album-search").onclick = () => { offset = 0; loadPage().catch(error => toast(error.message, true)); };
+    $("#player-album-query").onkeydown = event => {
+      if (event.key === "Enter") { event.preventDefault(); offset = 0; loadPage().catch(error => toast(error.message, true)); }
+    };
+    $("#player-albums-prev").onclick = () => { offset = Math.max(0, offset - pageSize); loadPage().catch(error => toast(error.message, true)); };
+    $("#player-albums-next").onclick = () => { offset += pageSize; loadPage().catch(error => toast(error.message, true)); };
+    await loadPage();
+  },
+
+  async account(el) {
+    el.innerHTML = `<div class="card"><h3>Change your password</h3>
+      <form id="account-password-form">
+        <label>Current password<br><input type="password" id="account-current-password" autocomplete="current-password" required></label>
+        <label>New password<br><input type="password" id="account-new-password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+        <label>Confirm new password<br><input type="password" id="account-confirm-password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+        <button class="action" type="submit">Update password</button>
+        <p class="hint" id="account-password-status" role="status"></p>
+      </form></div>`;
+    $("#account-password-form").onsubmit = async event => {
+      event.preventDefault();
+      const next = $("#account-new-password").value;
+      if (next !== $("#account-confirm-password").value) {
+        $("#account-password-status").textContent = "The new passwords do not match.";
+        return;
+      }
+      try {
+        await post("/api/auth/password", {
+          current_password: $("#account-current-password").value, new_password: next,
+        });
+        event.currentTarget.reset();
+        $("#account-password-status").textContent = "Password updated. Other active sessions have been signed out.";
+      } catch (error) { $("#account-password-status").textContent = error.message; }
+    };
+    if (authState.user.role !== "admin") return;
+    el.insertAdjacentHTML("beforeend", `<div class="card"><h3>Accounts</h3>
+      <form id="account-create-form" class="row">
+        <label>Username<br><input type="text" id="account-new-username" minlength="3" maxlength="32" autocomplete="off" required></label>
+        <label>Temporary password<br><input type="password" id="account-new-user-password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
+        <button class="action" type="submit">Create account</button></form>
+      <p class="hint">Share the initial password securely. Users can change it from their Account page.</p>
+      <div id="account-users"></div></div>`);
+    const refreshUsers = async () => {
+      const users = await api("/api/auth/users");
+      $("#account-users").innerHTML = users.map(user => `<div class="account-user">
+        <div><strong>${esc(user.username)}</strong><div class="hint">${esc(user.role)} · added ${esc(user.created_at)}</div></div>
+        ${user.role === "user" ? `<button class="action danger" type="button" data-remove-user="${user.id}">Remove account</button>` : ""}
+      </div>`).join("");
+      $("#account-users").querySelectorAll("[data-remove-user]").forEach(button => {
+        button.onclick = async () => {
+          const user = users.find(item => item.id === Number(button.dataset.removeUser));
+          if (!user || !confirm(`Remove ${user.username} and their playlists?`)) return;
+          try { await api(`/api/auth/users/${user.id}`, {method: "DELETE"}); await refreshUsers(); }
+          catch (error) { toast(error.message, true); }
+        };
+      });
+    };
+    $("#account-create-form").onsubmit = async event => {
+      event.preventDefault();
+      try {
+        await post("/api/auth/users", {
+          username: $("#account-new-username").value,
+          password: $("#account-new-user-password").value,
+        });
+        event.currentTarget.reset();
+        await refreshUsers();
+        toast("Account created.");
+      } catch (error) { toast(error.message, true); }
+    };
+    await refreshUsers();
+  },
+
   async overview(el) {
     const s = await loadStats();
     el.innerHTML = `
@@ -4209,6 +4380,10 @@ const views = {
 async function render() {
   captureBrowsingPosition();
   if (!leaveLibraryReview()) { state.tab = "library"; return; }
+  const tabs = visibleTabs();
+  if (!tabs.some(([id]) => id === state.tab)) {
+    state.tab = authState.user?.role === "admin" ? "overview" : "player";
+  }
   const generation = state.renderGeneration = (state.renderGeneration || 0) + 1;
   const tab = state.tab;
   state.currentTab = tab;
@@ -4221,13 +4396,13 @@ async function render() {
   try { await loadStats(); } catch (e) { toast(e.message, true); }
   if (generation !== state.renderGeneration) return;
   const nav = $("#nav");
-  nav.innerHTML = TABS.map(([id, label]) =>
+  nav.innerHTML = tabs.map(([id, label]) =>
     `<button class="${tab === id ? "active" : ""}" ${tab === id ? 'aria-current="page"' : ""} data-tab="${id}">${label}</button>`).join("");
   nav.querySelectorAll("[data-tab]").forEach(b => {
     b.onclick = () => { state.tab = b.dataset.tab; render(); };
   });
   const main = $("#main");
-  main.innerHTML = TABS.map(([id, label]) => `<section id="tab-${id}" class="${tab === id ? "active" : ""}">
+  main.innerHTML = tabs.map(([id, label]) => `<section id="tab-${id}" class="${tab === id ? "active" : ""}">
     <div class="page-heading"><h2>${esc(label)}</h2><p>${esc(pageDescriptions[id])}</p></div>
     <div data-view-content></div></section>`).join("");
   const el = $(`#tab-${tab} [data-view-content]`);
@@ -4246,32 +4421,122 @@ async function render() {
     }
   }
 }
+let activityTimer;
 async function watchActivity() {
+  if (authState.user?.role !== "admin") return;
   await refreshActivity();
-  setTimeout(watchActivity, 1500);
+  if (authState.user?.role === "admin") activityTimer = setTimeout(watchActivity, 1500);
+}
+let dashboardEventsBound = false;
+function showLogin() {
+  if (!$("#player").hidden) $("#player-close").click();
+  authState.user = null;
+  authState.csrfToken = "";
+  $("#nav").hidden = true;
+  $("#activity").hidden = true;
+  $("#main").hidden = false;
+  $("#player-home").hidden = true;
+  $("#signed-in-user").hidden = true;
+  $("#sign-out").hidden = true;
+  $("header .chips").hidden = true;
+  $("header .library-details").hidden = true;
+  $("#main").innerHTML = `<section class="auth-screen card active" aria-labelledby="login-title">
+    <h2 id="login-title">Sign in to Musiclib</h2>
+    <p>Use the account created by your Musiclib administrator.</p>
+    <form id="login-form">
+      <label>Username<input id="login-username" type="text" autocomplete="username" maxlength="64" required></label>
+      <label>Password<input id="login-password" type="password" autocomplete="current-password" maxlength="128" required></label>
+      <button class="action" id="login-submit" type="submit">Sign in</button>
+      <p class="auth-error" id="login-error" role="alert"></p>
+    </form>
+    <p class="hint">For the first account, run <code>musiclib create-admin</code> from the Musiclib server or NAS terminal.</p>
+  </section>`;
+  $("#login-form").onsubmit = async event => {
+    event.preventDefault();
+    const button = $("#login-submit");
+    const error = $("#login-error");
+    button.disabled = true;
+    error.textContent = "";
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST", credentials: "same-origin",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          username: $("#login-username").value,
+          password: $("#login-password").value,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Could not sign in.");
+      authState.user = result.user;
+      authState.csrfToken = result.csrf_token;
+      await initializeDashboard();
+    } catch (failure) {
+      error.textContent = failure.message;
+      $("#login-password").value = "";
+      $("#login-password").focus();
+    } finally { button.disabled = false; }
+  };
+}
+async function initializeDashboard() {
+  $("#nav").hidden = false;
+  $("#activity").hidden = authState.user.role !== "admin";
+  $("#main").hidden = false;
+  $("#player-home").hidden = false;
+  $("header .chips").hidden = false;
+  $("header .library-details").hidden = false;
+  $("#signed-in-user").textContent = authState.user.username;
+  $("#signed-in-user").hidden = false;
+  $("#sign-out").hidden = false;
+  $("#sign-out").onclick = async () => {
+    try { await post("/api/auth/logout", {}); }
+    catch (error) { toast(error.message, true); return; }
+    clearTimeout(activityTimer);
+    showLogin();
+    $("#login-username").focus();
+  };
+  if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
+  loadBrowsing();
+  if (!visibleTabs().some(([id]) => id === state.tab)) {
+    state.tab = authState.user.role === "admin" ? "overview" : "player";
+  }
+  if (!dashboardEventsBound) {
+    dashboardEventsBound = true;
+    let scrollTimer;
+    window.addEventListener("scroll", () => {
+      if (state.rendering || state.restoringScroll) return;
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => { captureBrowsingPosition(); saveBrowsing(); }, 250);
+    }, {passive: true});
+    window.addEventListener("pagehide", () => {
+      clearTimeout(scrollTimer); captureBrowsingPosition(); saveBrowsing();
+    });
+    for (const event of ["wheel", "touchstart", "pointerdown", "keydown"]) {
+      window.addEventListener(event, () => { state.cancelScrollRestore = true; }, {passive: true});
+    }
+    $("#activity-details").ontoggle = () => { if ($("#activity-details").open) refreshActivity(); };
+    new MutationObserver(() => applyJobLocks($("#main"))).observe($("#main"), {childList: true, subtree: true});
+  }
+  if (authState.user.role === "admin") await refreshActivity();
+  await render();
+  if (authState.user.role === "admin") watchActivity();
 }
 async function startDashboard() {
   updateThemeToggle();
   $("#theme-toggle").onclick = toggleTheme;
-  if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
-  loadBrowsing();
-  let scrollTimer;
-  window.addEventListener("scroll", () => {
-    if (state.rendering || state.restoringScroll) return;
-    clearTimeout(scrollTimer);
-    scrollTimer = setTimeout(() => { captureBrowsingPosition(); saveBrowsing(); }, 250);
-  }, {passive: true});
-  window.addEventListener("pagehide", () => {
-    clearTimeout(scrollTimer); captureBrowsingPosition(); saveBrowsing();
-  });
-  for (const event of ["wheel", "touchstart", "pointerdown", "keydown"]) {
-    window.addEventListener(event, () => { state.cancelScrollRestore = true; }, {passive: true});
+  try {
+    const response = await fetch("/api/auth/session", {credentials: "same-origin"});
+    const session = await response.json();
+    if (response.ok && session.authenticated) {
+      authState.user = session.user;
+      authState.csrfToken = session.csrf_token;
+      await initializeDashboard();
+      return;
+    }
+  } catch (error) {
+    console.error("Musiclib could not check the sign-in session.", error);
   }
-  $("#activity-details").ontoggle = () => { if ($("#activity-details").open) refreshActivity(); };
-  new MutationObserver(() => applyJobLocks($("#main"))).observe($("#main"), {childList: true, subtree: true});
-  await refreshActivity();
-  await render();
-  watchActivity();
+  showLogin();
 }
 startDashboard();
 </script>

@@ -130,6 +130,7 @@ def lib_env(tmp_path, monkeypatch):
     library = tmp_path / "Music"
     library.mkdir()
     config = Config.create(str(library), path=tmp_path / "config.toml")
+    config.auth_required = False
     db = Database(config.db_path)
     env = types.SimpleNamespace(config=config, db=db, library=library, tmp=tmp_path)
     yield env

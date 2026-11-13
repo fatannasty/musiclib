@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
@@ -106,8 +107,28 @@ CREATE TABLE IF NOT EXISTS downloads (
     completed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_admin
+    ON users(role) WHERE role='admin';
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    csrf_hash TEXT NOT NULL,
+    expires_at REAL NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+
 CREATE TABLE IF NOT EXISTS playlists (
     id INTEGER PRIMARY KEY,
+    owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -163,6 +184,16 @@ class Database:
         for column in ("track_signature", "release_signature"):
             if column not in album_columns:
                 self._conn.execute(f"ALTER TABLE albums ADD COLUMN {column} TEXT")
+        playlist_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(playlists)")
+        }
+        if "owner_id" not in playlist_columns:
+            self._conn.execute(
+                "ALTER TABLE playlists ADD COLUMN owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE"
+            )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_playlists_owner ON playlists(owner_id)"
+        )
         self._conn.commit()
 
     def close(self) -> None:
@@ -272,40 +303,144 @@ class Database:
             )
         ]
 
-    def playlists(self) -> List[Dict[str, Any]]:
+    def create_user(self, username: str, password_hash: str, role: str = "user") -> int:
+        if role not in ("admin", "user"):
+            raise ValueError("Invalid user role.")
+        now = utcnow()
+        with self._lock, self._conn:
+            count = self._conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+            if role == "admin" and count:
+                raise ValueError("An administrator already exists.")
+            if role == "user" and not count:
+                raise ValueError("Create the first administrator before adding users.")
+            cursor = self._conn.execute(
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
+                (username, password_hash, role, now),
+            )
+            user_id = cursor.lastrowid
+            if role == "admin":
+                self._conn.execute(
+                    "UPDATE playlists SET owner_id=? WHERE owner_id IS NULL", (user_id,)
+                )
+            if user_id is None:
+                raise sqlite3.DatabaseError("User creation did not return an ID.")
+            return user_id
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        row = self.query_one("SELECT * FROM users WHERE username=?", (username,))
+        return dict(row) if row else None
+
+    def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        row = self.query_one(
+            "SELECT id, username, role, active, created_at FROM users WHERE id=?",
+            (user_id,),
+        )
+        return dict(row) if row else None
+
+    def users(self) -> List[Dict[str, Any]]:
+        return [
+            dict(row) for row in self.query(
+                "SELECT id, username, role, active, created_at FROM users ORDER BY id"
+            )
+        ]
+
+    def user_count(self) -> int:
+        return int(self.query_one("SELECT COUNT(*) AS n FROM users")["n"])
+
+    def create_auth_session(
+        self, session_hash: str, user_id: int, csrf_hash: str, expires_at: float,
+    ) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM auth_sessions WHERE expires_at<=?", (time.time(),))
+            self._conn.execute(
+                "INSERT INTO auth_sessions (token_hash, user_id, csrf_hash, expires_at, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (session_hash, user_id, csrf_hash, expires_at, utcnow()),
+            )
+
+    def get_auth_session(self, session_hash: str) -> Optional[Dict[str, Any]]:
+        row = self.query_one(
+            "SELECT s.token_hash, s.csrf_hash, s.expires_at, u.id, u.username, u.role "
+            "FROM auth_sessions s JOIN users u ON u.id=s.user_id "
+            "WHERE s.token_hash=? AND s.expires_at>? AND u.active=1",
+            (session_hash, time.time()),
+        )
+        return dict(row) if row else None
+
+    def delete_auth_session(self, session_hash: str) -> None:
+        self.execute("DELETE FROM auth_sessions WHERE token_hash=?", (session_hash,))
+
+    def delete_user_sessions(self, user_id: int, except_hash: Optional[str] = None) -> None:
+        if except_hash is None:
+            self.execute("DELETE FROM auth_sessions WHERE user_id=?", (user_id,))
+        else:
+            self.execute(
+                "DELETE FROM auth_sessions WHERE user_id=? AND token_hash!=?",
+                (user_id, except_hash),
+            )
+
+    def update_user_password(self, user_id: int, password_hash: str) -> None:
+        self.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id))
+
+    def delete_user(self, user_id: int) -> bool:
+        with self._lock, self._conn:
+            row = self._conn.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone()
+            if row is None or row["role"] == "admin":
+                return False
+            cursor = self._conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+            return cursor.rowcount > 0
+
+    def playlists(self, owner_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        where = "" if owner_id is None else "WHERE p.owner_id=?"
+        params = () if owner_id is None else (owner_id,)
         return [
             dict(row) for row in self.query(
                 "SELECT p.id, p.name, p.created_at, p.updated_at, COUNT(pt.id) AS track_count "
                 "FROM playlists p LEFT JOIN playlist_tracks pt ON pt.playlist_id=p.id "
-                "GROUP BY p.id ORDER BY p.name COLLATE NOCASE, p.id"
+                f"{where} GROUP BY p.id ORDER BY p.name COLLATE NOCASE, p.id",
+                params,
             )
         ]
 
-    def create_playlist(self, name: str) -> int:
+    def create_playlist(self, name: str, owner_id: Optional[int] = None) -> int:
         now = utcnow()
         cursor = self.execute(
-            "INSERT INTO playlists (name, created_at, updated_at) VALUES (?,?,?)",
-            (name, now, now),
+            "INSERT INTO playlists (owner_id, name, created_at, updated_at) VALUES (?,?,?,?)",
+            (owner_id, name, now, now),
         )
         if cursor.lastrowid is None:
             raise sqlite3.DatabaseError("Playlist creation did not return an ID.")
         return cursor.lastrowid
 
-    def rename_playlist(self, playlist_id: int, name: str) -> bool:
+    def rename_playlist(
+        self, playlist_id: int, name: str, owner_id: Optional[int] = None,
+    ) -> bool:
+        owner_filter = "" if owner_id is None else " AND owner_id=?"
+        params = (name, utcnow(), playlist_id) if owner_id is None else (
+            name, utcnow(), playlist_id, owner_id
+        )
         cursor = self.execute(
-            "UPDATE playlists SET name=?, updated_at=? WHERE id=?",
-            (name, utcnow(), playlist_id),
+            f"UPDATE playlists SET name=?, updated_at=? WHERE id=?{owner_filter}",
+            params,
         )
         return cursor.rowcount > 0
 
-    def delete_playlist(self, playlist_id: int) -> bool:
-        cursor = self.execute("DELETE FROM playlists WHERE id=?", (playlist_id,))
+    def delete_playlist(self, playlist_id: int, owner_id: Optional[int] = None) -> bool:
+        owner_filter = "" if owner_id is None else " AND owner_id=?"
+        params = (playlist_id,) if owner_id is None else (playlist_id, owner_id)
+        cursor = self.execute(
+            f"DELETE FROM playlists WHERE id=?{owner_filter}", params
+        )
         return cursor.rowcount > 0
 
-    def playlist(self, playlist_id: int) -> Optional[Dict[str, Any]]:
+    def playlist(
+        self, playlist_id: int, owner_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        owner_filter = "" if owner_id is None else " AND owner_id=?"
+        params = (playlist_id,) if owner_id is None else (playlist_id, owner_id)
         row = self.query_one(
-            "SELECT id, name, created_at, updated_at FROM playlists WHERE id=?",
-            (playlist_id,),
+            f"SELECT id, name, created_at, updated_at FROM playlists WHERE id=?{owner_filter}",
+            params,
         )
         if row is None:
             return None
@@ -319,10 +454,14 @@ class Database:
         )
         return {**dict(row), "tracks": [dict(track) for track in tracks]}
 
-    def append_playlist_tracks(self, playlist_id: int, track_ids: Sequence[int]) -> bool:
+    def append_playlist_tracks(
+        self, playlist_id: int, track_ids: Sequence[int], owner_id: Optional[int] = None,
+    ) -> bool:
         with self._lock, self._conn:
+            owner_filter = "" if owner_id is None else " AND owner_id=?"
+            params = (playlist_id,) if owner_id is None else (playlist_id, owner_id)
             playlist = self._conn.execute(
-                "SELECT id FROM playlists WHERE id=?", (playlist_id,)
+                f"SELECT id FROM playlists WHERE id=?{owner_filter}", params
             ).fetchone()
             if playlist is None:
                 return False
@@ -346,11 +485,16 @@ class Database:
             )
             return True
 
-    def remove_playlist_track(self, playlist_id: int, entry_id: int) -> bool:
+    def remove_playlist_track(
+        self, playlist_id: int, entry_id: int, owner_id: Optional[int] = None,
+    ) -> bool:
         with self._lock, self._conn:
+            owner_filter = "" if owner_id is None else " AND owner_id=?"
+            owner_params = (playlist_id,) if owner_id is None else (playlist_id, owner_id)
             cursor = self._conn.execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id=? AND id=?",
-                (playlist_id, entry_id),
+                "DELETE FROM playlist_tracks WHERE playlist_id=? AND id=? "
+                f"AND playlist_id IN (SELECT id FROM playlists WHERE id=?{owner_filter})",
+                (playlist_id, entry_id, *owner_params),
             )
             if not cursor.rowcount:
                 return False
@@ -367,10 +511,15 @@ class Database:
             )
             return True
 
-    def reorder_playlist_tracks(self, playlist_id: int, entry_ids: Sequence[int]) -> bool:
+    def reorder_playlist_tracks(
+        self, playlist_id: int, entry_ids: Sequence[int],
+        owner_id: Optional[int] = None,
+    ) -> bool:
         with self._lock, self._conn:
+            owner_filter = "" if owner_id is None else " AND owner_id=?"
+            params = (playlist_id,) if owner_id is None else (playlist_id, owner_id)
             playlist = self._conn.execute(
-                "SELECT id FROM playlists WHERE id=?", (playlist_id,)
+                f"SELECT id FROM playlists WHERE id=?{owner_filter}", params
             ).fetchone()
             if playlist is None:
                 return False
