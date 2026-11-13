@@ -57,7 +57,7 @@ Set `organize.root_singles = false` in the config to disable this rule.
 The dashboard opens with a bright, light appearance. Use **Dark mode** in the
 header to switch themes; your choice is saved in this browser, not on the server.
 If browser storage is blocked, the switch still works for the current page and
-an unsaved-preference notice appears. The header keeps four collection totals
+an unsaved-preference notice appears. In **Administration**, the header keeps four collection totals
 visible; expand **More library details** for duplicate, issue, and album counts.
 Short entrance and hover animations provide feedback without looping decoration.
 The dashboard respects your device's reduced-motion setting, including review scrolling.
@@ -136,13 +136,38 @@ retain their original result format.
 
 ## Listen to tracks
 
-Use **Play** in Library track lists, album pages, Duplicates, or Bad Files to
+Everyone signs in to a listening-first workspace. In **Listen**, search by song, artist, album artist, or
+album name; each word can match a different music field. Search updates after a
+short typing pause, and **Search** or Enter runs it immediately. Switch between
+**Albums** and **Songs**, sort by artist/title/recently added, and choose 25, 50,
+or 100 items per page. Searches do not match server file paths. Damaged/deleted
+catalog tracks are excluded from listening results.
+
+Open an album to play it in disc/track order, **Shuffle album**, or add it to the
+queue. **Back to music** restores the result page and focus without stopping
+audio. Songs results offer **Play**, **Play next**, and **Add to playlist**.
+Playing from a song continues through that result page; **Play this page** and
+**Shuffle this page** use only the displayed songs, not the whole library.
+The current track is highlighted. Search and paging choices remain while
+switching listening tabs in the same page session; playback is not restored on reload.
+
+Accounts created by the administrator are **listeners**. They can browse/search,
+listen, manage their own playlists, and change their password. They cannot use
+library tools, view jobs/settings/server paths, manage other accounts, or open
+API documentation. These restrictions are enforced by the server, not just
+hidden navigation. The administrator alone sees **Administration** in the header;
+choose it for Library, file-management tools, account creation, and server settings.
+**Back to listening** hides these tools without interrupting playback. To create
+the initial administrator, run `musiclib create-admin --config /data/config.toml`
+inside the NAS container; existing administrators do not need to recreate accounts.
+
+In Administration, use **Play** in Library track lists, album pages, Duplicates, or Bad Files to
 audition a file before editing or removing it. The player stays open while you
 switch tabs. It shows the source format, bitrate, sample rate, bit depth, and
 channel count when those are available. Playlist tracks can be added from Library
 or album pages. The **Playlists** page saves playlists in the Musiclib database,
-supports track ordering and removal, and shows the scanned format inventory and
-whether FFmpeg compatibility conversion is available. The player queue provides
+supports track ordering and removal. Administrators can also inspect the scanned
+format inventory and FFmpeg readiness in Administration. The player queue provides
 previous/next, shuffle, repeat-one/repeat-all, and direct queue selection.
 Playback never edits the source file.
 

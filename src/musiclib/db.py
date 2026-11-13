@@ -11,6 +11,19 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 from .models import Album, Issue, Track
 
+
+def music_search_clause(query: str) -> tuple[str, List[str]]:
+    clauses, params = [], []
+    for word in query.split():
+        pattern = "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        clauses.append("(" + " OR ".join(
+            f"{column} LIKE ? ESCAPE '\\' COLLATE NOCASE"
+            for column in ("title", "artist", "album_artist", "album")
+        ) + ")")
+        params.extend([pattern] * 4)
+    return (" AND " + " AND ".join(clauses) if clauses else ""), params
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracks (
     id INTEGER PRIMARY KEY,
@@ -550,12 +563,13 @@ class Database:
     def album_groups_page(
         self, query: str = "", status: str = "", genre: str = "", format: str = "",
         offset: int = 0, limit: int = 48, initial: str = "",
+        listening: bool = False, sort: str = "artist",
     ) -> Dict[str, Any]:
         artist_expr = (
             "COALESCE(NULLIF(TRIM(album_artist), ''), NULLIF(TRIM(artist), ''), 'Unknown Artist')"
         )
         album_expr = "COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')"
-        where = "status IN ('ok', 'suspect', 'bad')"
+        where = "status IN ('ok', 'suspect')" if listening else "status IN ('ok', 'suspect', 'bad')"
         params: List[Any] = []
         if status in ("ok", "suspect", "bad"):
             where += " AND status=?"
@@ -569,7 +583,11 @@ class Database:
         elif initial:
             where += f" AND UPPER(SUBSTR({artist_expr}, 1, 1)) = ?"
             params.append(initial)
-        if query:
+        if listening:
+            clause, search_params = music_search_clause(query)
+            where += clause
+            params.extend(search_params)
+        elif query:
             pattern = f"%{query}%"
             where += (
                 " AND (path LIKE ? COLLATE NOCASE OR artist LIKE ? COLLATE NOCASE "
@@ -579,7 +597,7 @@ class Database:
             params.extend([pattern] * 5)
         grouped = (
             f"SELECT {artist_expr} AS album_artist, {album_expr} AS album, "
-            "MAX(year) AS year, MAX(genre) AS genre, COUNT(*) AS track_count, "
+            "MAX(year) AS year, MAX(genre) AS genre, COUNT(*) AS track_count, MAX(id) AS latest_id, "
             "SUM(CASE WHEN status='bad' THEN 1 ELSE 0 END) AS bad_count, "
             "SUM(CASE WHEN has_embedded_art=1 THEN 1 ELSE 0 END) AS art_count, "
             "MAX(mbid_release) AS mbid_release, "
@@ -587,10 +605,15 @@ class Database:
             f"FROM tracks WHERE {where} GROUP BY 1, 2"
         )
         total = self.query_one(f"SELECT COUNT(*) AS n FROM ({grouped})", params)["n"]
+        ordering = {
+            "artist": "g.album_artist COLLATE NOCASE, g.album COLLATE NOCASE",
+            "title": "g.album COLLATE NOCASE, g.album_artist COLLATE NOCASE",
+            "recent": "g.latest_id DESC",
+        }[sort]
         rows = self.query(
             "SELECT g.*, cover.id AS cover_track_id, cover.file_hash AS cover_hash FROM (" + grouped + ") AS g "
             "LEFT JOIN tracks AS cover ON cover.path=g.cover_path "
-            "ORDER BY g.album_artist COLLATE NOCASE, g.album COLLATE NOCASE, g.album_artist, g.album "
+            f"ORDER BY {ordering}, g.album_artist, g.album "
             "LIMIT ? OFFSET ?",
             params + [limit, offset],
         )
@@ -598,6 +621,7 @@ class Database:
 
     def album_tracks(
         self, album_artist: str, album: str, status: str = "",
+        listening: bool = False,
     ) -> List[sqlite3.Row]:
         artist_expr = (
             "COALESCE(NULLIF(TRIM(album_artist), ''), NULLIF(TRIM(artist), ''), 'Unknown Artist')"
@@ -607,15 +631,35 @@ class Database:
             f"status IN ('ok', 'suspect', 'bad') AND {artist_expr}=? AND {album_expr}=?"
         )
         params: List[Any] = [album_artist, album]
+        if listening:
+            where += " AND status IN ('ok', 'suspect')"
         if status in ("ok", "suspect", "bad"):
             where += " AND status=?"
             params.append(status)
         return self.query(
             "SELECT id, path, artist, album_artist, album, title, genre, format, "
-            "bitrate, year, track_no, disc_no, status, mbid_release, has_embedded_art, file_hash "
+            "bitrate, duration, year, track_no, disc_no, status, mbid_release, has_embedded_art, file_hash "
             f"FROM tracks WHERE {where} ORDER BY disc_no, track_no, path",
             params,
         )
+
+    def listening_tracks_page(
+        self, query: str = "", offset: int = 0, limit: int = 25, sort: str = "artist",
+    ) -> Dict[str, Any]:
+        clause, params = music_search_clause(query)
+        where = "status IN ('ok', 'suspect')" + clause
+        ordering = {
+            "artist": "artist COLLATE NOCASE, album COLLATE NOCASE, disc_no, track_no",
+            "title": "title COLLATE NOCASE, artist COLLATE NOCASE",
+            "recent": "id DESC",
+        }[sort]
+        total = self.query_one(f"SELECT COUNT(*) AS n FROM tracks WHERE {where}", params)["n"]
+        rows = self.query(
+            "SELECT id, title, artist, album_artist, album, duration, genre, format, disc_no, track_no "
+            f"FROM tracks WHERE {where} ORDER BY {ordering}, id LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        return {"items": [dict(row) for row in rows], "total": total, "offset": offset}
 
     def all_tracks(self, status: Optional[str] = None) -> List[Track]:
         if status:
