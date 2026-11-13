@@ -94,6 +94,18 @@ class TrackSearchBody(BaseModel):
     initial: str = ""
 
 
+class PlaylistBody(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class PlaylistTracksBody(BaseModel):
+    track_ids: List[int] = Field(min_length=1, max_length=200)
+
+
+class PlaylistOrderBody(BaseModel):
+    entry_ids: List[int] = Field(max_length=10000)
+
+
 class RestoreBody(BaseModel):
     deletion_id: int
 
@@ -268,6 +280,73 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/tracks/{track_id}/playback")
     def playback_info(track_id: int) -> Dict[str, Any]:
         return playback.info(track_id)
+
+    @app.get("/api/playback/formats")
+    def playback_formats() -> Dict[str, Any]:
+        return playback.format_inventory()
+
+    @app.get("/api/playlists")
+    def playlists() -> List[Dict[str, Any]]:
+        return db.playlists()
+
+    @app.post("/api/playlists")
+    def playlist_create(body: PlaylistBody) -> Dict[str, Any]:
+        name = body.name.strip()
+        if not name or len(name) > 80:
+            raise HTTPException(422, "Playlist names must contain 1 to 80 non-space characters.")
+        playlist_id = db.create_playlist(name)
+        return db.playlist(playlist_id)
+
+    @app.get("/api/playlists/{playlist_id}")
+    def playlist_detail(playlist_id: int) -> Dict[str, Any]:
+        playlist = db.playlist(playlist_id)
+        if playlist is None:
+            raise HTTPException(404, "Playlist not found.")
+        return playlist
+
+    @app.patch("/api/playlists/{playlist_id}")
+    def playlist_rename(playlist_id: int, body: PlaylistBody) -> Dict[str, Any]:
+        name = body.name.strip()
+        if not name or len(name) > 80:
+            raise HTTPException(422, "Playlist names must contain 1 to 80 non-space characters.")
+        if not db.rename_playlist(playlist_id, name):
+            raise HTTPException(404, "Playlist not found.")
+        return db.playlist(playlist_id)
+
+    @app.delete("/api/playlists/{playlist_id}")
+    def playlist_delete(playlist_id: int) -> Dict[str, bool]:
+        if not db.delete_playlist(playlist_id):
+            raise HTTPException(404, "Playlist not found.")
+        return {"deleted": True}
+
+    @app.post("/api/playlists/{playlist_id}/tracks")
+    def playlist_add_tracks(
+        playlist_id: int, body: PlaylistTracksBody,
+    ) -> Dict[str, Any]:
+        if len(set(body.track_ids)) != len(body.track_ids):
+            raise HTTPException(422, "Choose each track only once per add operation.")
+        for track_id in body.track_ids:
+            playback.source(track_id)
+        if not db.append_playlist_tracks(playlist_id, body.track_ids):
+            raise HTTPException(404, "Playlist not found.")
+        return db.playlist(playlist_id)
+
+    @app.delete("/api/playlists/{playlist_id}/tracks/{entry_id}")
+    def playlist_remove_track(playlist_id: int, entry_id: int) -> Dict[str, Any]:
+        if not db.remove_playlist_track(playlist_id, entry_id):
+            raise HTTPException(404, "Playlist item not found.")
+        return db.playlist(playlist_id)
+
+    @app.put("/api/playlists/{playlist_id}/tracks/order")
+    def playlist_reorder_tracks(
+        playlist_id: int, body: PlaylistOrderBody,
+    ) -> Dict[str, Any]:
+        try:
+            if not db.reorder_playlist_tracks(playlist_id, body.entry_ids):
+                raise HTTPException(404, "Playlist not found.")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return db.playlist(playlist_id)
 
     @app.get("/api/tracks/{track_id}/audio")
     async def track_audio(

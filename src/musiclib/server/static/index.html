@@ -226,6 +226,22 @@ details > summary { cursor: pointer; color: var(--dim); padding: 6px 0; }
 .library-index button.action.ghost[aria-pressed=true], .pager-pages button.action.ghost[aria-current=page] {
   background: var(--accent); color: var(--on-accent); border-color: var(--accent);
 }
+.playlist-layout { display: grid; grid-template-columns: minmax(210px, .7fr) minmax(0, 2fr); gap: 18px; align-items: start; }
+.playlist-list, .playlist-detail, .playlist-form, .format-inventory { min-width: 0; }
+.playlist-list { display: grid; gap: 6px; }
+.playlist-choice { display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left; }
+.playlist-choice[aria-current=true] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.playlist-track { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.playlist-track:last-child { border-bottom: 0; }
+.playlist-track-title { min-width: 0; overflow-wrap: anywhere; }
+.playlist-track-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 5px; }
+.playlist-track-actions .action { padding: 6px 9px; }
+.playlist-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.playlist-controls label { display: grid; gap: 4px; color: var(--dim); font-size: 12px; }
+.format-inventory { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px 18px; }
+.format-inventory > div { display: flex; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.playlist-picker { width: min(460px, calc(100vw - 24px)); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; color: var(--text); background: var(--panel); }
+.playlist-picker::backdrop { background: rgba(22, 16, 38, .62); }
 .pager { flex-wrap: wrap; }
 .pager-pages { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .table-scroll { overflow-x: auto; margin-bottom: 12px; }
@@ -320,6 +336,7 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .album-track-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .album-dialog .workspace { margin: 18px 0 0; }
 .album-dialog.album-dialog-playing .album-dialog-surface { padding-bottom: 280px; }
+.album-dialog.album-dialog-queue-open .album-dialog-surface { padding-bottom: 480px; }
 .album-dialog .player {
   position: fixed; bottom: 12px; left: 14px; right: 14px; z-index: 3;
   width: auto; max-width: 1060px; margin: 0 auto; flex: 0 0 auto;
@@ -340,10 +357,17 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .player .row { margin-bottom: 6px; }
 .player .now-playing { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .player audio { width: 100%; height: 40px; margin: 6px 0; }
+.player-transport { margin: 4px 0; }
+.player-queue { max-height: 180px; overflow-y: auto; margin: 4px 0 8px; padding-left: 26px; }
+.player-queue li { margin: 4px 0; }
+.player-queue button { width: 100%; text-align: left; }
+.player-queue button[aria-current=true] { border-color: var(--accent); color: var(--accent); }
 .player .seek { display: flex; align-items: center; gap: 12px; }
 .player input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
 body.player-open { padding-bottom: 250px; }
 body.player-open #toast { bottom: 260px; }
+body.player-queue-open { padding-bottom: 460px; }
+body.player-queue-open #toast { bottom: 470px; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes album-flip-in {
   0% { opacity: 0; transform: perspective(1200px) rotateY(-72deg) scale(.78) translateY(24px); }
@@ -379,6 +403,9 @@ body.player-open #toast { bottom: 260px; }
   .library-index { position: static; display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 4px; margin: 0 0 12px; padding-bottom: 4px; }
   .library-index-title { flex: 0 0 auto; align-self: center; margin-right: 4px; white-space: nowrap; }
   .library-index button { flex: 0 0 auto; }
+  .playlist-layout { grid-template-columns: minmax(0, 1fr); }
+  .playlist-track { grid-template-columns: minmax(0, 1fr); }
+  .playlist-track-actions { justify-content: start; }
   .widgets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .widget { padding: 14px; }
   .album-hero { grid-template-columns: 90px minmax(0, 1fr); gap: 12px; align-items: start; }
@@ -390,11 +417,14 @@ body.player-open #toast { bottom: 260px; }
   .album-track-actions { grid-column: 2; }
   .album-track-pick { grid-row: span 2; align-self: start; }
   .album-dialog .player { bottom: 8px; left: 8px; right: 8px; width: auto; padding: 10px; }
-  .album-dialog .player .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 10px; }
-  .album-dialog .player .now-playing { grid-column: 1; grid-row: 1; }
-  .album-dialog .player .row > button { grid-column: 2; grid-row: 1; }
-  .album-dialog .player .row > label { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-  .album-dialog .player select { min-width: 0; }
+  .player > .row:first-child { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 10px; }
+  .player .now-playing { grid-column: 1; grid-row: 1; }
+  .player > .row:first-child > button { grid-column: 2; grid-row: 1; }
+  .player > .row:first-child > label { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .player > .row:first-child select { min-width: 0; flex: 1; }
+  .player-transport { gap: 5px; }
+  .player-transport .action { padding: 7px 8px; font-size: 12px; }
+  .player-queue { max-height: 120px; }
   .metadata-field { grid-template-columns: 1fr; }
   .job-row { grid-template-columns: minmax(0, 1fr) auto; }
   .job-row progress { grid-column: 1 / -1; grid-row: 2; }
@@ -406,6 +436,8 @@ body.player-open #toast { bottom: 260px; }
   .workspace .card { padding: 11px; }
   body.player-open { padding-bottom: 330px; }
   body.player-open #toast { bottom: 340px; }
+  body.player-queue-open { padding-bottom: 530px; }
+  body.player-queue-open #toast { bottom: 540px; }
 }
 </style>
 </head>
@@ -435,26 +467,42 @@ body.player-open #toast { bottom: 260px; }
   </details>
 </aside>
 <main id="main"></main>
-<div id="player-home"><aside id="player" class="player" aria-label="Track quality player" hidden>
+<div id="player-home"><aside id="player" class="player" aria-label="Audio player" hidden>
   <div class="row">
-    <div class="now-playing"><strong id="player-title">Track player</strong><div id="player-quality" class="hint"></div></div>
+    <div class="now-playing"><strong id="player-title">Music player</strong><div id="player-quality" class="hint"></div></div>
     <label>Playback <select id="player-mode">
       <option value="original">Original file</option><option value="compatible">Compatibility MP3 (lossy)</option>
     </select></label>
     <button class="action ghost" id="player-close">Stop and close</button>
   </div>
   <audio id="player-audio" controls preload="none" aria-label="Audio playback"></audio>
+  <div class="row player-transport" role="group" aria-label="Playback queue controls">
+    <button class="action ghost" id="player-prev" aria-label="Previous track">Previous</button>
+    <button class="action ghost" id="player-next" aria-label="Next track">Next</button>
+    <button class="action ghost" id="player-shuffle" aria-pressed="false">Shuffle off</button>
+    <button class="action ghost" id="player-repeat" aria-pressed="false">Repeat off</button>
+    <button class="action ghost" id="player-queue-toggle" aria-expanded="false">Show queue</button>
+  </div>
+  <ol id="player-queue" class="player-queue" hidden></ol>
   <div class="seek"><label for="player-seek">Position</label>
     <input id="player-seek" type="range" min="0" max="1" step="1" value="0" disabled>
     <span id="player-time" class="hint">0:00</span>
   </div>
   <p id="player-status" class="hint" role="status" aria-live="polite"></p>
 </aside></div>
+<dialog id="playlist-picker" class="playlist-picker" aria-label="Add tracks to playlist">
+  <form id="playlist-picker-form">
+    <h2>Add to playlist</h2>
+    <label>Choose a playlist<select id="playlist-picker-select" required></select></label>
+    <div class="row"><button class="action" type="submit">Add tracks</button>
+      <button class="action ghost" type="button" id="playlist-picker-cancel">Cancel</button></div>
+  </form>
+</dialog>
 <div id="toast" role="status"></div>
 <script>
 const TABS = [
   ["overview", "Overview"], ["dupes", "Duplicates"], ["doctor", "Bad Files"],
-  ["library", "Library"], ["recovery", "Recovery"],
+  ["library", "Library"], ["playlists", "Playlists"], ["recovery", "Recovery"],
   ["organize", "Organize"], ["art", "Cover Art"], ["missing", "Missing Music"],
   ["usenet", "Usenet"], ["settings", "Settings"],
 ];
@@ -463,6 +511,7 @@ const pageDescriptions = {
   dupes: "Compare copies and keep the version you want.",
   doctor: "Review audio issues before removing files.",
   library: "Browse, listen and make reviewed changes to your music.",
+  playlists: "Create playlists, manage playback order, and inspect format readiness.",
   recovery: "Review and restore files from the musiclib trash.",
   organize: "Preview a cleaner folder structure before moving files.",
   art: "Find missing artwork for your albums.",
@@ -740,7 +789,11 @@ async function api(path, opts) {
 async function post(path, body) {
   return api(path, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {}) });
 }
-const playback = { track: null, request: 0, source: 0, offset: 0, mode: "original", dragging: false, controller: null };
+const playback = {
+  track: null, request: 0, source: 0, offset: 0, mode: "original", dragging: false,
+  controller: null, queue: [], originalQueue: [], queueIndex: -1, shuffle: false, repeat: "off",
+};
+let queueKey = 0;
 const playButton = (id, name) => `<button class="action ghost" data-play-track="${id}" aria-label="Play ${esc(name || "track")}">Play</button>`;
 function albumTrackListMarkup(detail) {
   return `<ol class="album-track-list">${detail.tracks.map(track =>
@@ -749,6 +802,7 @@ function albumTrackListMarkup(detail) {
         <strong>${esc(track.title || "Untitled track")}</strong>
         <span class="album-track-sub">${esc(track.artist || detail.album_artist)} · ${esc(track.status || "healthy")}</span></div>
       <div class="album-track-actions">${playButton(track.id, track.title || track.path)}
+        <button type="button" class="action ghost" data-add-playlist-track="${track.id}">Add to playlist</button>
         <button type="button" class="action ghost" data-edit-track="${track.id}">Edit track</button></div>
     </li>`
   ).join("")}</ol>`;
@@ -817,7 +871,28 @@ async function setPlaybackSource(mode, position = 0, autoplay = true) {
     }
   }
 }
-async function playTrack(id) {
+function renderPlaybackQueue() {
+  const queue = $("#player-queue");
+  queue.innerHTML = playback.queue.map((track, index) =>
+    `<li><button type="button" class="action ghost${index === playback.queueIndex ? " active" : ""}"
+      data-player-queue-index="${index}" ${index === playback.queueIndex ? 'aria-current="true"' : ""}>
+      ${esc([track.artist, track.title || `Track ${track.id}`].filter(Boolean).join(" — "))}</button></li>`
+  ).join("");
+  queue.querySelectorAll("[data-player-queue-index]").forEach(button => {
+    button.onclick = () => playQueueIndex(Number(button.dataset.playerQueueIndex));
+  });
+  $("#player-prev").disabled = playback.queue.length < 2;
+  $("#player-next").disabled = playback.queue.length < 2;
+}
+function setPlaybackQueueOpen(open) {
+  const queue = $("#player-queue");
+  queue.hidden = !open;
+  document.body.classList.toggle("player-queue-open", open);
+  $("#library-album-page")?.classList.toggle("album-dialog-queue-open", open);
+  $("#player-queue-toggle").textContent = open ? "Hide queue" : "Show queue";
+  $("#player-queue-toggle").setAttribute("aria-expanded", String(open));
+}
+async function loadPlaybackTrack(id) {
   const request = ++playback.request;
   playback.source++;
   playback.controller?.abort();
@@ -827,7 +902,7 @@ async function playTrack(id) {
   playback.dragging = false;
   $("#player").hidden = false;
   const albumDialog = $("#library-album-page");
-  if (albumDialog.open) albumDialog.classList.add("album-dialog-playing");
+  if (albumDialog?.open) albumDialog.classList.add("album-dialog-playing");
   document.body.classList.add("player-open");
   $("#player-title").textContent = "Loading track...";
   $("#player-quality").textContent = "";
@@ -839,6 +914,14 @@ async function playTrack(id) {
     const track = await api(`/api/tracks/${id}/playback`, {signal: playback.controller.signal});
     if (request !== playback.request) return;
     playback.track = track;
+    if (playback.queue[playback.queueIndex]?.id === track.id) {
+      playback.queue[playback.queueIndex] = {...playback.queue[playback.queueIndex], ...track};
+      const originalIndex = playback.originalQueue.findIndex(
+        item => item._queueKey === playback.queue[playback.queueIndex]._queueKey,
+      );
+      if (originalIndex >= 0) playback.originalQueue[originalIndex] = {...playback.originalQueue[originalIndex], ...track};
+      renderPlaybackQueue();
+    }
     $("#player-title").textContent = [track.artist, track.title].filter(Boolean).join(" - ");
     $("#player-quality").textContent = [
       track.format?.toUpperCase(), track.bitrate && `${track.bitrate} kbps`,
@@ -854,18 +937,100 @@ async function playTrack(id) {
     $("#player-status").textContent = error.message;
   }
 }
+function playTrack(id) {
+  playback.queue = [{id, _queueKey: ++queueKey}];
+  playback.originalQueue = playback.queue.map(track => ({...track}));
+  playback.queueIndex = 0;
+  playback.shuffle = false;
+  setPlaybackQueueOpen(false);
+  $("#player-shuffle").textContent = "Shuffle off";
+  $("#player-shuffle").setAttribute("aria-pressed", "false");
+  renderPlaybackQueue();
+  return loadPlaybackTrack(id);
+}
+function playQueue(tracks, index = 0) {
+  playback.queue = tracks.map(track => ({
+    ...(typeof track === "number" ? {id: track} : {...track}),
+    _queueKey: ++queueKey,
+  }));
+  playback.originalQueue = playback.queue.map(track => ({...track}));
+  playback.queueIndex = playback.queue.length ? Math.max(0, Math.min(index, playback.queue.length - 1)) : -1;
+  playback.shuffle = false;
+  setPlaybackQueueOpen(false);
+  $("#player-shuffle").textContent = "Shuffle off";
+  $("#player-shuffle").setAttribute("aria-pressed", "false");
+  renderPlaybackQueue();
+  if (!playback.queue.length) return;
+  return loadPlaybackTrack(playback.queue[playback.queueIndex].id);
+}
+function playQueueIndex(index) {
+  if (index < 0 || index >= playback.queue.length) return;
+  playback.queueIndex = index;
+  renderPlaybackQueue();
+  return loadPlaybackTrack(playback.queue[index].id);
+}
+function advancePlayback(direction = 1, ended = false) {
+  if (!playback.queue.length || playback.queueIndex < 0) return;
+  if (ended && playback.repeat === "one") {
+    return setPlaybackSource(playback.mode, 0, true);
+  }
+  let next = playback.queueIndex + direction;
+  if (next < 0 || next >= playback.queue.length) {
+    if (playback.repeat !== "all" || playback.queue.length < 2) return;
+    next = next < 0 ? playback.queue.length - 1 : 0;
+  }
+  return playQueueIndex(next);
+}
+function togglePlaybackShuffle() {
+  const current = playback.queue[playback.queueIndex];
+  if (playback.shuffle) {
+    playback.queue = playback.originalQueue.map(track => ({...track}));
+    playback.queueIndex = playback.queue.findIndex(track => track._queueKey === current?._queueKey);
+  } else if (current) {
+    const alreadyPlayed = new Set(playback.queue.slice(0, playback.queueIndex + 1).map(track => track._queueKey));
+    const played = playback.queue.slice(0, playback.queueIndex + 1);
+    const upcoming = playback.originalQueue.filter(track => !alreadyPlayed.has(track._queueKey)).map(track => ({...track}));
+    for (let index = upcoming.length - 1; index > 0; index--) {
+      const other = Math.floor(Math.random() * (index + 1));
+      [upcoming[index], upcoming[other]] = [upcoming[other], upcoming[index]];
+    }
+    playback.queue = [...played, ...upcoming];
+    playback.queueIndex = played.length - 1;
+  }
+  playback.shuffle = !playback.shuffle;
+  $("#player-shuffle").textContent = `Shuffle ${playback.shuffle ? "on" : "off"}`;
+  $("#player-shuffle").setAttribute("aria-pressed", String(playback.shuffle));
+  renderPlaybackQueue();
+}
+$("#player-prev").onclick = () => advancePlayback(-1);
+$("#player-next").onclick = () => advancePlayback(1);
+$("#player-shuffle").onclick = togglePlaybackShuffle;
+$("#player-repeat").onclick = () => {
+  playback.repeat = ({off: "all", all: "one", one: "off"})[playback.repeat];
+  $("#player-repeat").textContent = `Repeat ${playback.repeat}`;
+  $("#player-repeat").setAttribute("aria-pressed", String(playback.repeat !== "off"));
+};
+$("#player-queue-toggle").onclick = () => {
+  setPlaybackQueueOpen($("#player-queue").hidden);
+};
 $("#player-close").onclick = () => {
   playback.request++;
   playback.source++;
   playback.controller?.abort();
   playback.track = null;
+  playback.queue = [];
+  playback.originalQueue = [];
+  playback.queueIndex = -1;
+  renderPlaybackQueue();
+  setPlaybackQueueOpen(false);
   releaseAudio();
   $("#player").hidden = true;
   document.body.classList.remove("player-open");
-  $("#library-album-page").classList.remove("album-dialog-playing");
+  $("#library-album-page")?.classList.remove("album-dialog-playing");
 };
 $("#player-mode").onchange = () => setPlaybackSource($("#player-mode").value, playbackPosition(), !$("#player-audio").paused);
 $("#player-audio").ontimeupdate = updatePlaybackPosition;
+$("#player-audio").onended = () => advancePlayback(1, true);
 $("#player-seek").oninput = () => {
   playback.dragging = true;
   $("#player-time").textContent = playbackTime(Number($("#player-seek").value));
@@ -879,7 +1044,37 @@ $("#player-seek").onchange = () => {
 document.addEventListener("click", event => {
   const button = event.target.closest("[data-play-track]");
   if (button) playTrack(Number(button.dataset.playTrack));
+  const addButton = event.target.closest("[data-add-playlist-track]");
+  if (addButton) openPlaylistPicker([Number(addButton.dataset.addPlaylistTrack)]);
 });
+let pendingPlaylistTrackIds = [];
+async function openPlaylistPicker(trackIds) {
+  try {
+    const playlists = await api("/api/playlists");
+    if (!playlists.length) {
+      toast("Create a playlist first, then add tracks from the Library.", true);
+      state.tab = "playlists"; render();
+      return;
+    }
+    pendingPlaylistTrackIds = trackIds;
+    $("#playlist-picker-select").innerHTML = playlists.map(playlist =>
+      `<option value="${playlist.id}">${esc(playlist.name)}</option>`
+    ).join("");
+    $("#playlist-picker").showModal();
+  } catch (error) { toast(error.message, true); }
+}
+$("#playlist-picker-cancel").onclick = () => $("#playlist-picker").close();
+$("#playlist-picker-form").onsubmit = async event => {
+  event.preventDefault();
+  const playlistId = Number($("#playlist-picker-select").value);
+  try {
+    const playlist = await post(`/api/playlists/${playlistId}/tracks`, {track_ids: pendingPlaylistTrackIds});
+    $("#playlist-picker").close();
+    pendingPlaylistTrackIds = [];
+    toast(`Added ${playlist.tracks.length} ${playlist.tracks.length === 1 ? "track" : "tracks"} to ${playlist.name}.`);
+    if (state.tab === "playlists") render();
+  } catch (error) { toast(error.message, true); }
+};
 async function pollJob(id, label) {
   toast(`${label}: running...`);
   while (true) {
@@ -1659,6 +1854,132 @@ const views = {
     await showIssues();
   },
 
+  async playlists(el) {
+    el.innerHTML = `<form id="playlist-create-form" class="card playlist-controls">
+      <label>New playlist name<input id="playlist-name" type="text" maxlength="80" required placeholder="e.g. Evening listening"></label>
+      <button class="action" type="submit">Create playlist</button>
+    </form>
+    <div class="playlist-layout">
+      <section><h3>Your playlists</h3><div id="playlist-list" class="playlist-list"></div></section>
+      <section id="playlist-detail" class="playlist-detail"></section>
+    </div>
+    <section class="card"><h3>Playback format inventory</h3>
+      <p class="hint">Musiclib streams original files when your browser supports them. FFmpeg provides MP3 compatibility conversion for recognized formats.</p>
+      <div id="format-inventory" class="format-inventory"></div>
+    </section>`;
+
+    const renderPlaylist = async (playlistId, list) => {
+      state.playlistId = playlistId;
+      $("#playlist-list").innerHTML = list.length ? list.map(playlist =>
+        `<button type="button" class="action ghost playlist-choice" data-playlist-id="${playlist.id}"
+          aria-current="${playlist.id === playlistId}">
+          <span>${esc(playlist.name)}</span><span class="hint">${playlist.track_count}</span>
+        </button>`
+      ).join("") : `<p class="empty">No playlists yet. Create one to start building a listening queue.</p>`;
+      $("#playlist-list").querySelectorAll("[data-playlist-id]").forEach(button => {
+        button.onclick = () => renderPlaylist(Number(button.dataset.playlistId), list);
+      });
+      if (!playlistId) {
+        $("#playlist-detail").innerHTML = `<div class="empty">Choose a playlist or create one to get started.</div>`;
+        return;
+      }
+      const playlist = await api(`/api/playlists/${playlistId}`);
+      if (!el.isConnected || state.playlistId !== playlistId) return;
+      $("#playlist-detail").innerHTML = `<section class="card">
+        <form id="playlist-rename-form" class="playlist-controls">
+          <label>Playlist name<input id="playlist-rename" type="text" maxlength="80" required value="${esc(playlist.name)}"></label>
+          <button class="action ghost" type="submit">Rename</button>
+          <button class="action" type="button" id="playlist-play" ${playlist.tracks.length ? "" : "disabled"}>Play playlist</button>
+          <button class="action danger" type="button" id="playlist-delete">Delete playlist</button>
+        </form>
+        <p class="hint">${playlist.tracks.length} ${playlist.tracks.length === 1 ? "track" : "tracks"} · tracks play in the order shown</p>
+        <div>${playlist.tracks.length ? playlist.tracks.map((track, index) =>
+          `<div class="playlist-track">
+            <div class="playlist-track-title"><strong>${esc(track.title || "Untitled track")}</strong>
+              <div class="hint">${esc([track.artist, track.album].filter(Boolean).join(" · ") || track.path)} · ${esc(track.format || "unknown")} · ${esc(track.status)}</div></div>
+            <div class="playlist-track-actions">
+              <button type="button" class="action ghost" data-play-playlist-track="${index}" aria-label="Play ${esc(track.title || track.path)}">Play</button>
+              <button type="button" class="action ghost" data-move-playlist-track="${index}" data-direction="-1" aria-label="Move ${esc(track.title || track.path)} up" ${index === 0 ? "disabled" : ""}>Up</button>
+              <button type="button" class="action ghost" data-move-playlist-track="${index}" data-direction="1" aria-label="Move ${esc(track.title || track.path)} down" ${index === playlist.tracks.length - 1 ? "disabled" : ""}>Down</button>
+              <button type="button" class="action ghost" data-remove-playlist-track="${track.entry_id}" aria-label="Remove ${esc(track.title || track.path)}">Remove</button>
+            </div>
+          </div>`
+        ).join("") : `<p class="empty">This playlist is empty. Add tracks from Library or an album’s listening view.</p>`}</div>
+      </section>`;
+      $("#playlist-play").onclick = () => playQueue(playlist.tracks);
+      $("#playlist-rename-form").onsubmit = async event => {
+        event.preventDefault();
+        try {
+          await api(`/api/playlists/${playlistId}`, {
+            method: "PATCH", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({name: $("#playlist-rename").value}),
+          });
+          toast("Playlist renamed.");
+          await refresh();
+        } catch (error) { toast(error.message, true); }
+      };
+      $("#playlist-delete").onclick = async () => {
+        if (!confirm(`Delete playlist “${playlist.name}”? Your music files will not be changed.`)) return;
+        try {
+          await api(`/api/playlists/${playlistId}`, {method: "DELETE"});
+          state.playlistId = null;
+          toast("Playlist deleted.");
+          await refresh();
+        } catch (error) { toast(error.message, true); }
+      };
+      el.querySelectorAll("[data-play-playlist-track]").forEach(button => {
+        button.onclick = () => playQueue(playlist.tracks, Number(button.dataset.playPlaylistTrack));
+      });
+      el.querySelectorAll("[data-remove-playlist-track]").forEach(button => {
+        button.onclick = async () => {
+          try {
+            await api(`/api/playlists/${playlistId}/tracks/${button.dataset.removePlaylistTrack}`, {method: "DELETE"});
+            await refresh();
+          } catch (error) { toast(error.message, true); }
+        };
+      });
+      el.querySelectorAll("[data-move-playlist-track]").forEach(button => {
+        button.onclick = async () => {
+          const order = playlist.tracks.map(track => track.entry_id);
+          const index = Number(button.dataset.movePlaylistTrack);
+          const destination = index + Number(button.dataset.direction);
+          [order[index], order[destination]] = [order[destination], order[index]];
+          try {
+            await api(`/api/playlists/${playlistId}/tracks/order`, {
+              method: "PUT", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({entry_ids: order}),
+            });
+            await refresh();
+          } catch (error) { toast(error.message, true); }
+        };
+      });
+    };
+    const refresh = async (selectId = state.playlistId) => {
+      const [list, inventory] = await Promise.all([
+        api("/api/playlists"), api("/api/playback/formats"),
+      ]);
+      if (!el.isConnected) return;
+      const selectedId = list.some(item => item.id === selectId) ? selectId : (list[0]?.id || null);
+      await renderPlaylist(selectedId, list);
+      const formats = inventory.formats;
+      $("#format-inventory").innerHTML = formats.length ? formats.map(item =>
+        `<div><strong>${esc(item.format.toUpperCase())}</strong><span>${item.tracks} · ${item.compatibility_playback ?
+          "FFmpeg ready" : item.supported ? "Original only" : "Unsupported"}</span></div>`
+      ).join("") : `<p class="hint">No scanned audio formats yet.</p>`;
+      $("#format-inventory").dataset.ffmpeg = String(inventory.ffmpeg_available);
+    };
+    $("#playlist-create-form").onsubmit = async event => {
+      event.preventDefault();
+      try {
+        const playlist = await post("/api/playlists", {name: $("#playlist-name").value});
+        $("#playlist-name").value = "";
+        toast(`Created ${playlist.name}.`);
+        await refresh(playlist.id);
+      } catch (error) { toast(error.message, true); }
+    };
+    await refresh();
+  },
+
   async library(el) {
     el.innerHTML = `<div class="card library-controls">
       <div class="library-search-row">
@@ -1690,6 +2011,7 @@ const views = {
       <button class="action ghost" id="metadata-clear-selection">Clear selection</button>
       <span id="metadata-selection-count" role="status">0 tracks selected</span></div>
     <div class="row selection-actions" id="track-selection-actions" hidden>
+      <button class="action ghost" id="metadata-add-playlist">Add selected to playlist</button>
       <button class="action" id="metadata-merge-tracks" data-operation>Merge selected tracks into an album</button>
       <button class="action ghost" id="metadata-dupes" data-operation>Review selected duplicates</button>
       <details class="action-menu"><summary>Catalog lookup</summary><div class="menu-items">
@@ -1820,6 +2142,7 @@ const views = {
     $("#metadata-select-page").onclick = () => {
       pageTracks.forEach(track => selectTrack(track.id, true)); updateSelection();
     };
+    $("#metadata-add-playlist").onclick = () => openPlaylistPicker([...selectedTracks]);
     $("#metadata-clear-selection").onclick = () => { selectedTracks.clear(); updateSelection(); };
     const albumCover = (url, fallback="") => {
       if (!url) return `<div class="cover-ph" aria-hidden="true">♪</div>`;
@@ -2751,7 +3074,9 @@ const views = {
         t => `<tr><td><input type="checkbox" data-select-track="${t.id}" aria-label="Select ${esc(t.title || t.path)}"></td>
           <td>${esc(t.artist)}</td><td>${esc(t.album)}</td><td>${esc(t.title)}</td>
           <td>${esc(t.genre || "—")}</td><td>${esc(t.format || "—")}</td><td>${esc(t.status)}</td>
-          <td class="path">${esc(t.path)}</td><td>${playButton(t.id, t.title || t.path)} <button class="action ghost" data-lookup="${t.id}">Lookup</button></td></tr>`,
+          <td class="path">${esc(t.path)}</td><td>${playButton(t.id, t.title || t.path)}
+            <button class="action ghost" data-add-playlist-track="${t.id}">Add to playlist</button>
+            <button class="action ghost" data-lookup="${t.id}">Lookup</button></td></tr>`,
         tracks => {
           pageTracks = tracks;
           tracks.forEach(track => {

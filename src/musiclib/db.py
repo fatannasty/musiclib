@@ -105,6 +105,22 @@ CREATE TABLE IF NOT EXISTS downloads (
     requested_at TEXT NOT NULL,
     completed_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS playlists (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playlist_tracks (
+    id INTEGER PRIMARY KEY,
+    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    added_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_playlist_tracks_order
+    ON playlist_tracks(playlist_id, position, id);
 """
 
 TRACK_COLUMNS = [
@@ -246,6 +262,137 @@ class Database:
     def get_track(self, track_id: int) -> Optional[Track]:
         row = self.query_one("SELECT * FROM tracks WHERE id=?", (track_id,))
         return self._row_to_track(row) if row else None
+
+    def audio_format_counts(self) -> List[Dict[str, Any]]:
+        return [
+            dict(row) for row in self.query(
+                "SELECT COALESCE(NULLIF(format, ''), 'unknown') AS format, COUNT(*) AS tracks "
+                "FROM tracks WHERE status IN ('ok', 'suspect', 'bad') "
+                "GROUP BY 1 ORDER BY 1 COLLATE NOCASE"
+            )
+        ]
+
+    def playlists(self) -> List[Dict[str, Any]]:
+        return [
+            dict(row) for row in self.query(
+                "SELECT p.id, p.name, p.created_at, p.updated_at, COUNT(pt.id) AS track_count "
+                "FROM playlists p LEFT JOIN playlist_tracks pt ON pt.playlist_id=p.id "
+                "GROUP BY p.id ORDER BY p.name COLLATE NOCASE, p.id"
+            )
+        ]
+
+    def create_playlist(self, name: str) -> int:
+        now = utcnow()
+        cursor = self.execute(
+            "INSERT INTO playlists (name, created_at, updated_at) VALUES (?,?,?)",
+            (name, now, now),
+        )
+        if cursor.lastrowid is None:
+            raise sqlite3.DatabaseError("Playlist creation did not return an ID.")
+        return cursor.lastrowid
+
+    def rename_playlist(self, playlist_id: int, name: str) -> bool:
+        cursor = self.execute(
+            "UPDATE playlists SET name=?, updated_at=? WHERE id=?",
+            (name, utcnow(), playlist_id),
+        )
+        return cursor.rowcount > 0
+
+    def delete_playlist(self, playlist_id: int) -> bool:
+        cursor = self.execute("DELETE FROM playlists WHERE id=?", (playlist_id,))
+        return cursor.rowcount > 0
+
+    def playlist(self, playlist_id: int) -> Optional[Dict[str, Any]]:
+        row = self.query_one(
+            "SELECT id, name, created_at, updated_at FROM playlists WHERE id=?",
+            (playlist_id,),
+        )
+        if row is None:
+            return None
+        tracks = self.query(
+            "SELECT pt.id AS entry_id, pt.position, t.id, t.path, t.format, t.duration, "
+            "t.artist, t.album_artist, t.album, t.title, t.status, t.bitrate, "
+            "t.sample_rate, t.bit_depth, t.channels "
+            "FROM playlist_tracks pt JOIN tracks t ON t.id=pt.track_id "
+            "WHERE pt.playlist_id=? ORDER BY pt.position, pt.id",
+            (playlist_id,),
+        )
+        return {**dict(row), "tracks": [dict(track) for track in tracks]}
+
+    def append_playlist_tracks(self, playlist_id: int, track_ids: Sequence[int]) -> bool:
+        with self._lock, self._conn:
+            playlist = self._conn.execute(
+                "SELECT id FROM playlists WHERE id=?", (playlist_id,)
+            ).fetchone()
+            if playlist is None:
+                return False
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 AS next_position "
+                "FROM playlist_tracks WHERE playlist_id=?",
+                (playlist_id,),
+            ).fetchone()
+            start = row["next_position"]
+            now = utcnow()
+            self._conn.executemany(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at) "
+                "VALUES (?,?,?,?)",
+                [
+                    (playlist_id, track_id, start + index, now)
+                    for index, track_id in enumerate(track_ids)
+                ],
+            )
+            self._conn.execute(
+                "UPDATE playlists SET updated_at=? WHERE id=?", (now, playlist_id)
+            )
+            return True
+
+    def remove_playlist_track(self, playlist_id: int, entry_id: int) -> bool:
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM playlist_tracks WHERE playlist_id=? AND id=?",
+                (playlist_id, entry_id),
+            )
+            if not cursor.rowcount:
+                return False
+            rows = self._conn.execute(
+                "SELECT id FROM playlist_tracks WHERE playlist_id=? ORDER BY position, id",
+                (playlist_id,),
+            ).fetchall()
+            self._conn.executemany(
+                "UPDATE playlist_tracks SET position=? WHERE id=?",
+                [(position, row["id"]) for position, row in enumerate(rows)],
+            )
+            self._conn.execute(
+                "UPDATE playlists SET updated_at=? WHERE id=?", (utcnow(), playlist_id)
+            )
+            return True
+
+    def reorder_playlist_tracks(self, playlist_id: int, entry_ids: Sequence[int]) -> bool:
+        with self._lock, self._conn:
+            playlist = self._conn.execute(
+                "SELECT id FROM playlists WHERE id=?", (playlist_id,)
+            ).fetchone()
+            if playlist is None:
+                return False
+            current = [
+                row["id"] for row in self._conn.execute(
+                    "SELECT id FROM playlist_tracks WHERE playlist_id=? ORDER BY position, id",
+                    (playlist_id,),
+                )
+            ]
+            if len(current) != len(entry_ids) or set(current) != set(entry_ids):
+                raise ValueError("Playlist order must include each current item exactly once.")
+            self._conn.executemany(
+                "UPDATE playlist_tracks SET position=? WHERE playlist_id=? AND id=?",
+                [
+                    (position, playlist_id, entry_id)
+                    for position, entry_id in enumerate(entry_ids)
+                ],
+            )
+            self._conn.execute(
+                "UPDATE playlists SET updated_at=? WHERE id=?", (utcnow(), playlist_id)
+            )
+            return True
 
     def find_track_by_path(self, path: str) -> Optional[Track]:
         row = self.query_one("SELECT * FROM tracks WHERE path=?", (path,))
