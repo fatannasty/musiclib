@@ -319,16 +319,14 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
             return path in ("/api/auth/logout", "/api/auth/password")
         if method == "GET":
             exact = {
-                "/api/stats", "/api/playback/formats", "/api/genres", "/api/formats",
-                "/api/albums", "/api/albums/page", "/api/albums/detail",
-                "/api/tracks/page", "/api/tracks/search",
+                "/api/listen/tracks", "/api/listen/albums", "/api/listen/album",
             }
             return path in exact or bool(re.fullmatch(
                 r"/api/(?:tracks/\d+/(?:playback|audio|cover)|playlists(?:/\d+(?:/tracks(?:/\d+|/order)?)?)?)",
                 path,
             ))
         if method == "POST":
-            return path in ("/api/tracks/page", "/api/tracks/search", "/api/playlists") or bool(
+            return path == "/api/playlists" or bool(
                 re.fullmatch(r"/api/playlists/\d+/tracks", path)
             )
         if method == "PUT":
@@ -351,7 +349,11 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
     async def enforce_authentication(request: Request, call_next):
         path = request.url.path
         user = None
-        if auth_required and path.startswith("/api/"):
+        if auth_required and (
+            path.startswith("/api/") or path in (
+                "/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect",
+            )
+        ):
             token = request.cookies.get(SESSION_COOKIE, "")
             session = auth.session(token) if token else None
             if session:
@@ -454,6 +456,17 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
         user = current_user(request)
         return None if user["role"] == "admin" else int(user["id"])
 
+    def playlist_response(playlist_id: int, request: Request) -> Dict[str, Any]:
+        playlist = db.playlist(playlist_id, playlist_owner(request))
+        if playlist is None:
+            raise HTTPException(404, "Playlist not found.")
+        if current_user(request)["role"] != "admin":
+            playlist["tracks"] = [
+                {key: value for key, value in track.items() if key not in ("path", "status")}
+                for track in playlist["tracks"]
+            ]
+        return playlist
+
     @app.post("/api/auth/logout")
     def auth_logout(request: Request) -> Response:
         token = request.cookies.get(SESSION_COOKIE, "")
@@ -526,14 +539,11 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
             raise HTTPException(422, "Playlist names must contain 1 to 80 non-space characters.")
         user_id = current_user(request)["id"]
         playlist_id = db.create_playlist(name, int(user_id) if user_id else None)
-        return db.playlist(playlist_id, playlist_owner(request))
+        return playlist_response(playlist_id, request)
 
     @app.get("/api/playlists/{playlist_id}")
     def playlist_detail(playlist_id: int, request: Request) -> Dict[str, Any]:
-        playlist = db.playlist(playlist_id, playlist_owner(request))
-        if playlist is None:
-            raise HTTPException(404, "Playlist not found.")
-        return playlist
+        return playlist_response(playlist_id, request)
 
     @app.patch("/api/playlists/{playlist_id}")
     def playlist_rename(
@@ -544,7 +554,7 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
             raise HTTPException(422, "Playlist names must contain 1 to 80 non-space characters.")
         if not db.rename_playlist(playlist_id, name, playlist_owner(request)):
             raise HTTPException(404, "Playlist not found.")
-        return db.playlist(playlist_id, playlist_owner(request))
+        return playlist_response(playlist_id, request)
 
     @app.delete("/api/playlists/{playlist_id}")
     def playlist_delete(playlist_id: int, request: Request) -> Dict[str, bool]:
@@ -564,7 +574,7 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
             playlist_id, body.track_ids, playlist_owner(request)
         ):
             raise HTTPException(404, "Playlist not found.")
-        return db.playlist(playlist_id, playlist_owner(request))
+        return playlist_response(playlist_id, request)
 
     @app.delete("/api/playlists/{playlist_id}/tracks/{entry_id}")
     def playlist_remove_track(
@@ -574,7 +584,7 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
             playlist_id, entry_id, playlist_owner(request)
         ):
             raise HTTPException(404, "Playlist item not found.")
-        return db.playlist(playlist_id, playlist_owner(request))
+        return playlist_response(playlist_id, request)
 
     @app.put("/api/playlists/{playlist_id}/tracks/order")
     def playlist_reorder_tracks(
@@ -587,7 +597,7 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
                 raise HTTPException(404, "Playlist not found.")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return db.playlist(playlist_id, playlist_owner(request))
+        return playlist_response(playlist_id, request)
 
     @app.get("/api/tracks/{track_id}/audio")
     async def track_audio(
@@ -1257,6 +1267,9 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
             query=query.strip(), status=status, genre=genre, format=format,
             offset=offset, limit=limit, initial=initial,
         )
+        return album_page_response(page)
+
+    def album_page_response(page: Dict[str, Any]) -> Dict[str, Any]:
         items = []
         for row in page["items"]:
             mbid = row.get("mbid_release")
@@ -1273,6 +1286,44 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
                 "mbid_release": mbid, "cover_track_id": cover_id, "cover_url": cover_url,
             })
         return {"items": items, "total": page["total"], "offset": page["offset"]}
+
+    @app.get("/api/listen/tracks")
+    def listen_tracks(
+        query: str = Query("", max_length=200), offset: int = Query(0, ge=0),
+        limit: int = Query(25, ge=1, le=100),
+        sort: Literal["artist", "title", "recent"] = "artist",
+    ) -> Dict[str, Any]:
+        return db.listening_tracks_page(query.strip(), offset, limit, sort)
+
+    @app.get("/api/listen/albums")
+    def listen_albums(
+        query: str = Query("", max_length=200), offset: int = Query(0, ge=0),
+        limit: int = Query(25, ge=1, le=100),
+        sort: Literal["artist", "title", "recent"] = "artist",
+    ) -> Dict[str, Any]:
+        return album_page_response(db.album_groups_page(
+            query=query.strip(), offset=offset, limit=limit, listening=True, sort=sort,
+        ))
+
+    @app.get("/api/listen/album")
+    def listen_album(
+        album_artist: str = Query(..., max_length=1024),
+        album: str = Query(..., max_length=1024),
+    ) -> Dict[str, Any]:
+        tracks = db.album_tracks(album_artist, album, listening=True)
+        if not tracks:
+            raise HTTPException(404, "Album is no longer available. Return to your music and search again.")
+        public_fields = {
+            "id", "artist", "album_artist", "album", "title", "duration",
+            "genre", "format", "year", "track_no", "disc_no",
+        }
+        cover = next((track for track in tracks if track["has_embedded_art"]), None)
+        return {
+            "album_artist": album_artist, "album": album,
+            "year": next((track["year"] for track in tracks if track["year"]), None),
+            "cover_url": f"/api/tracks/{cover['id']}/cover" if cover else None,
+            "tracks": [{key: track[key] for key in public_fields} for track in tracks],
+        }
 
     @app.get("/api/albums/detail")
     def albums_detail(

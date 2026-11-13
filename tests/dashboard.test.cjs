@@ -40,6 +40,7 @@ class Element {
   replaceChildren() { this.children = []; }
   querySelectorAll() { return []; }
   focus() {}
+  scrollIntoView() {}
   click() { this.onclick?.(); }
   showModal() { this.open = true; }
   close() { this.open = false; this.onclose?.(); }
@@ -71,12 +72,14 @@ function dashboard({storage, reducedMotion = false} = {}) {
       },
     },
     console: {...console, warn: (...args) => warnings.push(args)}, setTimeout, clearTimeout,
+    URLSearchParams, AbortController,
     requestAnimationFrame: callback => callback(),
     confirm: () => true,
   });
   vm.runInContext(appearance, context);
   vm.runInContext(source, context);
   vm.runInContext('authState.user = {id: 1, username: "admin", role: "admin"}', context);
+  vm.runInContext('state.adminMode = true; state.tab = "overview"', context);
   context.toast = (...args) => notices.push(args);
   return {context, nodes, document, saved, warnings, notices, scrolls, events,
     run: script => vm.runInContext(script, context)};
@@ -131,6 +134,92 @@ test("the player offers playlist management and queue transport", () => {
   assert.match(html, /id="player-repeat"/);
   assert.match(html, /id="playlist-picker"/);
   assert.match(html, /\/api\/playback\/formats/);
+});
+
+test("listeners never see administration even with a restored management tab or forged mode", async () => {
+  const {context, document, run} = dashboard();
+  run('authState.user = {id: 2, username: "listener", role: "user"}; state.adminMode = true; state.tab = "settings"');
+  context.loadStats = () => { throw new Error("Listeners must not request administration statistics"); };
+  run('views.player = async el => { el.innerHTML = "Your music"; }');
+  context.updateDashboardMode();
+  await context.render();
+  assert.deepEqual(Array.from(run("visibleTabs().map(([id]) => id)")), ["player", "playlists", "account"]);
+  assert.equal(document.querySelector("#admin-mode").hidden, true);
+  assert.equal(document.querySelector("#activity").hidden, true);
+  assert.equal(document.querySelector("header .library-details").hidden, true);
+  assert.equal(run("state.tab"), "player");
+  assert.doesNotMatch(document.querySelector("#nav").innerHTML, /data-tab="(?:settings|library|overview|usenet)"/);
+});
+
+test("administrators have an explicit listening/management separation", () => {
+  const {context, document, run} = dashboard();
+  run("state.adminMode = false");
+  context.updateDashboardMode();
+  assert.equal(run("visibleTabs().length"), 3);
+  assert.equal(document.querySelector("#admin-mode").textContent, "Administration");
+  assert.equal(document.querySelector("#activity").hidden, true);
+  run("state.adminMode = true");
+  context.updateDashboardMode();
+  assert.equal(run('visibleTabs().some(([id]) => id === "settings")'), true);
+  assert.equal(document.querySelector("#admin-mode").textContent, "Back to listening");
+  assert.equal(document.querySelector("#activity").hidden, false);
+});
+
+test("listener playlists do not request administration format inventory", async () => {
+  const {context, run} = dashboard();
+  run('authState.user = {id: 2, username: "listener", role: "user"}; state.adminMode = false');
+  const calls = [];
+  context.api = async url => { calls.push(url); assert.equal(url, "/api/playlists"); return []; };
+  const el = new Element();
+  await run("views.playlists")(el);
+  assert.deepEqual(calls, ["/api/playlists"]);
+  assert.doesNotMatch(el.innerHTML, /Playback format inventory/);
+});
+
+test("music search ignores stale responses and preserves its search between views", async () => {
+  const {context, document, run} = dashboard();
+  const pending = [], calls = [];
+  context.api = url => {
+    calls.push(url);
+    return new Promise(resolve => pending.push(resolve));
+  };
+  run('state.listen.kind = "tracks"; state.listen.query = "old"');
+  const el = new Element();
+  const loading = run("views.player")(el);
+  document.querySelector("#listen-query").value = "new artist";
+  const searching = document.querySelector("#listen-search-form").onsubmit({preventDefault() {}});
+  pending[1]({items: [{id: 2, title: "New song", artist: "<Artist>"}], total: 1});
+  await searching;
+  pending[0]({items: [{id: 1, title: "Stale song"}], total: 1});
+  await loading;
+  assert.match(calls[1], /query=new\+artist/);
+  assert.match(document.querySelector("#listen-results").innerHTML, /New song/);
+  assert.match(document.querySelector("#listen-results").innerHTML, /&lt;Artist&gt;/);
+  assert.doesNotMatch(document.querySelector("#listen-results").innerHTML, /Stale song/);
+  assert.equal(run("state.listen.query"), "new artist");
+});
+
+test("music search reports failures and retries without losing the query", async () => {
+  const {context, document, run} = dashboard();
+  context.api = async () => { throw new Error("Library unavailable"); };
+  await run("views.player")(new Element());
+  assert.match(document.querySelector("#listen-results").innerHTML, /Library unavailable/);
+  context.api = async () => ({items: [], total: 0});
+  document.querySelector("#listen-query").value = "rare song";
+  await document.querySelector("#listen-retry").onclick();
+  assert.match(document.querySelector("#listen-summary").textContent, /No albums found for “rare song”/);
+  assert.equal(document.querySelector("#listen-paging").hidden, true);
+});
+
+test("shuffle starts with the entire album and can restore the original order", async () => {
+  const {run} = dashboard();
+  run("loadPlaybackTrack = id => id; Math.random = () => 0");
+  await run('playQueue([{id: 1}, {id: 2}, {id: 3}], 0, true)');
+  assert.deepEqual(Array.from(run("playback.queue.map(track => track.id)")), [2, 3, 1]);
+  assert.equal(run("playback.shuffle"), true);
+  run("togglePlaybackShuffle()");
+  assert.deepEqual(Array.from(run("playback.queue.map(track => track.id)")), [1, 2, 3]);
+  assert.equal(run("playback.queue[playback.queueIndex].id"), 2);
 });
 
 test("queue navigation wraps only when repeat-all is enabled", async () => {

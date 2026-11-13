@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from conftest import make_wav
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -39,6 +40,8 @@ def test_authentication_requires_login_and_same_origin(lib_env):
             ("post", "/api/scan"),
             ("put", "/api/settings"),
             ("get", "/api/tracks/1/audio"),
+            ("get", "/docs"),
+            ("get", "/openapi.json"),
         ):
             denied = getattr(client, method)(path)
             assert denied.status_code == 401
@@ -173,13 +176,70 @@ def test_listener_can_browse_album_tracks_in_playback_order(lib_env):
         create_app(lib_env.config, require_auth=True), base_url="https://testserver"
     ) as listener:
         assert login(listener, "listener", "A different secure passphrase").status_code == 200
-        page = listener.get("/api/albums/page").json()
+        page = listener.get("/api/listen/albums").json()
         assert page["total"] == 1
-        detail = listener.get("/api/albums/detail", params={
+        detail = listener.get("/api/listen/album", params={
             "album_artist": "Artist", "album": "Album",
         }).json()
         assert [track["track_no"] for track in detail["tracks"]] == [1, 2, 1]
         assert [track["disc_no"] for track in detail["tracks"]] == [1, 1, 2]
+        assert all("path" not in track and "file_hash" not in track for track in detail["tracks"])
+
+
+def test_listener_is_denied_every_registered_administration_operation(lib_env):
+    create_admin(lib_env)
+    lib_env.db.create_user("listener", hash_password("A different secure passphrase"), "user")
+    app = create_app(lib_env.config, require_auth=True)
+    listening_routes = {
+        "/api/auth/login", "/api/auth/session", "/api/auth/password", "/api/auth/logout",
+        "/api/listen/tracks", "/api/listen/albums", "/api/listen/album",
+        "/api/tracks/{track_id}/playback", "/api/tracks/{track_id}/audio",
+        "/api/tracks/{track_id}/cover",
+    }
+    checked = 0
+    with TestClient(app, base_url="https://testserver") as client:
+        assert login(client, "listener", "A different secure passphrase").status_code == 200
+        headers = csrf_headers(client)
+        for route in app.routes:
+            path = getattr(route, "path", "")
+            if not path.startswith("/api/") or path in listening_routes or path.startswith("/api/playlists"):
+                continue
+            for method in route.methods - {"HEAD", "OPTIONS"}:
+                # Authorization must reject the route before body/path validation or tool execution.
+                response = client.request(method, path, headers=headers)
+                assert response.status_code == 403, (method, path, response.text)
+                assert response.json()["detail"] == "Administrator access required."
+                checked += 1
+        assert checked > 40
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert client.get(path).status_code == 403
+        assert client.get("/api/listen/tracks").status_code == 200
+
+
+def test_listener_playlist_contains_music_not_server_paths(lib_env):
+    create_admin(lib_env)
+    user_id = lib_env.db.create_user(
+        "listener", hash_password("A different secure passphrase"), "user"
+    )
+    path = lib_env.library / "private-folder" / "song.wav"
+    path.parent.mkdir()
+    make_wav(path, seconds=0.1)
+    track = lib_env.db.upsert_track(Track(path=str(path), title="A song", format="wav"))
+    playlist_id = lib_env.db.create_playlist("My songs", user_id)
+    with TestClient(
+        create_app(lib_env.config, require_auth=True), base_url="https://testserver"
+    ) as client:
+        login(client, "listener", "A different secure passphrase")
+        response = client.post(
+            f"/api/playlists/{playlist_id}/tracks",
+            json={"track_ids": [track.id]}, headers=csrf_headers(client),
+        )
+        assert response.status_code == 200
+        song = response.json()["tracks"][0]
+        assert song["title"] == "A song"
+        assert "path" not in song and "status" not in song
+        detail = client.get(f"/api/playlists/{playlist_id}")
+        assert "private-folder" not in detail.text
 
 
 def test_cli_creates_only_the_first_admin_without_printing_password(lib_env):

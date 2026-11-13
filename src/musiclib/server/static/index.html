@@ -398,6 +398,31 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .player-queue .queue-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .player-queue .queue-tools { display: flex; gap: 3px; flex: 0 0 auto; }
 .player-queue button[aria-current=true] { border-color: var(--accent); color: var(--accent); }
+.listen-search { display: flex; align-items: end; gap: 12px; margin-bottom: 20px; }
+.listen-search label { flex: 1; min-width: 0; font-weight: 650; }
+.listen-search input { display: block; width: 100%; min-width: 0; margin-top: 6px; }
+.listen-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 20px; }
+.listen-kinds { display: flex; gap: 4px; margin-right: auto; }
+.listen-kinds button[aria-pressed=true] { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.listen-toolbar label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--dim); }
+.listen-track-list { list-style: none; border-top: 1px solid var(--border); }
+.listen-track { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 16px; align-items: center; padding: 14px 10px; border-bottom: 1px solid var(--border); }
+.listen-track.is-playing { background: var(--accent-soft); }
+.listen-track-info { min-width: 0; overflow-wrap: anywhere; }
+.listen-track-info strong { display: block; font-size: 15px; }
+.listen-track-info span, .listen-duration { font-size: 12px; color: var(--dim); }
+.listen-duration { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.listen-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.listen-actions .action { padding: 7px 10px; }
+.listen-result-summary { margin: 12px 0; color: var(--dim); font-size: 13px; }
+.listen-paging { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 24px; }
+.listen-album-art { position: relative; display: grid; place-items: center; background: var(--cover-bg); aspect-ratio: 1; overflow: hidden; color: var(--accent); font-size: 48px; border-radius: 10px; }
+.listen-album-art img { position: absolute; inset: 0; height: 100%; width: 100%; object-fit: cover; }
+.listen-album-heading { display: grid; grid-template-columns: 180px minmax(0, 1fr); align-items: center; gap: 24px; margin: 24px 0; }
+.listen-album-heading h3 { font-size: 28px; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.listen-album-heading p { color: var(--dim); margin: 4px 0 16px; }
+body.listening-mode header { padding-bottom: 20px; }
+body.listening-mode #nav { border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .player .seek { display: flex; align-items: center; gap: 12px; }
 .player .seek label { font-size: 12px; color: var(--dim); }
 .player #player-time { min-width: 85px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -478,10 +503,24 @@ body.player-floating #toast { bottom: 20px; z-index: 100; }
   .album-track-actions { grid-column: 2; }
   .album-track-pick { grid-row: span 2; align-self: start; }
   .album-dialog .player { bottom: 8px; left: 8px; right: 8px; width: auto; padding: 10px; }
-  .player-heading { flex-wrap: wrap; }
+  .player { padding: 10px 12px; }
+  .player-heading { flex-wrap: wrap; gap: 8px; }
+  .player .player-art { width: 44px; height: 44px; }
+  .player .now-playing strong { font-size: 14px; }
+  .player-actions .action { padding: 6px 8px; font-size: 12px; }
+  #player-close { font-size: 0; }
+  #player-close::after { content: "Stop"; font-size: 12px; }
+  .listen-search { flex-wrap: wrap; }
+  .listen-search label { flex-basis: 100%; }
+  .listen-track { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 14px 0; }
+  .listen-track .listen-actions { grid-column: 1 / -1; }
+  .listen-album-heading { grid-template-columns: 90px minmax(0, 1fr); gap: 16px; }
+  .listen-album-heading h3 { font-size: 22px; }
+  .topbar-actions { flex-wrap: wrap; }
   .player-actions { width: 100%; justify-content: flex-start; }
   .player-transport { gap: 5px; }
-  .player-transport .action { padding: 7px 8px; font-size: 12px; }
+  .player-transport .action { padding: 6px; font-size: 11px; min-height: 42px; }
+  .player-transport .player-play { min-width: 60px; }
   .player-queue { max-height: 120px; }
   .metadata-field { grid-template-columns: 1fr; }
   .job-row { grid-template-columns: minmax(0, 1fr) auto; }
@@ -500,14 +539,15 @@ body.player-floating #toast { bottom: 20px; z-index: 100; }
   <div class="topbar"><div class="brand"><img src="/favicon.svg" alt=""><div><h1>music<span>lib</span></h1>
     <div class="sub" id="dbpath">Your music library workspace</div></div></div>
     <div class="topbar-actions"><span id="signed-in-user" class="hint" hidden></span>
+      <button class="action ghost" id="admin-mode" type="button" aria-pressed="false" hidden>Administration</button>
       <button class="action ghost" id="sign-out" type="button" hidden>Sign out</button>
       <button class="action ghost" id="theme-toggle" type="button" aria-pressed="false">Dark mode</button></div>
   </div>
-  <div class="chips" id="chips"></div>
-  <details class="library-details"><summary>More library details</summary><div class="chips" id="detail-chips"></div></details>
+  <div class="chips" id="chips" hidden></div>
+  <details class="library-details" hidden><summary>More library details</summary><div class="chips" id="detail-chips"></div></details>
 </header>
 <nav id="nav" aria-label="Main navigation"></nav>
-<aside id="activity" class="activity" aria-label="Library activity">
+<aside id="activity" class="activity" aria-label="Library activity" hidden>
   <div class="activity-heading"><div class="activity-title"><h2>Activity</h2><span class="activity-state" id="activity-state">Loading…</span></div><span id="activity-lock" class="hint"></span></div>
   <div id="activity-current">Loading activity...</div>
   <div id="activity-summary" role="status"></div>
@@ -574,8 +614,9 @@ body.player-floating #toast { bottom: 20px; z-index: 100; }
       <option value="410">Standard</option><option value="340">Small</option><option value="560">Wide</option>
     </select></label><button type="button" class="action ghost" id="player-reset-position">Reset position</button></div>
     <p class="hint">Space: play/pause when the player is focused. Resize the mini-player from its bottom-right corner.</p>
-    <p id="player-status" class="hint" role="status" aria-live="polite"></p>
+    <p class="hint">Compatibility playback is lossy MP3. Prefer Original for quality comparisons; browser and device audio settings still affect playback.</p>
   </details>
+  <p id="player-status" class="hint" role="status" aria-live="polite"></p>
 </aside></div>
 <dialog id="playlist-picker" class="playlist-picker" aria-label="Add tracks to playlist">
   <form id="playlist-picker-form">
@@ -592,7 +633,7 @@ body.player-floating #toast { bottom: 20px; z-index: 100; }
 <script>
 const TABS = [
   ["overview", "Overview"], ["dupes", "Duplicates"], ["doctor", "Bad Files"],
-  ["library", "Library"], ["player", "Player"], ["playlists", "Playlists"],
+  ["library", "Library"], ["player", "Listen"], ["playlists", "Playlists"],
   ["account", "Account"], ["recovery", "Recovery"],
   ["organize", "Organize"], ["art", "Cover Art"], ["missing", "Missing Music"],
   ["usenet", "Usenet"], ["settings", "Settings"],
@@ -602,9 +643,9 @@ const pageDescriptions = {
   dupes: "Compare copies and keep the version you want.",
   doctor: "Review audio issues before removing files.",
   library: "Browse, listen and make reviewed changes to your music.",
-  player: "Browse albums, choose a track, and listen through the album in order.",
-  playlists: "Create playlists, manage playback order, and inspect format readiness.",
-  account: "Manage your sign-in and Musiclib accounts.",
+  player: "Find a song, explore an album, and make yourself a queue.",
+  playlists: "Your playlists, in your order. Add songs from Listen or Now Playing.",
+  account: "Manage your sign-in and password.",
   recovery: "Review and restore files from the musiclib trash.",
   organize: "Preview a cleaner folder structure before moving files.",
   art: "Find missing artwork for your albums.",
@@ -612,10 +653,13 @@ const pageDescriptions = {
   usenet: "Search for missing music and manage downloads.",
   settings: "Configure your library and connected services.",
 };
-const state = { tab: "overview", jobs: [], libraryView: "albums", libraryBatch: 50 };
+const state = {
+  tab: "player", adminMode: false, jobs: [], libraryView: "albums", libraryBatch: 50,
+  listen: {kind: "albums", query: "", sort: "artist", size: 25, offset: 0},
+};
 const authState = {user: null, csrfToken: ""};
 function visibleTabs() {
-  if (authState.user?.role === "admin") return TABS;
+  if (authState.user?.role === "admin" && state.adminMode) return TABS;
   return TABS.filter(([id]) => ["player", "playlists", "account"].includes(id));
 }
 const BROWSING_KEY = "musiclib.workspace.v1";
@@ -945,16 +989,16 @@ async function setPlaybackSource(mode, position = 0, autoplay = true) {
   playback.offset = mode === "compatible" ? position : 0;
   $("#player-mode").value = mode;
   $("#player-status").textContent = mode === "original" ?
-    "Original audio, without server conversion. Browser and device audio settings still affect playback." :
-    "Compatibility stream: converted to lossy MP3, 320 kbps / 48 kHz / stereo. Use Original for quality comparisons. Use Position to seek.";
+    "Original file · no server conversion." :
+    "MP3 compatibility · 320 kbps / 48 kHz / stereo (lossy).";
   audio.onerror = () => {
     if (source !== playback.source || !audio.error || audio.error.code === 1) return;
     if (mode === "original" && track.compatible_available) {
       setPlaybackSource("compatible", playbackPosition() || initialPosition, autoplay);
     } else {
       $("#player-status").textContent = !track.compatible_available && mode === "original" ?
-        "Your browser could not play this file. Compatibility playback needs FFmpeg installed on the server. Check damaged files in Bad Files." :
-        "Cannot play this file. It may be damaged, unavailable, or the server may be busy. Check it in Bad Files or retry Original playback.";
+        "Your browser could not play this file. Ask your administrator to check the file and install FFmpeg for compatibility playback." :
+        "Cannot play this file. Retry Original playback, or ask your administrator to check the file and server.";
       toast($("#player-status").textContent, true);
     }
   };
@@ -1045,6 +1089,7 @@ async function loadPlaybackTrack(id) {
     const track = await api(`/api/tracks/${id}/playback`, {signal: playback.controller.signal});
     if (request !== playback.request) return;
     playback.track = track;
+    highlightListeningTrack();
     if (playback.queue[playback.queueIndex]?.id === track.id) {
       playback.queue[playback.queueIndex] = {...playback.queue[playback.queueIndex], ...track};
       const originalIndex = playback.originalQueue.findIndex(
@@ -1093,17 +1138,24 @@ function playTrack(id) {
   renderPlaybackQueue();
   return loadPlaybackTrack(id);
 }
-function playQueue(tracks, index = 0) {
+function playQueue(tracks, index = 0, shuffle = false) {
   playback.queue = tracks.map(track => ({
     ...(typeof track === "number" ? {id: track} : {...track}),
     _queueKey: ++queueKey,
   }));
   playback.originalQueue = playback.queue.map(track => ({...track}));
+  if (shuffle) {
+    for (let position = playback.queue.length - 1; position > 0; position--) {
+      const other = Math.floor(Math.random() * (position + 1));
+      [playback.queue[position], playback.queue[other]] = [playback.queue[other], playback.queue[position]];
+    }
+    index = 0;
+  }
   playback.queueIndex = playback.queue.length ? Math.max(0, Math.min(index, playback.queue.length - 1)) : -1;
-  playback.shuffle = false;
+  playback.shuffle = shuffle;
   setPlaybackQueueOpen(false);
-  $("#player-shuffle").textContent = "Shuffle off";
-  $("#player-shuffle").setAttribute("aria-pressed", "false");
+  $("#player-shuffle").textContent = shuffle ? "Shuffle on" : "Shuffle off";
+  $("#player-shuffle").setAttribute("aria-pressed", String(shuffle));
   renderPlaybackQueue();
   if (!playback.queue.length) return;
   return loadPlaybackTrack(playback.queue[playback.queueIndex].id);
@@ -1209,6 +1261,7 @@ function syncPlayButton() {
   const paused = $("#player-audio").paused;
   $("#player-play").textContent = paused ? "Play" : "Pause";
   $("#player-play").setAttribute("aria-label", paused ? "Play" : "Pause");
+  highlightListeningTrack();
   if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
     navigator.mediaSession.playbackState = !playback.track ? "none" : paused ? "paused" : "playing";
   }
@@ -1947,81 +2000,206 @@ async function loadStats() {
   return s;
 }
 
+function highlightListeningTrack() {
+  document.querySelectorAll("[data-listening-track-id]").forEach(row => {
+    const current = Number(row.dataset.listeningTrackId) === playback.track?.id;
+    row.classList.toggle("is-playing", current);
+    if (current) row.setAttribute("aria-current", "true");
+    else row.removeAttribute("aria-current");
+  });
+}
+function listenCoverMarkup(url) {
+  return `<span class="listen-album-art" aria-hidden="true">♪
+    ${url ? `<img data-listen-cover src="${esc(url)}" alt="" loading="lazy">` : ""}</span>`;
+}
+function listeningTracksMarkup(tracks) {
+  return `<ol class="listen-track-list">${tracks.map((track, index) =>
+    `<li class="listen-track" data-listening-track-id="${track.id}">
+      <div class="listen-track-info"><strong>${esc(track.title || "Untitled track")}</strong>
+        <span>${esc([track.artist || track.album_artist || "Unknown artist", track.album].filter(Boolean).join(" · "))}</span></div>
+      <span class="listen-duration">${track.duration ? playbackTime(track.duration) : "—"}</span>
+      <div class="listen-actions">
+        <button type="button" class="action ghost" data-listen-play="${index}" aria-label="Play ${esc(track.title || "track")}">Play</button>
+        <button type="button" class="action ghost" data-listen-next="${index}">Play next</button>
+        <button type="button" class="action ghost" data-add-playlist-track="${track.id}">Add to playlist</button>
+      </div></li>`
+  ).join("")}</ol>`;
+}
+function bindListeningTracks(container, tracks) {
+  container.querySelectorAll("[data-listen-play]").forEach(button => {
+    button.onclick = () => playQueue(tracks, Number(button.dataset.listenPlay));
+  });
+  container.querySelectorAll("[data-listen-next]").forEach(button => {
+    button.onclick = () => enqueueTracks([tracks[Number(button.dataset.listenNext)]], true);
+  });
+  highlightListeningTrack();
+}
+function bindListenCovers(container) {
+  container.querySelectorAll("[data-listen-cover]").forEach(image => {
+    image.onerror = () => { image.hidden = true; };
+  });
+}
 const views = {
   async player(el) {
-    el.innerHTML = `<div class="card">
-      <div class="library-search-row"><label class="library-search-field" for="player-album-query">Find an album
-        <input type="search" id="player-album-query" placeholder="Album or artist"></label>
-        <button class="action" id="player-album-search">Search albums</button></div>
-    </div><div class="player-library-grid" id="player-albums" aria-live="polite"></div>
-    <div class="row" style="justify-content:center;margin-top:16px">
-      <button class="action ghost" id="player-albums-prev">Previous page</button>
-      <span class="hint" id="player-albums-page"></span>
-      <button class="action ghost" id="player-albums-next">Next page</button>
-    </div><div id="player-album-detail"></div>`;
-    const pageSize = 25;
-    let offset = 0, total = 0, request = 0;
+    const search = state.listen;
+    el.innerHTML = `<div id="listen-browser">
+      <form class="listen-search" id="listen-search-form" role="search">
+        <label for="listen-query">Search your music
+          <input type="search" id="listen-query" maxlength="200" placeholder="Song, artist, or album" value="${esc(search.query)}"></label>
+        <button class="action" type="submit">Search</button>
+        <button class="action ghost" id="listen-clear" type="button">Clear</button>
+      </form>
+      <div class="listen-toolbar">
+        <div class="listen-kinds" role="group" aria-label="Browse music">
+          <button type="button" class="action ghost" data-listen-kind="albums">Albums</button>
+          <button type="button" class="action ghost" data-listen-kind="tracks">Songs</button>
+        </div>
+        <label>Sort <select id="listen-sort"><option value="artist">Artist</option>
+          <option value="title">Title</option><option value="recent">Recently added</option></select></label>
+        <label>Per page <select id="listen-size"><option>25</option><option>50</option><option>100</option></select></label>
+      </div>
+      <div class="listen-actions" id="listen-page-actions" hidden>
+        <button class="action" id="listen-play-page">Play this page</button>
+        <button class="action ghost" id="listen-shuffle-page">Shuffle this page</button></div>
+      <p class="listen-result-summary" id="listen-summary" role="status" aria-live="polite"></p>
+      <div id="listen-results" aria-busy="false"></div>
+      <div class="listen-paging" id="listen-paging">
+        <button class="action ghost" id="listen-prev">Previous</button>
+        <span class="hint" id="listen-page"></span><button class="action ghost" id="listen-next">Next</button>
+      </div>
+    </div><section id="listen-album-detail" hidden tabindex="-1" aria-label="Album"></section>`;
+    $("#listen-sort").value = search.sort;
+    $("#listen-size").value = String(search.size);
+    let request = 0, albumRequest = 0, controller, debounce, pageTracks = [];
+    let albumOpener, browserScroll = 0;
     const loadPage = async () => {
-      const current = ++request;
-      const query = $("#player-album-query").value.trim();
-      const params = new URLSearchParams({offset: String(offset), limit: String(pageSize), query});
-      const page = await api(`/api/albums/page?${params}`);
-      if (!el.isConnected || current !== request) return;
-      total = page.total;
-      $("#player-albums").innerHTML = page.items.map(album => {
-        const cover = album.cover_url ?
-          `<img class="player-album-cover" src="${esc(album.cover_url)}" alt="" loading="lazy">` :
-          `<div class="player-album-cover cover-ph" aria-hidden="true">♫</div>`;
-        return `<button type="button" class="card player-album-card"
-          data-player-album-artist="${esc(album.album_artist)}" data-player-album="${esc(album.album)}">
-          ${cover}<span class="player-album-copy"><strong>${esc(album.album)}</strong>
-          <span>${esc(album.album_artist)} · ${esc(album.year || "Year unknown")} · ${album.track_count} tracks</span></span></button>`;
-      }).join("") || `<div class="empty">No albums found. Try a different search.</div>`;
-      $("#player-albums-page").textContent = total ?
-        `${offset + 1}–${Math.min(offset + pageSize, total)} of ${total}` : "0 albums";
-      $("#player-albums-prev").disabled = offset === 0;
-      $("#player-albums-next").disabled = offset + pageSize >= total;
-      $("#player-albums").querySelectorAll("[data-player-album]").forEach(button => {
-        button.onclick = () => loadAlbum(button.dataset.playerAlbumArtist, button.dataset.playerAlbum);
-      });
-    };
-    const loadAlbum = async (artist, album) => {
-      const params = new URLSearchParams({album_artist: artist, album});
-      const detail = await api(`/api/albums/detail?${params}`);
+      clearTimeout(debounce);
       if (!el.isConnected) return;
-      $("#player-album-detail").innerHTML = `<section class="card" aria-labelledby="player-album-title">
-        <div class="album-detail-header">${detail.cover_url ?
-          `<img class="cover" src="${esc(detail.cover_url)}" alt="" loading="lazy">` :
-          `<div class="cover-ph" aria-hidden="true">♫</div>`}
-          <div><p class="album-detail-kicker">Album player</p><h3 id="player-album-title">${esc(detail.album)}</h3>
-            <p class="album-detail-meta">${esc(detail.album_artist)} · ${esc(detail.year || "Year unknown")} · ${detail.track_count} tracks</p>
-            <div class="row"><button type="button" class="action" id="player-play-album">Play album</button>
-              <button type="button" class="action ghost" id="player-queue-album">Add album to queue</button></div></div>
-        </div><ol class="album-track-list">${detail.tracks.map((track, index) =>
-          `<li class="player-track-row"><div><strong>${esc(track.title || `Track ${index + 1}`)}</strong>
-            <div class="hint">${esc(track.artist || detail.album_artist)} · Disc ${esc(track.disc_no || 1)} · Track ${esc(track.track_no || index + 1)}</div></div>
-            <div class="row"><button type="button" class="action ghost" data-player-track-index="${index}">Play from here</button>
-            <button type="button" class="action ghost" data-player-next-index="${index}">Play next</button>
-            <button type="button" class="action ghost" data-add-playlist-track="${track.id}">Add to playlist</button></div></li>`
-        ).join("")}</ol></section>`;
-      const queue = detail.tracks.map(track => ({
-        id: track.id, artist: track.artist || detail.album_artist, title: track.title,
-      }));
-      $("#player-play-album").onclick = () => playQueue(queue, 0);
-      $("#player-queue-album").onclick = () => enqueueTracks(queue);
-      $("#player-album-detail").querySelectorAll("[data-player-track-index]").forEach(button => {
-        button.onclick = () => playQueue(queue, Number(button.dataset.playerTrackIndex));
+      const current = ++request;
+      albumRequest++;
+      controller?.abort();
+      controller = new AbortController();
+      search.query = $("#listen-query").value.trim();
+      $("#listen-browser").hidden = false;
+      $("#listen-album-detail").hidden = true;
+      $("#listen-results").setAttribute("aria-busy", "true");
+      $("#listen-results").innerHTML = '<p class="empty">Loading your music…</p>';
+      $("#listen-summary").textContent = "";
+      $("#listen-paging").hidden = true;
+      $("#listen-page-actions").hidden = true;
+      el.querySelectorAll("[data-listen-kind]").forEach(button => {
+        button.setAttribute("aria-pressed", String(button.dataset.listenKind === search.kind));
       });
-      $("#player-album-detail").querySelectorAll("[data-player-next-index]").forEach(button => {
-        button.onclick = () => enqueueTracks([queue[Number(button.dataset.playerNextIndex)]], true);
+      try {
+        const params = new URLSearchParams({
+          query: search.query, offset: String(search.offset), limit: String(search.size), sort: search.sort,
+        });
+        const page = await api(`/api/listen/${search.kind}?${params}`, {signal: controller.signal});
+        if (!el.isConnected || current !== request) return;
+        if (page.total && search.offset >= page.total) {
+          search.offset = Math.floor((page.total - 1) / search.size) * search.size;
+          return loadPage();
+        }
+        const songs = search.kind === "tracks";
+        const noun = songs ? "songs" : "albums";
+        pageTracks = songs ? page.items : [];
+        $("#listen-summary").textContent = page.total ?
+          `${search.offset + 1}–${Math.min(search.offset + search.size, page.total)} of ${page.total} ${noun}${search.query ? ` matching “${search.query}”` : ""}` :
+          `No ${noun} found${search.query ? ` for “${search.query}”` : ""}.`;
+        const results = $("#listen-results");
+        results.classList.toggle("player-library-grid", !songs && page.items.length > 0);
+        results.innerHTML = !page.items.length ?
+          `<p class="empty">${search.query ? "Try another song, artist, or album, or clear your search." : "No playable music yet. Ask your administrator to scan the library."}</p>` :
+          songs ? listeningTracksMarkup(page.items) : page.items.map(album =>
+            `<button type="button" class="card player-album-card" data-listen-artist="${esc(album.album_artist)}" data-listen-album="${esc(album.album)}">
+              ${listenCoverMarkup(album.cover_url)}<span class="player-album-copy"><strong>${esc(album.album)}</strong>
+              <span>${esc(album.album_artist)} · ${album.track_count} songs</span></span></button>`
+          ).join("");
+        bindListeningTracks(results, pageTracks);
+        bindListenCovers(results);
+        results.querySelectorAll("[data-listen-album]").forEach(button => {
+          button.onclick = () => loadAlbum(button.dataset.listenArtist, button.dataset.listenAlbum, button);
+        });
+        $("#listen-page-actions").hidden = !pageTracks.length;
+        $("#listen-paging").hidden = !page.total;
+        $("#listen-page").textContent = `Page ${Math.floor(search.offset / search.size) + 1} of ${Math.ceil(page.total / search.size)}`;
+        $("#listen-prev").disabled = search.offset === 0;
+        $("#listen-next").disabled = search.offset + search.size >= page.total;
+      } catch (error) {
+        if (!el.isConnected || current !== request || error.name === "AbortError") return;
+        $("#listen-results").classList.remove("player-library-grid");
+        $("#listen-results").innerHTML = `<div class="empty" role="alert">${esc(error.message)}
+          <button class="action ghost" id="listen-retry">Try again</button></div>`;
+        $("#listen-retry").onclick = loadPage;
+      } finally {
+        if (el.isConnected && current === request) $("#listen-results").setAttribute("aria-busy", "false");
+      }
+    };
+    const loadAlbum = async (artist, album, opener) => {
+      const current = ++albumRequest;
+      opener.disabled = true;
+      try {
+        const params = new URLSearchParams({album_artist: artist, album});
+        const detail = await api(`/api/listen/album?${params}`);
+        if (!el.isConnected || current !== albumRequest) return;
+        albumOpener = opener;
+        browserScroll = window.scrollY;
+        const panel = $("#listen-album-detail");
+        panel.innerHTML = `<button type="button" class="action ghost" id="listen-album-back">Back to music</button>
+          <div class="listen-album-heading">${listenCoverMarkup(detail.cover_url)}
+            <div><h3>${esc(detail.album)}</h3><p>${esc(detail.album_artist)}${detail.year ? ` · ${esc(detail.year)}` : ""} · ${detail.tracks.length} songs</p>
+              <div class="listen-actions"><button type="button" class="action" id="listen-play-album">Play album</button>
+                <button type="button" class="action ghost" id="listen-shuffle-album">Shuffle album</button>
+                <button type="button" class="action ghost" id="listen-queue-album">Add to queue</button></div></div></div>
+          ${listeningTracksMarkup(detail.tracks)}`;
+        $("#listen-browser").hidden = true;
+        panel.hidden = false;
+        $("#listen-album-back").onclick = () => {
+          albumRequest++;
+          panel.hidden = true;
+          $("#listen-browser").hidden = false;
+          albumOpener?.focus({preventScroll: true});
+          window.scrollTo({top: browserScroll, behavior: "instant"});
+        };
+        $("#listen-play-album").onclick = () => playQueue(detail.tracks);
+        $("#listen-shuffle-album").onclick = () => playQueue(detail.tracks, 0, true);
+        $("#listen-queue-album").onclick = () => enqueueTracks(detail.tracks);
+        bindListeningTracks(panel, detail.tracks);
+        bindListenCovers(panel);
+        panel.focus({preventScroll: true});
+        panel.scrollIntoView({behavior: "instant", block: "start"});
+      } catch (error) {
+        if (el.isConnected && current === albumRequest) toast(error.message, true);
+      } finally { opener.disabled = false; }
+    };
+    const searchFromStart = () => { search.offset = 0; return loadPage(); };
+    const changePage = offset => {
+      search.offset = offset;
+      const current = request + 1;
+      return loadPage().then(() => {
+        if (el.isConnected && current === request) {
+          $("#listen-results").scrollIntoView({behavior: "instant", block: "start"});
+        }
       });
     };
-    $("#player-album-search").onclick = () => { offset = 0; loadPage().catch(error => toast(error.message, true)); };
-    $("#player-album-query").onkeydown = event => {
-      if (event.key === "Enter") { event.preventDefault(); offset = 0; loadPage().catch(error => toast(error.message, true)); }
+    $("#listen-search-form").onsubmit = event => { event.preventDefault(); return searchFromStart(); };
+    $("#listen-query").oninput = () => {
+      clearTimeout(debounce);
+      request++;
+      albumRequest++;
+      controller?.abort();
+      debounce = setTimeout(searchFromStart, 300);
     };
-    $("#player-albums-prev").onclick = () => { offset = Math.max(0, offset - pageSize); loadPage().catch(error => toast(error.message, true)); };
-    $("#player-albums-next").onclick = () => { offset += pageSize; loadPage().catch(error => toast(error.message, true)); };
+    $("#listen-clear").onclick = () => { $("#listen-query").value = ""; return searchFromStart(); };
+    el.querySelectorAll("[data-listen-kind]").forEach(button => {
+      button.onclick = () => { search.kind = button.dataset.listenKind; return searchFromStart(); };
+    });
+    $("#listen-sort").onchange = () => { search.sort = $("#listen-sort").value; return searchFromStart(); };
+    $("#listen-size").onchange = () => { search.size = Number($("#listen-size").value); return searchFromStart(); };
+    $("#listen-prev").onclick = () => changePage(Math.max(0, search.offset - search.size));
+    $("#listen-next").onclick = () => changePage(search.offset + search.size);
+    $("#listen-play-page").onclick = () => playQueue(pageTracks);
+    $("#listen-shuffle-page").onclick = () => playQueue(pageTracks, 0, true);
     await loadPage();
   },
 
@@ -2049,13 +2227,13 @@ const views = {
         $("#account-password-status").textContent = "Password updated. Other active sessions have been signed out.";
       } catch (error) { $("#account-password-status").textContent = error.message; }
     };
-    if (authState.user.role !== "admin") return;
+    if (authState.user.role !== "admin" || !state.adminMode) return;
     el.insertAdjacentHTML("beforeend", `<div class="card"><h3>Accounts</h3>
       <form id="account-create-form" class="row">
         <label>Username<br><input type="text" id="account-new-username" minlength="3" maxlength="32" autocomplete="off" required></label>
         <label>Temporary password<br><input type="password" id="account-new-user-password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
         <button class="action" type="submit">Create account</button></form>
-      <p class="hint">Share the initial password securely. Users can change it from their Account page.</p>
+      <p class="hint">New accounts are listeners: they can listen and manage their own playlists, but cannot access administration tools. Share the initial password securely.</p>
       <div id="account-users"></div></div>`);
     const refreshUsers = async () => {
       const users = await api("/api/auth/users");
@@ -2430,10 +2608,10 @@ const views = {
       <section><h3>Your playlists</h3><div id="playlist-list" class="playlist-list"></div></section>
       <section id="playlist-detail" class="playlist-detail"></section>
     </div>
-    <section class="card"><h3>Playback format inventory</h3>
+    ${authState.user?.role === "admin" && state.adminMode ? `<section class="card"><h3>Playback format inventory</h3>
       <p class="hint">Musiclib streams original files when your browser supports them. FFmpeg provides MP3 compatibility conversion for recognized formats.</p>
       <div id="format-inventory" class="format-inventory"></div>
-    </section>`;
+    </section>` : ""}`;
 
     const renderPlaylist = async (playlistId, list) => {
       state.playlistId = playlistId;
@@ -2463,15 +2641,15 @@ const views = {
         <div>${playlist.tracks.length ? playlist.tracks.map((track, index) =>
           `<div class="playlist-track">
             <div class="playlist-track-title"><strong>${esc(track.title || "Untitled track")}</strong>
-              <div class="hint">${esc([track.artist, track.album].filter(Boolean).join(" · ") || track.path)} · ${esc(track.format || "unknown")} · ${esc(track.status)}</div></div>
+              <div class="hint">${esc([track.artist, track.album].filter(Boolean).join(" · ") || "Unknown artist")} · ${esc(track.format || "unknown")}</div></div>
             <div class="playlist-track-actions">
-              <button type="button" class="action ghost" data-play-playlist-track="${index}" aria-label="Play ${esc(track.title || track.path)}">Play</button>
-              <button type="button" class="action ghost" data-move-playlist-track="${index}" data-direction="-1" aria-label="Move ${esc(track.title || track.path)} up" ${index === 0 ? "disabled" : ""}>Up</button>
-              <button type="button" class="action ghost" data-move-playlist-track="${index}" data-direction="1" aria-label="Move ${esc(track.title || track.path)} down" ${index === playlist.tracks.length - 1 ? "disabled" : ""}>Down</button>
-              <button type="button" class="action ghost" data-remove-playlist-track="${track.entry_id}" aria-label="Remove ${esc(track.title || track.path)}">Remove</button>
+              <button type="button" class="action ghost" data-play-playlist-track="${index}" aria-label="Play ${esc(track.title || "track")}">Play</button>
+              <button type="button" class="action ghost" data-move-playlist-track="${index}" data-direction="-1" aria-label="Move ${esc(track.title || "track")} up" ${index === 0 ? "disabled" : ""}>Up</button>
+              <button type="button" class="action ghost" data-move-playlist-track="${index}" data-direction="1" aria-label="Move ${esc(track.title || "track")} down" ${index === playlist.tracks.length - 1 ? "disabled" : ""}>Down</button>
+              <button type="button" class="action ghost" data-remove-playlist-track="${track.entry_id}" aria-label="Remove ${esc(track.title || "track")}">Remove</button>
             </div>
           </div>`
-        ).join("") : `<p class="empty">This playlist is empty. Add tracks from Library or an album’s listening view.</p>`}</div>
+        ).join("") : `<p class="empty">This playlist is empty. Add songs from Listen or Now Playing.</p>`}</div>
       </section>`;
       $("#playlist-play").onclick = () => playQueue(playlist.tracks);
       $("#playlist-rename-form").onsubmit = async event => {
@@ -2523,11 +2701,12 @@ const views = {
     };
     const refresh = async (selectId = state.playlistId) => {
       const [list, inventory] = await Promise.all([
-        api("/api/playlists"), api("/api/playback/formats"),
+        api("/api/playlists"), authState.user?.role === "admin" && state.adminMode ? api("/api/playback/formats") : null,
       ]);
       if (!el.isConnected) return;
       const selectedId = list.some(item => item.id === selectId) ? selectId : (list[0]?.id || null);
       await renderPlaylist(selectedId, list);
+      if (!inventory || !el.isConnected) return;
       const formats = inventory.formats;
       $("#format-inventory").innerHTML = formats.length ? formats.map(item =>
         `<div><strong>${esc(item.format.toUpperCase())}</strong><span>${item.tracks} · ${item.compatibility_playback ?
@@ -4778,7 +4957,7 @@ async function render() {
   if (!leaveLibraryReview()) { state.tab = "library"; return; }
   const tabs = visibleTabs();
   if (!tabs.some(([id]) => id === state.tab)) {
-    state.tab = authState.user?.role === "admin" ? "overview" : "player";
+    state.tab = state.adminMode && authState.user?.role === "admin" ? "overview" : "player";
   }
   const generation = state.renderGeneration = (state.renderGeneration || 0) + 1;
   const tab = state.tab;
@@ -4789,7 +4968,9 @@ async function render() {
   state.libraryWorkspace = null;
   state.openLibraryReview = null;
   state.libraryObserver?.disconnect();
-  try { await loadStats(); } catch (e) { toast(e.message, true); }
+  if (state.adminMode && authState.user?.role === "admin") {
+    try { await loadStats(); } catch (e) { toast(e.message, true); }
+  }
   if (generation !== state.renderGeneration) return;
   const nav = $("#nav");
   nav.innerHTML = tabs.map(([id, label]) =>
@@ -4819,15 +5000,20 @@ async function render() {
 }
 let activityTimer;
 async function watchActivity() {
-  if (authState.user?.role !== "admin") return;
+  if (authState.user?.role !== "admin" || !state.adminMode) return;
   await refreshActivity();
-  if (authState.user?.role === "admin") activityTimer = setTimeout(watchActivity, 1500);
+  if (authState.user?.role === "admin" && state.adminMode) activityTimer = setTimeout(watchActivity, 1500);
 }
 let dashboardEventsBound = false;
 function showLogin() {
   if (!$("#player").hidden) $("#player-close").click();
   authState.user = null;
   authState.csrfToken = "";
+  state.adminMode = false;
+  state.jobs = [];
+  state.playlistId = null;
+  clearTimeout(activityTimer);
+  $("#admin-mode").hidden = true;
   $("#nav").hidden = true;
   $("#activity").hidden = true;
   $("#main").hidden = false;
@@ -4874,16 +5060,37 @@ function showLogin() {
     } finally { button.disabled = false; }
   };
 }
+function updateDashboardMode() {
+  const admin = authState.user?.role === "admin";
+  const managing = admin && state.adminMode;
+  document.body.classList.toggle("listening-mode", !managing);
+  $("#admin-mode").hidden = !admin;
+  $("#admin-mode").textContent = managing ? "Back to listening" : "Administration";
+  $("#admin-mode").setAttribute("aria-pressed", String(managing));
+  $("#activity").hidden = !managing;
+  $("header .chips").hidden = !managing;
+  $("header .library-details").hidden = !managing;
+  $("#dbpath").textContent = managing ? "Your music library workspace" : "Your music, ready to play";
+}
 async function initializeDashboard() {
   $("#nav").hidden = false;
-  $("#activity").hidden = authState.user.role !== "admin";
+  updateDashboardMode();
   $("#main").hidden = false;
   $("#player-home").hidden = false;
-  $("header .chips").hidden = false;
-  $("header .library-details").hidden = false;
   $("#signed-in-user").textContent = authState.user.username;
   $("#signed-in-user").hidden = false;
   $("#sign-out").hidden = false;
+  $("#admin-mode").onclick = async () => {
+    if (authState.user?.role !== "admin" || !leaveLibraryReview()) return;
+    state.adminMode = !state.adminMode;
+    state.tab = state.adminMode ? "overview" : "player";
+    clearTimeout(activityTimer);
+    state.activityRequest = (state.activityRequest || 0) + 1;
+    state.jobs = [];
+    updateDashboardMode();
+    await render();
+    if (state.adminMode) watchActivity();
+  };
   $("#sign-out").onclick = async () => {
     try { await post("/api/auth/logout", {}); }
     catch (error) { toast(error.message, true); return; }
@@ -4893,8 +5100,9 @@ async function initializeDashboard() {
   };
   if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
   loadBrowsing();
+  browsing.scroll.player = 0;
   if (!visibleTabs().some(([id]) => id === state.tab)) {
-    state.tab = authState.user.role === "admin" ? "overview" : "player";
+    state.tab = state.adminMode && authState.user.role === "admin" ? "overview" : "player";
   }
   if (!dashboardEventsBound) {
     dashboardEventsBound = true;
@@ -4913,9 +5121,9 @@ async function initializeDashboard() {
     $("#activity-details").ontoggle = () => { if ($("#activity-details").open) refreshActivity(); };
     new MutationObserver(() => applyJobLocks($("#main"))).observe($("#main"), {childList: true, subtree: true});
   }
-  if (authState.user.role === "admin") await refreshActivity();
+  if (state.adminMode && authState.user.role === "admin") await refreshActivity();
   await render();
-  if (authState.user.role === "admin") watchActivity();
+  if (state.adminMode && authState.user.role === "admin") watchActivity();
 }
 async function startDashboard() {
   updateThemeToggle();
