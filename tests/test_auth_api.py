@@ -193,6 +193,7 @@ def test_listener_is_denied_every_registered_administration_operation(lib_env):
     listening_routes = {
         "/api/auth/login", "/api/auth/session", "/api/auth/password", "/api/auth/logout",
         "/api/listen/tracks", "/api/listen/albums", "/api/listen/album",
+        "/api/listen/favorites", "/api/favorites/{track_id}",
         "/api/tracks/{track_id}/playback", "/api/tracks/{track_id}/audio",
         "/api/tracks/{track_id}/cover",
     }
