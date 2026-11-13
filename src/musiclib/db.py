@@ -155,6 +155,14 @@ CREATE TABLE IF NOT EXISTS playlist_tracks (
 );
 CREATE INDEX IF NOT EXISTS idx_playlist_tracks_order
     ON playlist_tracks(playlist_id, position, id);
+
+CREATE TABLE IF NOT EXISTS favorites (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, track_id)
+);
+CREATE INDEX IF NOT EXISTS idx_favorites_recent ON favorites(user_id, created_at DESC, track_id);
 """
 
 TRACK_COLUMNS = [
@@ -621,8 +629,8 @@ class Database:
 
     def album_tracks(
         self, album_artist: str, album: str, status: str = "",
-        listening: bool = False,
-    ) -> List[sqlite3.Row]:
+        listening: bool = False, favorite_user_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         artist_expr = (
             "COALESCE(NULLIF(TRIM(album_artist), ''), NULLIF(TRIM(artist), ''), 'Unknown Artist')"
         )
@@ -636,30 +644,79 @@ class Database:
         if status in ("ok", "suspect", "bad"):
             where += " AND status=?"
             params.append(status)
-        return self.query(
-            "SELECT id, path, artist, album_artist, album, title, genre, format, "
-            "bitrate, duration, year, track_no, disc_no, status, mbid_release, has_embedded_art, file_hash "
-            f"FROM tracks WHERE {where} ORDER BY disc_no, track_no, path",
-            params,
+        favorite = (
+            "EXISTS (SELECT 1 FROM favorites f WHERE f.user_id=? AND f.track_id=tracks.id)"
+            if favorite_user_id is not None else "0"
         )
+        query_params = ([favorite_user_id] if favorite_user_id is not None else []) + params
+        rows = self.query(
+            "SELECT id, path, artist, album_artist, album, title, genre, format, "
+            f"bitrate, duration, year, track_no, disc_no, status, mbid_release, has_embedded_art, file_hash, "
+            f"{favorite} AS is_favorite "
+            f"FROM tracks WHERE {where} ORDER BY disc_no, track_no, path",
+            query_params,
+        )
+        return [
+            {**dict(row), "is_favorite": bool(row["is_favorite"])} for row in rows
+        ]
 
     def listening_tracks_page(
         self, query: str = "", offset: int = 0, limit: int = 25, sort: str = "artist",
+        favorite_user_id: Optional[int] = None, favorites_only: bool = False,
     ) -> Dict[str, Any]:
         clause, params = music_search_clause(query)
         where = "status IN ('ok', 'suspect')" + clause
+        if favorites_only:
+            if favorite_user_id is None:
+                return {"items": [], "total": 0, "offset": offset}
+            where += " AND EXISTS (SELECT 1 FROM favorites f WHERE f.user_id=? AND f.track_id=tracks.id)"
+            params.append(favorite_user_id)
         ordering = {
             "artist": "artist COLLATE NOCASE, album COLLATE NOCASE, disc_no, track_no",
             "title": "title COLLATE NOCASE, artist COLLATE NOCASE",
             "recent": "id DESC",
         }[sort]
+        ordering_params: List[Any] = []
+        if favorites_only and sort == "recent":
+            ordering = (
+                "(SELECT created_at FROM favorites f "
+                "WHERE f.user_id=? AND f.track_id=tracks.id) DESC, id DESC"
+            )
+            ordering_params.append(favorite_user_id)
         total = self.query_one(f"SELECT COUNT(*) AS n FROM tracks WHERE {where}", params)["n"]
+        favorite = (
+            "EXISTS (SELECT 1 FROM favorites f WHERE f.user_id=? AND f.track_id=tracks.id)"
+            if favorite_user_id is not None else "0"
+        )
+        row_params = ([favorite_user_id] if favorite_user_id is not None else []) + params
         rows = self.query(
             "SELECT id, title, artist, album_artist, album, duration, genre, format, disc_no, track_no "
+            f", {favorite} AS is_favorite "
             f"FROM tracks WHERE {where} ORDER BY {ordering}, id LIMIT ? OFFSET ?",
-            params + [limit, offset],
+            row_params + ordering_params + [limit, offset],
         )
-        return {"items": [dict(row) for row in rows], "total": total, "offset": offset}
+        items = [dict(row) for row in rows]
+        for item in items:
+            item["is_favorite"] = bool(item["is_favorite"])
+        return {"items": items, "total": total, "offset": offset}
+
+    def add_favorite(self, user_id: int, track_id: int) -> bool:
+        cursor = self.execute(
+            "INSERT OR IGNORE INTO favorites (user_id, track_id, created_at) VALUES (?,?,?)",
+            (user_id, track_id, utcnow()),
+        )
+        return cursor.rowcount > 0
+
+    def remove_favorite(self, user_id: int, track_id: int) -> bool:
+        cursor = self.execute(
+            "DELETE FROM favorites WHERE user_id=? AND track_id=?", (user_id, track_id),
+        )
+        return cursor.rowcount > 0
+
+    def is_favorite(self, user_id: int, track_id: int) -> bool:
+        return self.query_one(
+            "SELECT 1 FROM favorites WHERE user_id=? AND track_id=?", (user_id, track_id),
+        ) is not None
 
     def all_tracks(self, status: Optional[str] = None) -> List[Track]:
         if status:

@@ -320,9 +320,10 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
         if method == "GET":
             exact = {
                 "/api/listen/tracks", "/api/listen/albums", "/api/listen/album",
+                "/api/listen/favorites",
             }
             return path in exact or bool(re.fullmatch(
-                r"/api/(?:tracks/\d+/(?:playback|audio|cover)|playlists(?:/\d+(?:/tracks(?:/\d+|/order)?)?)?)",
+                r"/api/(?:tracks/\d+/(?:playback|audio|cover)|favorites/\d+|playlists(?:/\d+(?:/tracks(?:/\d+|/order)?)?)?)",
                 path,
             ))
         if method == "POST":
@@ -330,10 +331,12 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
                 re.fullmatch(r"/api/playlists/\d+/tracks", path)
             )
         if method == "PUT":
-            return bool(re.fullmatch(r"/api/playlists/\d+/tracks/order", path))
+            return bool(re.fullmatch(
+                r"/api/(?:favorites/\d+|playlists/\d+/tracks/order)", path
+            ))
         if method in ("PATCH", "DELETE"):
             return bool(re.fullmatch(
-                r"/api/playlists/\d+(?:/tracks/\d+)?", path
+                r"/api/(?:favorites/\d+|playlists/\d+(?:/tracks/\d+)?)", path
             ))
         return False
 
@@ -521,8 +524,12 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
         return db.stats()
 
     @app.get("/api/tracks/{track_id}/playback")
-    def playback_info(track_id: int) -> Dict[str, Any]:
-        return playback.info(track_id)
+    def playback_info(track_id: int, request: Request) -> Dict[str, Any]:
+        info = playback.info(track_id)
+        user_id = current_user(request)["id"]
+        info["can_favorite"] = user_id is not None
+        info["is_favorite"] = db.is_favorite(int(user_id), track_id) if user_id is not None else False
+        return info
 
     @app.get("/api/playback/formats")
     def playback_formats() -> Dict[str, Any]:
@@ -1289,11 +1296,58 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
 
     @app.get("/api/listen/tracks")
     def listen_tracks(
+        request: Request,
         query: str = Query("", max_length=200), offset: int = Query(0, ge=0),
         limit: int = Query(25, ge=1, le=100),
         sort: Literal["artist", "title", "recent"] = "artist",
     ) -> Dict[str, Any]:
-        return db.listening_tracks_page(query.strip(), offset, limit, sort)
+        user_id = current_user(request)["id"]
+        return db.listening_tracks_page(
+            query.strip(), offset, limit, sort,
+            favorite_user_id=int(user_id) if user_id is not None else None,
+        )
+
+    @app.get("/api/listen/favorites")
+    def listen_favorites(
+        request: Request,
+        query: str = Query("", max_length=200), offset: int = Query(0, ge=0),
+        limit: int = Query(25, ge=1, le=100),
+        sort: Literal["artist", "title", "recent"] = "artist",
+    ) -> Dict[str, Any]:
+        user_id = current_user(request)["id"]
+        return db.listening_tracks_page(
+            query.strip(), offset, limit, sort,
+            favorite_user_id=int(user_id) if user_id is not None else None,
+            favorites_only=True,
+        )
+
+    @app.get("/api/favorites/{track_id}")
+    def favorite_status(track_id: int, request: Request) -> Dict[str, bool]:
+        user_id = current_user(request)["id"]
+        if user_id is None:
+            raise HTTPException(403, "Sign in to save favorites.")
+        if db.get_track(track_id) is None:
+            raise HTTPException(404, "Track not found.")
+        return {"favorited": db.is_favorite(int(user_id), track_id)}
+
+    @app.put("/api/favorites/{track_id}")
+    def favorite_add(track_id: int, request: Request) -> Dict[str, bool]:
+        user_id = current_user(request)["id"]
+        if user_id is None:
+            raise HTTPException(403, "Sign in to save favorites.")
+        playback.source(track_id)
+        db.add_favorite(int(user_id), track_id)
+        return {"favorited": True}
+
+    @app.delete("/api/favorites/{track_id}")
+    def favorite_remove(track_id: int, request: Request) -> Dict[str, bool]:
+        user_id = current_user(request)["id"]
+        if user_id is None:
+            raise HTTPException(403, "Sign in to save favorites.")
+        if db.get_track(track_id) is None:
+            raise HTTPException(404, "Track not found.")
+        db.remove_favorite(int(user_id), track_id)
+        return {"favorited": False}
 
     @app.get("/api/listen/albums")
     def listen_albums(
@@ -1307,22 +1361,30 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
 
     @app.get("/api/listen/album")
     def listen_album(
+        request: Request,
         album_artist: str = Query(..., max_length=1024),
         album: str = Query(..., max_length=1024),
     ) -> Dict[str, Any]:
-        tracks = db.album_tracks(album_artist, album, listening=True)
+        user_id = current_user(request)["id"]
+        tracks = db.album_tracks(
+            album_artist, album, listening=True,
+            favorite_user_id=int(user_id) if user_id is not None else None,
+        )
         if not tracks:
             raise HTTPException(404, "Album is no longer available. Return to your music and search again.")
         public_fields = {
             "id", "artist", "album_artist", "album", "title", "duration",
-            "genre", "format", "year", "track_no", "disc_no",
+            "genre", "format", "year", "track_no", "disc_no", "is_favorite",
         }
         cover = next((track for track in tracks if track["has_embedded_art"]), None)
         return {
             "album_artist": album_artist, "album": album,
             "year": next((track["year"] for track in tracks if track["year"]), None),
             "cover_url": f"/api/tracks/{cover['id']}/cover" if cover else None,
-            "tracks": [{key: track[key] for key in public_fields} for track in tracks],
+            "tracks": [{
+                key: bool(track[key]) if key == "is_favorite" else track[key]
+                for key in public_fields
+            } for track in tracks],
         }
 
     @app.get("/api/albums/detail")

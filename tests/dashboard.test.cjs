@@ -136,6 +136,26 @@ test("the player offers playlist management and queue transport", () => {
   assert.match(html, /\/api\/playback\/formats/);
 });
 
+test("listening songs expose favorites and favorite changes update the control", async () => {
+  const {context, run} = dashboard();
+  const markup = context.listeningTracksMarkup([
+    {id: 7, title: "Saved song", artist: "Band", is_favorite: false},
+  ]);
+  assert.match(markup, /data-listen-favorite="0"/);
+  assert.match(markup, /aria-pressed="false">♡ Favorite/);
+  assert.match(html, /data-listen-kind="favorites">Favorites/);
+
+  const requests = [];
+  context.api = async (path, options) => requests.push([path, options.method]);
+  context.track = {id: 7, is_favorite: false};
+  context.button = new Element();
+  await run("toggleTrackFavorite(track, button)");
+  assert.deepEqual(requests, [["/api/favorites/7", "PUT"]]);
+  assert.equal(context.track.is_favorite, true);
+  assert.equal(context.button.getAttribute("aria-pressed"), "true");
+  assert.equal(context.button.textContent, "♥ Favorited");
+});
+
 test("listeners never see administration even with a restored management tab or forged mode", async () => {
   const {context, document, run} = dashboard();
   run('authState.user = {id: 2, username: "listener", role: "user"}; state.adminMode = true; state.tab = "settings"');

@@ -1,8 +1,12 @@
 import pytest
+from conftest import make_wav
 from fastapi.testclient import TestClient
 
 from musiclib.models import Track
 from musiclib.server.app import create_app
+from musiclib.server.auth import hash_password
+
+ORIGIN = {"Origin": "https://testserver"}
 
 
 def add_track(env, title, artist="The Artist", album="An Album", status="ok", **kwargs):
@@ -10,6 +14,58 @@ def add_track(env, title, artist="The Artist", album="An Album", status="ok", **
         path=str(env.library / "private-directory" / f"{title}-{status}.flac"),
         title=title, artist=artist, album=album, status=status, **kwargs,
     ))
+
+
+def test_favorites_are_private_and_appear_in_listener_music_views(lib_env):
+    lib_env.db.create_user("admin", hash_password("Correct horse battery staple!"), "admin")
+    user_id = lib_env.db.create_user(
+        "listener", hash_password("A different secure passphrase"), "user"
+    )
+    second_user_id = lib_env.db.create_user(
+        "another", hash_password("Another secure passphrase"), "user"
+    )
+    path = make_wav(lib_env.library / "song.wav", seconds=1)
+    track = lib_env.db.upsert_track(Track(
+        path=path, title="Saved song", artist="The Artist", album="An Album",
+        album_artist="The Artist", format="wav",
+    ))
+    app = create_app(lib_env.config, require_auth=True)
+    with TestClient(app, base_url="https://testserver") as client:
+        assert client.post("/api/auth/login", json={
+            "username": "listener", "password": "A different secure passphrase",
+        }, headers=ORIGIN).status_code == 200
+        csrf = client.get("/api/auth/session").json()["csrf_token"]
+        headers = {**ORIGIN, "X-CSRF-Token": csrf}
+        assert client.get(f"/api/favorites/{track.id}").json() == {"favorited": False}
+        assert client.put(
+            f"/api/favorites/{track.id}", headers=headers
+        ).json() == {"favorited": True}
+        assert client.put(
+            f"/api/favorites/{track.id}", headers=headers
+        ).json() == {"favorited": True}
+        assert client.get("/api/listen/tracks").json()["items"][0]["is_favorite"] is True
+        assert client.get("/api/listen/album", params={
+            "album_artist": "The Artist", "album": "An Album",
+        }).json()["tracks"][0]["is_favorite"] is True
+        assert client.get(f"/api/tracks/{track.id}/playback").json()["is_favorite"] is True
+        favorites = client.get("/api/listen/favorites").json()
+        assert favorites["total"] == 1
+        assert favorites["items"][0]["id"] == track.id
+        assert client.get(
+            "/api/listen/favorites", params={"sort": "recent"}
+        ).json()["items"][0]["id"] == track.id
+        assert client.delete(
+            f"/api/favorites/{track.id}", headers=headers
+        ).json() == {"favorited": False}
+        assert client.get("/api/listen/favorites").json()["total"] == 0
+        assert client.post("/api/auth/logout", headers=headers).status_code == 200
+        assert client.post("/api/auth/login", json={
+            "username": "another", "password": "Another secure passphrase",
+        }, headers=ORIGIN).status_code == 200
+        assert client.get(f"/api/favorites/{track.id}").json() == {"favorited": False}
+        assert client.get("/api/listen/favorites").json()["total"] == 0
+    assert not lib_env.db.is_favorite(second_user_id, track.id)
+    assert not lib_env.db.is_favorite(user_id, track.id)
 
 
 def test_music_search_combines_terms_and_does_not_search_server_paths(lib_env):

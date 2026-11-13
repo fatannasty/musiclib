@@ -572,6 +572,7 @@ body.player-floating #toast { bottom: 20px; z-index: 100; }
     </div>
     <div class="now-playing"><strong id="player-title">Music player</strong><div id="player-album" class="hint"></div><div id="player-quality" class="hint"></div></div>
     <div class="player-actions">
+      <button class="action ghost" id="player-favorite" aria-pressed="false" disabled>♡ Favorite</button>
       <button class="action ghost" id="player-add-playlist" disabled>Add to playlist</button>
       <button class="action ghost" id="player-float" aria-pressed="false">Mini-player</button>
       <button class="action ghost" id="player-close">Stop and close</button>
@@ -1081,6 +1082,9 @@ async function loadPlaybackTrack(id) {
   $("#player-time").textContent = "0:00";
   $("#player-mode").disabled = true;
   $("#player-play").disabled = true;
+  $("#player-favorite").disabled = true;
+  $("#player-favorite").textContent = "♡ Favorite";
+  $("#player-favorite").setAttribute("aria-pressed", "false");
   $("#player-add-playlist").disabled = true;
   $("#player-album").textContent = "";
   $("#player-art").hidden = true;
@@ -1100,6 +1104,9 @@ async function loadPlaybackTrack(id) {
     }
     $("#player-title").textContent = [track.artist, track.title].filter(Boolean).join(" - ");
     $("#player-album").textContent = track.album || "";
+    $("#player-favorite").disabled = !track.can_favorite;
+    $("#player-favorite").textContent = track.is_favorite ? "♥ Favorited" : "♡ Favorite";
+    $("#player-favorite").setAttribute("aria-pressed", String(Boolean(track.is_favorite)));
     $("#player-add-playlist").disabled = false;
     $("#player-play").disabled = false;
     const art = $("#player-art");
@@ -1247,6 +1254,9 @@ $("#player-clear-upcoming").onclick = () => {
 };
 $("#player-add-playlist").onclick = () => {
   if (playback.track) openPlaylistPicker([playback.track.id]);
+};
+$("#player-favorite").onclick = () => {
+  if (playback.track) toggleTrackFavorite(playback.track, $("#player-favorite"));
 };
 $("#player-save-queue").onclick = () => openPlaylistPicker(playback.queue.map(track => track.id));
 
@@ -2021,16 +2031,34 @@ function listeningTracksMarkup(tracks) {
       <div class="listen-actions">
         <button type="button" class="action ghost" data-listen-play="${index}" aria-label="Play ${esc(track.title || "track")}">Play</button>
         <button type="button" class="action ghost" data-listen-next="${index}">Play next</button>
+        <button type="button" class="action ghost" data-listen-favorite="${index}" aria-pressed="${Boolean(track.is_favorite)}">${track.is_favorite ? "♥ Favorited" : "♡ Favorite"}</button>
         <button type="button" class="action ghost" data-add-playlist-track="${track.id}">Add to playlist</button>
       </div></li>`
   ).join("")}</ol>`;
 }
-function bindListeningTracks(container, tracks) {
+async function toggleTrackFavorite(track, button, onRemoved) {
+  button.disabled = true;
+  try {
+    const favorited = !track.is_favorite;
+    await api(`/api/favorites/${track.id}`, {method: favorited ? "PUT" : "DELETE"});
+    track.is_favorite = favorited;
+    button.setAttribute("aria-pressed", String(favorited));
+    button.textContent = favorited ? "♥ Favorited" : "♡ Favorite";
+    if (!favorited) onRemoved?.();
+  } catch (error) {
+    toast(error.message, true);
+  } finally { button.disabled = false; }
+}
+function bindListeningTracks(container, tracks, onFavoriteRemoved) {
   container.querySelectorAll("[data-listen-play]").forEach(button => {
     button.onclick = () => playQueue(tracks, Number(button.dataset.listenPlay));
   });
   container.querySelectorAll("[data-listen-next]").forEach(button => {
     button.onclick = () => enqueueTracks([tracks[Number(button.dataset.listenNext)]], true);
+  });
+  container.querySelectorAll("[data-listen-favorite]").forEach(button => {
+    const track = tracks[Number(button.dataset.listenFavorite)];
+    button.onclick = () => toggleTrackFavorite(track, button, onFavoriteRemoved);
   });
   highlightListeningTrack();
 }
@@ -2053,6 +2081,7 @@ const views = {
         <div class="listen-kinds" role="group" aria-label="Browse music">
           <button type="button" class="action ghost" data-listen-kind="albums">Albums</button>
           <button type="button" class="action ghost" data-listen-kind="tracks">Songs</button>
+          <button type="button" class="action ghost" data-listen-kind="favorites">Favorites</button>
         </div>
         <label>Sort <select id="listen-sort"><option value="artist">Artist</option>
           <option value="title">Title</option><option value="recent">Recently added</option></select></label>
@@ -2100,8 +2129,8 @@ const views = {
           search.offset = Math.floor((page.total - 1) / search.size) * search.size;
           return loadPage();
         }
-        const songs = search.kind === "tracks";
-        const noun = songs ? "songs" : "albums";
+        const songs = search.kind !== "albums";
+        const noun = search.kind === "favorites" ? "favorites" : songs ? "songs" : "albums";
         pageTracks = songs ? page.items : [];
         $("#listen-summary").textContent = page.total ?
           `${search.offset + 1}–${Math.min(search.offset + search.size, page.total)} of ${page.total} ${noun}${search.query ? ` matching “${search.query}”` : ""}` :
@@ -2115,7 +2144,8 @@ const views = {
               ${listenCoverMarkup(album.cover_url)}<span class="player-album-copy"><strong>${esc(album.album)}</strong>
               <span>${esc(album.album_artist)} · ${album.track_count} songs</span></span></button>`
           ).join("");
-        bindListeningTracks(results, pageTracks);
+        bindListeningTracks(results, pageTracks,
+          search.kind === "favorites" ? loadPage : undefined);
         bindListenCovers(results);
         results.querySelectorAll("[data-listen-album]").forEach(button => {
           button.onclick = () => loadAlbum(button.dataset.listenArtist, button.dataset.listenAlbum, button);
