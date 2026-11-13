@@ -92,6 +92,7 @@ class Playback:
         return {
             "id": track.id, "title": track.title or Path(track.path).name,
             "artist": track.artist, "album": track.album,
+            "cover_url": f"/api/tracks/{track.id}/cover" if track.has_embedded_art else None,
             "format": track.format or audio_format(track.path),
             "duration": track.duration, "bitrate": track.bitrate,
             "sample_rate": track.sample_rate, "bit_depth": track.bit_depth,

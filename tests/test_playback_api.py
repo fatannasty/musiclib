@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import make_mp3, make_wav
+from conftest import JPEG_600x400, make_flac, make_mp3, make_wav
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -35,6 +35,7 @@ def test_original_audio_metadata_and_range_seeking(lib_env):
         assert info["artist"] == "Artist"
         assert info["sample_rate"] == 44100
         assert info["media_type"] == "audio/mpeg"
+        assert info["cover_url"] is None
         response = client.get(info["original_url"])
         assert response.status_code == 200
         assert response.content == data
@@ -51,6 +52,19 @@ def test_original_audio_metadata_and_range_seeking(lib_env):
         ).status_code == 416
     assert path.read_bytes() == data
     assert env.db.get_track(track.id) == track
+
+
+def test_now_playing_artwork_uses_authenticated_local_cover(lib_env):
+    path = lib_env.library / "cover.flac"
+    make_flac(path, tags={"TITLE": "With cover"}, art=JPEG_600x400)
+    Scanner(lib_env.config, lib_env.db, workers=1).scan()
+    track = lib_env.db.find_track_by_path(str(path))
+    with TestClient(create_app(lib_env.config)) as client:
+        info = client.get(f"/api/tracks/{track.id}/playback").json()
+        assert info["cover_url"] == f"/api/tracks/{track.id}/cover"
+        cover = client.get(info["cover_url"])
+        assert cover.status_code == 200
+        assert cover.content == JPEG_600x400
 
 
 @pytest.mark.parametrize("case", [

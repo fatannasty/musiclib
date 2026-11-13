@@ -18,6 +18,8 @@ class Element {
     this.isConnected = true;
     this.children = [];
     this.writes = 0;
+    this.style = {};
+    this.value = "";
     const classes = new Set();
     this.classList = {
       add: (...values) => values.forEach(value => classes.add(value)),
@@ -32,10 +34,16 @@ class Element {
   set innerHTML(value) { this.html = value; this.writes++; }
   get innerHTML() { return this.html || ""; }
   setAttribute(key, value) { this.attributes.set(key, value); }
+  getAttribute(key) { return this.attributes.get(key); }
   hasAttribute(key) { return this.attributes.has(key); }
   removeAttribute(key) { this.attributes.delete(key); }
   replaceChildren() { this.children = []; }
   querySelectorAll() { return []; }
+  focus() {}
+  click() { this.onclick?.(); }
+  showModal() { this.open = true; }
+  close() { this.open = false; this.onclose?.(); }
+  insertAdjacentHTML(position, value) { this.innerHTML = value + this.innerHTML; }
 }
 
 function dashboard({storage, reducedMotion = false} = {}) {
@@ -68,6 +76,7 @@ function dashboard({storage, reducedMotion = false} = {}) {
   });
   vm.runInContext(appearance, context);
   vm.runInContext(source, context);
+  vm.runInContext('authState.user = {id: 1, username: "admin", role: "admin"}', context);
   context.toast = (...args) => notices.push(args);
   return {context, nodes, document, saved, warnings, notices, scrolls, events,
     run: script => vm.runInContext(script, context)};
@@ -181,7 +190,141 @@ test("album player stays outside the scrolling dialog surface", () => {
   assert.match(styles, /\.album-dialog \.player\s*\{\s*position:\s*fixed;/);
   assert.match(styles, /\.album-dialog\.album-dialog-playing \.album-dialog-surface\s*\{\s*padding-bottom:\s*\d+px;/);
   assert.match(styles, /\.album-dialog\.album-dialog-queue-open \.album-dialog-surface\s*\{\s*padding-bottom:\s*\d+px;/);
-  assert.match(styles, /\.player > \.row:first-child > button/);
+  assert.match(styles, /\.player-heading\s*\{[^}]*flex-wrap:\s*wrap/);
+});
+
+test("Now Playing creates a first playlist without leaving playback and retries use the same playlist", async () => {
+  const {context, document, run, notices} = dashboard();
+  const calls = [];
+  let attempts = 0;
+  context.api = async () => [];
+  context.post = async (path, body) => {
+    calls.push({path, body});
+    if (path === "/api/playlists") return {id: 5, name: "Evening"};
+    if (++attempts === 1) throw new Error("Please retry");
+    return {name: "Evening", tracks: [{id: 7}, {id: 8}, {id: 9}]};
+  };
+  await context.openPlaylistPicker([7, 7, 8]);
+  assert.equal(document.querySelector("#playlist-picker").open, true);
+  assert.equal(document.querySelector("#playlist-picker-select").value, "new");
+  document.querySelector("#playlist-picker-name").value = "Evening";
+  const submit = document.querySelector("#playlist-picker-form").onsubmit;
+  await submit({preventDefault() {}});
+  assert.equal(document.querySelector("#playlist-picker-select").value, "5");
+  assert.equal(document.querySelector("#playlist-picker-error").textContent, "Please retry");
+  assert.equal(document.querySelector("#playlist-picker-submit").disabled, false);
+  assert.equal(run("state.tab"), "overview");
+  await submit({preventDefault() {}});
+  assert.deepEqual(calls.map(call => call.path), ["/api/playlists", "/api/playlists/5/tracks", "/api/playlists/5/tracks"]);
+  assert.deepEqual(Array.from(calls[1].body.track_ids), [7, 8]);
+  assert.equal(document.querySelector("#playlist-picker").open, false);
+  assert.match(notices[0][0], /Added 2 tracks to Evening/);
+});
+
+test("mini-player geometry stays reachable after viewport changes", () => {
+  const {context} = dashboard();
+  const narrow = context.clampPlayerRect({left: 1100, top: 700, width: 410, height: 480}, 390, 844);
+  assert.deepEqual({...narrow}, {left: 12, top: 352, width: 366, height: 480});
+  const small = context.clampPlayerRect({left: -40, top: -25, width: 800, height: 800}, 360, 500);
+  assert.deepEqual({...small}, {left: 12, top: 12, width: 336, height: 476});
+});
+
+test("docking and floating keep the same audio element and source", () => {
+  const {context, document} = dashboard();
+  const player = document.querySelector("#player");
+  player.getBoundingClientRect = () => ({left: 20, top: 20, width: 410, height: 300});
+  context.window.innerWidth = 1365;
+  document.querySelector("#player-size").value = "410";
+  const audio = document.querySelector("#player-audio");
+  audio.src = "/api/tracks/1/audio";
+  audio.currentTime = 25;
+  context.setMiniPlayer(true);
+  assert.equal(player.classList.contains("is-floating"), true);
+  assert.equal(document.querySelector("#player-float").textContent, "Dock player");
+  context.setMiniPlayer(false);
+  assert.equal(player.classList.contains("is-floating"), false);
+  assert.equal(player.style.width, "");
+  assert.equal(audio.src, "/api/tracks/1/audio");
+  assert.equal(audio.currentTime, 25);
+});
+
+test("queue edits preserve the playing item and update the order used after shuffle", async () => {
+  const {context, run} = dashboard();
+  context.loadPlaybackTrack = id => id;
+  await run('playQueue([{id: 1}, {id: 2}, {id: 3}], 1)');
+  context.moveQueueTrack(1, -1);
+  assert.equal(run("playback.queue[playback.queueIndex].id"), 2);
+  assert.equal(run("playback.queueIndex"), 0);
+  context.removeQueueTrack(1);
+  assert.deepEqual(Array.from(run("playback.originalQueue.map(track => track.id)")), [2, 3]);
+  assert.equal(await context.removeQueueTrack(0), 3);
+  assert.equal(run("playback.queue[playback.queueIndex].id"), 3);
+});
+
+test("play-next inserts after the current track without restarting it", async () => {
+  const {context, run} = dashboard();
+  const played = [];
+  context.loadPlaybackTrack = id => { played.push(id); return id; };
+  await run('playQueue([{id: 1}, {id: 2}], 0)');
+  context.enqueueTracks([{id: 3}], true);
+  assert.deepEqual(Array.from(run("playback.queue.map(track => track.id)")), [1, 3, 2]);
+  assert.deepEqual(played, [1]);
+  await context.advancePlayback();
+  assert.deepEqual(played, [1, 3]);
+});
+
+test("end-of-track sleep timer takes precedence over repeat and queue advance", async () => {
+  const {context, run, document} = dashboard();
+  const played = [];
+  context.loadPlaybackTrack = id => { played.push(id); return id; };
+  await run('playQueue([{id: 1}, {id: 2}]); playback.repeat = "one"');
+  context.setSleepTimer("end");
+  await context.advancePlayback(1, true);
+  assert.deepEqual(played, [1]);
+  assert.equal(run("sleepTimer.endOfTrack"), false);
+  assert.equal(document.querySelector("#player-sleep").value, "0");
+  assert.match(document.querySelector("#player-status").textContent, /Sleep timer finished/);
+});
+
+test("timed sleep pauses playback and clears its state", () => {
+  const {context, document, run} = dashboard();
+  let scheduled, delay, paused = 0;
+  context.setTimeout = (fn, ms) => { scheduled = fn; delay = ms; return 123; };
+  document.querySelector("#player-audio").pause = () => paused++;
+  context.setSleepTimer("15");
+  assert.equal(delay, 900000);
+  scheduled();
+  assert.equal(paused, 1);
+  assert.equal(run("sleepTimer.timeout"), null);
+});
+
+test("mute restores audible volume after a zero-volume slider setting", () => {
+  const {document} = dashboard();
+  const audio = document.querySelector("#player-audio");
+  audio.volume = 0; audio.muted = false;
+  document.querySelector("#player-mute").click();
+  assert.equal(audio.volume, 1);
+  assert.equal(audio.muted, false);
+  document.querySelector("#player-mute").click();
+  assert.equal(audio.muted, true);
+});
+
+test("stopping the last queue item clears audio, timer, and media-key metadata", async () => {
+  const {context, document, run} = dashboard();
+  context.loadPlaybackTrack = id => id;
+  const audio = document.querySelector("#player-audio");
+  audio.pause = () => { audio.paused = true; };
+  audio.load = () => {};
+  context.navigator = {
+    mediaSession: {metadata: {title: "Song"}, playbackState: "playing", setActionHandler() {}},
+  };
+  await run("playQueue([{id: 1}])");
+  context.setSleepTimer("end");
+  context.removeQueueTrack(0);
+  assert.equal(run("playback.queue.length"), 0);
+  assert.equal(run("sleepTimer.endOfTrack"), false);
+  assert.equal(document.querySelector("#player").hidden, true);
+  assert.equal(context.navigator.mediaSession.metadata, null);
 });
 
 test("track-list comparison displays uncertainty and escapes catalog and local data", () => {

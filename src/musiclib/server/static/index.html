@@ -368,24 +368,62 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .metadata-select-toolbar .hint { margin: 0; }
 .player {
   position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 90;
-  max-width: 1200px; margin: auto; padding: 14px 18px; border: 1px solid var(--accent);
-  border-radius: var(--radius); background: var(--panel); box-shadow: 0 8px 40px rgba(0,0,0,.16); animation: rise .2s ease both;
+  max-width: 1100px; max-height: calc(100dvh - 24px); overflow: auto;
+  margin: auto; padding: 14px 18px; border: 1px solid var(--border);
+  border-radius: 18px; background: var(--panel); box-shadow: 0 12px 40px rgba(0,0,0,.18);
 }
 .player[hidden] { display: none; }
 .player .row { margin-bottom: 6px; }
 .player .now-playing { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.player audio { width: 100%; height: 40px; margin: 6px 0; }
-.player-transport { margin: 4px 0; }
-.player-queue { max-height: 180px; overflow-y: auto; margin: 4px 0 8px; padding-left: 26px; }
-.player-queue li { margin: 4px 0; }
-.player-queue button { width: 100%; text-align: left; }
+.player audio { display: none; }
+.player-heading { display: flex; align-items: center; gap: 12px; }
+.player-art { width: 54px; height: 54px; border-radius: 9px; object-fit: cover; background: var(--cover-bg); flex: 0 0 auto; }
+.player-art-placeholder { display: grid; place-items: center; color: var(--accent); }
+.player-art-placeholder svg { width: 28px; height: 28px; }
+.player .now-playing strong { display: block; font-size: 15px; line-height: 1.3; }
+.player-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.player .action { padding: 7px 10px; }
+.player-transport { justify-content: center; margin: 12px 0 8px; }
+.player-transport .player-play { min-width: 76px; min-height: 42px; border-radius: 24px; }
+.player-transport button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+.player-transport button:disabled { opacity: .5; }
+.player-options { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 8px; font-size: 12px; color: var(--dim); }
+.player-options summary { cursor: pointer; }
+.player-options .row { margin-top: 10px; align-items: end; }
+.player-options select { min-width: 0; max-width: 100%; }
+.player-volume { display: flex; align-items: center; gap: 8px; max-width: 230px; }
+.player-volume input { width: 100px; }
+.player-queue { max-height: 180px; overflow-y: auto; margin: 8px 0; padding: 0; list-style: none; }
+.player-queue li { display: flex; align-items: center; gap: 4px; padding: 4px 0; }
+.player-queue .queue-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.player-queue .queue-tools { display: flex; gap: 3px; flex: 0 0 auto; }
 .player-queue button[aria-current=true] { border-color: var(--accent); color: var(--accent); }
 .player .seek { display: flex; align-items: center; gap: 12px; }
+.player .seek label { font-size: 12px; color: var(--dim); }
+.player #player-time { min-width: 85px; text-align: right; font-variant-numeric: tabular-nums; }
 .player input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
-body.player-open { padding-bottom: 250px; }
-body.player-open #toast { bottom: 260px; }
-body.player-queue-open { padding-bottom: 460px; }
-body.player-queue-open #toast { bottom: 470px; }
+.player-drag { display: none; }
+#player.is-floating {
+  right: auto; bottom: auto; margin: 0; width: min(410px, calc(100vw - 24px));
+  min-width: min(320px, calc(100vw - 24px)); min-height: min(260px, calc(100dvh - 24px));
+  max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px);
+  resize: both; padding: 12px; z-index: 95;
+}
+#player.is-floating .player-drag {
+  display: block; width: 100%; margin-bottom: 12px; border: 0; border-bottom: 1px solid var(--border);
+  background: transparent; padding: 0 0 8px; color: var(--dim); font-size: 12px;
+  text-align: left; cursor: grab; touch-action: none;
+}
+#player.is-floating .player-drag:active { cursor: grabbing; }
+#player.is-floating .player-heading { flex-wrap: wrap; }
+#player.is-floating .player-actions { width: 100%; justify-content: flex-start; }
+#player.is-floating .player-art { width: 44px; height: 44px; }
+.player-size-controls { display: none; }
+#player.is-floating .player-size-controls { display: flex; }
+body.player-open, body.player-queue-open { padding-bottom: var(--player-space, 290px); }
+body.player-open #toast, body.player-queue-open #toast { bottom: calc(var(--player-space, 290px) + 10px); }
+body.player-floating, body.player-floating.player-queue-open { padding-bottom: 24px; }
+body.player-floating #toast { bottom: 20px; z-index: 100; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes album-flip-in {
   0% { opacity: 0; transform: perspective(1200px) rotateY(-72deg) scale(.78) translateY(24px); }
@@ -440,11 +478,8 @@ body.player-queue-open #toast { bottom: 470px; }
   .album-track-actions { grid-column: 2; }
   .album-track-pick { grid-row: span 2; align-self: start; }
   .album-dialog .player { bottom: 8px; left: 8px; right: 8px; width: auto; padding: 10px; }
-  .player > .row:first-child { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 10px; }
-  .player .now-playing { grid-column: 1; grid-row: 1; }
-  .player > .row:first-child > button { grid-column: 2; grid-row: 1; }
-  .player > .row:first-child > label { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-  .player > .row:first-child select { min-width: 0; flex: 1; }
+  .player-heading { flex-wrap: wrap; }
+  .player-actions { width: 100%; justify-content: flex-start; }
   .player-transport { gap: 5px; }
   .player-transport .action { padding: 7px 8px; font-size: 12px; }
   .player-queue { max-height: 120px; }
@@ -457,10 +492,6 @@ body.player-queue-open #toast { bottom: 470px; }
   .workspace-steps { gap: 3px; }
   .workspace-steps li { padding: 2px 6px; }
   .workspace .card { padding: 11px; }
-  body.player-open { padding-bottom: 330px; }
-  body.player-open #toast { bottom: 340px; }
-  body.player-queue-open { padding-bottom: 530px; }
-  body.player-queue-open #toast { bottom: 540px; }
 }
 </style>
 </head>
@@ -492,34 +523,68 @@ body.player-queue-open #toast { bottom: 470px; }
   </details>
 </aside>
 <main id="main"></main>
-<div id="player-home"><aside id="player" class="player" aria-label="Audio player" hidden>
-  <div class="row">
-    <div class="now-playing"><strong id="player-title">Music player</strong><div id="player-quality" class="hint"></div></div>
-    <label>Playback <select id="player-mode">
-      <option value="original">Original file</option><option value="compatible">Compatibility MP3 (lossy)</option>
-    </select></label>
-    <button class="action ghost" id="player-close">Stop and close</button>
+<div id="player-home"><aside id="player" class="player" aria-label="Audio player" tabindex="0" aria-keyshortcuts="Space" hidden>
+  <button type="button" class="player-drag" id="player-drag" aria-label="Move mini-player. Drag or use arrow keys.">Move mini-player · drag here or use arrow keys</button>
+  <div class="player-heading">
+    <img id="player-art" class="player-art" alt="" hidden>
+    <div id="player-art-placeholder" class="player-art player-art-placeholder" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13M9 9l12-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="16" rx="3" ry="3"/></svg>
+    </div>
+    <div class="now-playing"><strong id="player-title">Music player</strong><div id="player-album" class="hint"></div><div id="player-quality" class="hint"></div></div>
+    <div class="player-actions">
+      <button class="action ghost" id="player-add-playlist" disabled>Add to playlist</button>
+      <button class="action ghost" id="player-float" aria-pressed="false">Mini-player</button>
+      <button class="action ghost" id="player-close">Stop and close</button>
+    </div>
   </div>
-  <audio id="player-audio" controls preload="none" aria-label="Audio playback"></audio>
+  <audio id="player-audio" preload="none" aria-label="Audio playback"></audio>
   <div class="row player-transport" role="group" aria-label="Playback queue controls">
-    <button class="action ghost" id="player-prev" aria-label="Previous track">Previous</button>
-    <button class="action ghost" id="player-next" aria-label="Next track">Next</button>
     <button class="action ghost" id="player-shuffle" aria-pressed="false">Shuffle off</button>
+    <button class="action ghost" id="player-prev" aria-label="Previous track">Previous</button>
+    <button class="action player-play" id="player-play" disabled aria-label="Play">Play</button>
+    <button class="action ghost" id="player-next" aria-label="Next track">Next</button>
     <button class="action ghost" id="player-repeat" aria-pressed="false">Repeat off</button>
-    <button class="action ghost" id="player-queue-toggle" aria-expanded="false">Show queue</button>
   </div>
-  <ol id="player-queue" class="player-queue" hidden></ol>
   <div class="seek"><label for="player-seek">Position</label>
     <input id="player-seek" type="range" min="0" max="1" step="1" value="0" disabled>
     <span id="player-time" class="hint">0:00</span>
   </div>
-  <p id="player-status" class="hint" role="status" aria-live="polite"></p>
+  <div class="row" style="justify-content:space-between;margin-top:8px">
+    <div class="player-volume"><button type="button" class="action ghost" id="player-mute" aria-pressed="false">Mute</button>
+      <input id="player-volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"></div>
+    <button class="action ghost" id="player-queue-toggle" aria-expanded="false" aria-controls="player-queue-panel">Show queue</button>
+  </div>
+  <div id="player-queue-panel" hidden>
+    <div class="row"><span id="player-queue-count" class="hint"></span>
+      <button class="action ghost" id="player-save-queue">Save queue to playlist</button>
+      <button class="action ghost" id="player-clear-upcoming">Clear upcoming</button></div>
+    <ol id="player-queue" class="player-queue" hidden></ol>
+  </div>
+  <details class="player-options"><summary>Playback options <span id="player-sleep-status"></span></summary>
+    <div class="row">
+      <label>Playback<br><select id="player-mode">
+        <option value="original">Original file</option><option value="compatible">Compatibility MP3 (lossy)</option>
+      </select></label>
+      <label>Sleep timer<br><select id="player-sleep">
+        <option value="0">Off</option><option value="15">15 minutes</option><option value="30">30 minutes</option>
+        <option value="60">60 minutes</option><option value="end">End of this track</option>
+      </select></label>
+    </div>
+    <div class="row player-size-controls"><label>Mini-player size <select id="player-size">
+      <option value="410">Standard</option><option value="340">Small</option><option value="560">Wide</option>
+    </select></label><button type="button" class="action ghost" id="player-reset-position">Reset position</button></div>
+    <p class="hint">Space: play/pause when the player is focused. Resize the mini-player from its bottom-right corner.</p>
+    <p id="player-status" class="hint" role="status" aria-live="polite"></p>
+  </details>
 </aside></div>
 <dialog id="playlist-picker" class="playlist-picker" aria-label="Add tracks to playlist">
   <form id="playlist-picker-form">
     <h2>Add to playlist</h2>
-    <label>Choose a playlist<select id="playlist-picker-select" required></select></label>
-    <div class="row"><button class="action" type="submit">Add tracks</button>
+    <p id="playlist-picker-summary" class="hint"></p>
+    <label>Choose a playlist<select id="playlist-picker-select"></select></label>
+    <label id="playlist-picker-name-label" hidden>New playlist name<input id="playlist-picker-name" type="text" maxlength="80" autocomplete="off"></label>
+    <p id="playlist-picker-error" class="auth-error" role="alert"></p>
+    <div class="row"><button class="action" id="playlist-picker-submit" type="submit">Add tracks</button>
       <button class="action ghost" type="button" id="playlist-picker-cancel">Cancel</button></div>
   </form>
 </dialog>
@@ -834,7 +899,8 @@ const playback = {
 let queueKey = 0;
 const playButton = (id, name) => `<button class="action ghost" data-play-track="${id}" aria-label="Play ${esc(name || "track")}">Play</button>`;
 function albumTrackListMarkup(detail) {
-  return `<ol class="album-track-list">${detail.tracks.map(track =>
+  const queue = detail.tracks.map(track => ({id: track.id, artist: track.artist, title: track.title}));
+  return `<ol class="album-track-list" data-album-queue="${esc(JSON.stringify(queue))}">${detail.tracks.map(track =>
     `<li class="album-track"><label class="album-track-pick"><input type="checkbox" data-select-track="${track.id}" aria-label="Select ${esc(track.title || track.path)}"><span>Select</span></label>
       <div class="album-track-info"><span class="album-track-position">Disc ${esc(track.disc_no || "—")} · Track ${esc(track.track_no || "—")}</span>
         <strong>${esc(track.title || "Untitled track")}</strong>
@@ -889,6 +955,7 @@ async function setPlaybackSource(mode, position = 0, autoplay = true) {
       $("#player-status").textContent = !track.compatible_available && mode === "original" ?
         "Your browser could not play this file. Compatibility playback needs FFmpeg installed on the server. Check damaged files in Bad Files." :
         "Cannot play this file. It may be damaged, unavailable, or the server may be busy. Check it in Bad Files or retry Original playback.";
+      toast($("#player-status").textContent, true);
     }
   };
   audio.onloadedmetadata = () => {
@@ -905,32 +972,52 @@ async function setPlaybackSource(mode, position = 0, autoplay = true) {
     catch (error) {
       if (source !== playback.source || error.name === "AbortError" || error.name === "NotSupportedError") return;
       $("#player-status").textContent = error.name === "NotAllowedError" ?
-        "Press Play in the audio controls to start listening." : `Playback failed: ${error.message}`;
+        "Press Play to start listening." : `Playback failed: ${error.message}`;
     }
   }
 }
 function renderPlaybackQueue() {
   const queue = $("#player-queue");
   queue.innerHTML = playback.queue.map((track, index) =>
-    `<li><button type="button" class="action ghost${index === playback.queueIndex ? " active" : ""}"
+    `<li><button type="button" class="action ghost queue-title${index === playback.queueIndex ? " active" : ""}"
       data-player-queue-index="${index}" ${index === playback.queueIndex ? 'aria-current="true"' : ""}>
-      ${esc([track.artist, track.title || `Track ${track.id}`].filter(Boolean).join(" — "))}</button></li>`
+      ${index + 1}. ${esc([track.artist, track.title || `Track ${track.id}`].filter(Boolean).join(" — "))}</button>
+      <span class="queue-tools">
+        <button type="button" class="action ghost" data-queue-up="${index}" aria-label="Move track ${index + 1} earlier" ${index === 0 ? "disabled" : ""}>↑</button>
+        <button type="button" class="action ghost" data-queue-down="${index}" aria-label="Move track ${index + 1} later" ${index === playback.queue.length - 1 ? "disabled" : ""}>↓</button>
+        <button type="button" class="action ghost" data-queue-remove="${index}" aria-label="Remove track ${index + 1} from queue">×</button>
+      </span></li>`
   ).join("");
   queue.querySelectorAll("[data-player-queue-index]").forEach(button => {
     button.onclick = () => playQueueIndex(Number(button.dataset.playerQueueIndex));
   });
-  $("#player-prev").disabled = playback.queue.length < 2;
-  $("#player-next").disabled = playback.queue.length < 2;
+  for (const [attribute, action] of [
+    ["data-queue-up", index => moveQueueTrack(index, -1)],
+    ["data-queue-down", index => moveQueueTrack(index, 1)],
+    ["data-queue-remove", removeQueueTrack],
+  ]) {
+    queue.querySelectorAll(`[${attribute}]`).forEach(button => {
+      button.onclick = () => action(Number(button.getAttribute(attribute)));
+    });
+  }
+  const canWrap = playback.repeat === "all" && playback.queue.length > 1;
+  $("#player-prev").disabled = !(playback.queueIndex > 0 || canWrap);
+  $("#player-next").disabled = !(playback.queueIndex < playback.queue.length - 1 || canWrap);
+  $("#player-queue-count").textContent = `${playback.queue.length} tracks`;
+  $("#player-save-queue").disabled = !playback.queue.length;
+  $("#player-clear-upcoming").disabled = playback.queueIndex >= playback.queue.length - 1;
 }
 function setPlaybackQueueOpen(open) {
   const queue = $("#player-queue");
   queue.hidden = !open;
+  $("#player-queue-panel").hidden = !open;
   document.body.classList.toggle("player-queue-open", open);
   $("#library-album-page")?.classList.toggle("album-dialog-queue-open", open);
   $("#player-queue-toggle").textContent = open ? "Hide queue" : "Show queue";
   $("#player-queue-toggle").setAttribute("aria-expanded", String(open));
 }
 async function loadPlaybackTrack(id) {
+  if (sleepTimer.endOfTrack) clearSleepTimer();
   const request = ++playback.request;
   playback.source++;
   playback.controller?.abort();
@@ -939,6 +1026,7 @@ async function loadPlaybackTrack(id) {
   playback.track = null;
   playback.dragging = false;
   $("#player").hidden = false;
+  fitMiniPlayer();
   const albumDialog = $("#library-album-page");
   if (albumDialog?.open) albumDialog.classList.add("album-dialog-playing");
   document.body.classList.add("player-open");
@@ -948,6 +1036,11 @@ async function loadPlaybackTrack(id) {
   $("#player-seek").disabled = true;
   $("#player-time").textContent = "0:00";
   $("#player-mode").disabled = true;
+  $("#player-play").disabled = true;
+  $("#player-add-playlist").disabled = true;
+  $("#player-album").textContent = "";
+  $("#player-art").hidden = true;
+  $("#player-art-placeholder").hidden = false;
   try {
     const track = await api(`/api/tracks/${id}/playback`, {signal: playback.controller.signal});
     if (request !== playback.request) return;
@@ -961,6 +1054,19 @@ async function loadPlaybackTrack(id) {
       renderPlaybackQueue();
     }
     $("#player-title").textContent = [track.artist, track.title].filter(Boolean).join(" - ");
+    $("#player-album").textContent = track.album || "";
+    $("#player-add-playlist").disabled = false;
+    $("#player-play").disabled = false;
+    const art = $("#player-art");
+    art.onerror = () => { art.hidden = true; $("#player-art-placeholder").hidden = false; };
+    if (track.cover_url) {
+      art.src = track.cover_url;
+      art.hidden = false;
+      $("#player-art-placeholder").hidden = true;
+    } else {
+      art.removeAttribute("src");
+    }
+    updateMediaSession(track);
     $("#player-quality").textContent = [
       track.format?.toUpperCase(), track.bitrate && `${track.bitrate} kbps`,
       track.sample_rate && `${track.sample_rate / 1000} kHz`,
@@ -973,6 +1079,7 @@ async function loadPlaybackTrack(id) {
     if (request !== playback.request || error.name === "AbortError") return;
     $("#player-title").textContent = "Playback unavailable";
     $("#player-status").textContent = error.message;
+    toast(error.message, true);
   }
 }
 function playTrack(id) {
@@ -1009,6 +1116,11 @@ function playQueueIndex(index) {
 }
 function advancePlayback(direction = 1, ended = false) {
   if (!playback.queue.length || playback.queueIndex < 0) return;
+  if (ended && sleepTimer.endOfTrack) {
+    clearSleepTimer();
+    $("#player-status").textContent = "Sleep timer finished. Playback stopped.";
+    return;
+  }
   if (ended && playback.repeat === "one") {
     return setPlaybackSource(playback.mode, 0, true);
   }
@@ -1040,6 +1152,229 @@ function togglePlaybackShuffle() {
   $("#player-shuffle").setAttribute("aria-pressed", String(playback.shuffle));
   renderPlaybackQueue();
 }
+function commitQueueEdit(currentKey) {
+  playback.queueIndex = playback.queue.findIndex(track => track._queueKey === currentKey);
+  playback.originalQueue = playback.queue.map(track => ({...track}));
+  playback.shuffle = false;
+  $("#player-shuffle").textContent = "Shuffle off";
+  $("#player-shuffle").setAttribute("aria-pressed", "false");
+  renderPlaybackQueue();
+}
+function enqueueTracks(tracks, next = false) {
+  if (!tracks.length) return;
+  if (!playback.queue.length) return playQueue(tracks);
+  const currentKey = playback.queue[playback.queueIndex]?._queueKey;
+  const items = tracks.map(track => ({...track, _queueKey: ++queueKey}));
+  playback.queue.splice(next ? playback.queueIndex + 1 : playback.queue.length, 0, ...items);
+  commitQueueEdit(currentKey);
+  toast(`${tracks.length === 1 ? "Track" : "Album"} added ${next ? "to play next" : "to the queue"}.`);
+}
+function moveQueueTrack(index, direction) {
+  const destination = index + direction;
+  if (index < 0 || index >= playback.queue.length || destination < 0 || destination >= playback.queue.length) return;
+  const currentKey = playback.queue[playback.queueIndex]?._queueKey;
+  [playback.queue[index], playback.queue[destination]] = [playback.queue[destination], playback.queue[index]];
+  commitQueueEdit(currentKey);
+}
+function removeQueueTrack(index) {
+  if (index < 0 || index >= playback.queue.length) return;
+  const currentKey = playback.queue[playback.queueIndex]?._queueKey;
+  const wasCurrent = index === playback.queueIndex;
+  playback.queue.splice(index, 1);
+  if (!playback.queue.length) {
+    $("#player-close").click();
+    return;
+  }
+  commitQueueEdit(currentKey);
+  if (wasCurrent) return playQueueIndex(Math.min(index, playback.queue.length - 1));
+}
+$("#player-clear-upcoming").onclick = () => {
+  const currentKey = playback.queue[playback.queueIndex]?._queueKey;
+  playback.queue = playback.queue.slice(0, playback.queueIndex + 1);
+  commitQueueEdit(currentKey);
+};
+$("#player-add-playlist").onclick = () => {
+  if (playback.track) openPlaylistPicker([playback.track.id]);
+};
+$("#player-save-queue").onclick = () => openPlaylistPicker(playback.queue.map(track => track.id));
+
+async function toggleAudioPlayback() {
+  if (!playback.track) return;
+  const audio = $("#player-audio");
+  if (!audio.paused) { audio.pause(); return; }
+  try { await audio.play(); }
+  catch (error) { $("#player-status").textContent = `Playback failed: ${error.message}`; toast(error.message, true); }
+}
+function syncPlayButton() {
+  const paused = $("#player-audio").paused;
+  $("#player-play").textContent = paused ? "Play" : "Pause";
+  $("#player-play").setAttribute("aria-label", paused ? "Play" : "Pause");
+  if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+    navigator.mediaSession.playbackState = !playback.track ? "none" : paused ? "paused" : "playing";
+  }
+}
+$("#player-play").onclick = toggleAudioPlayback;
+$("#player-audio").onplay = syncPlayButton;
+$("#player-audio").onpause = syncPlayButton;
+$("#player-audio").onvolumechange = () => {
+  const audio = $("#player-audio");
+  $("#player-volume").value = audio.volume;
+  const muted = audio.muted || audio.volume === 0;
+  $("#player-mute").textContent = muted ? "Unmute" : "Mute";
+  $("#player-mute").setAttribute("aria-pressed", String(muted));
+};
+$("#player-volume").oninput = () => {
+  const audio = $("#player-audio");
+  audio.volume = Number($("#player-volume").value);
+  audio.muted = false;
+};
+$("#player-mute").onclick = () => {
+  const audio = $("#player-audio");
+  const wasMuted = audio.muted || audio.volume === 0;
+  if (wasMuted && audio.volume === 0) audio.volume = 1;
+  audio.muted = !wasMuted;
+};
+$("#player").onkeydown = event => {
+  if (event.code !== "Space" || event.target.closest("input, select, textarea, button, summary, [contenteditable]")) return;
+  event.preventDefault();
+  toggleAudioPlayback();
+};
+
+const sleepTimer = {timeout: null, endOfTrack: false};
+function clearSleepTimer() {
+  clearTimeout(sleepTimer.timeout);
+  sleepTimer.timeout = null;
+  sleepTimer.endOfTrack = false;
+  $("#player-sleep").value = "0";
+  $("#player-sleep-status").textContent = "";
+}
+function setSleepTimer(value) {
+  clearSleepTimer();
+  if (value === "0") return;
+  $("#player-sleep").value = value;
+  if (value === "end") {
+    sleepTimer.endOfTrack = true;
+    $("#player-sleep-status").textContent = "· stops after this track";
+    return;
+  }
+  const minutes = Number(value);
+  if (![15, 30, 60].includes(minutes)) { clearSleepTimer(); return; }
+  const deadline = new Date(Date.now() + minutes * 60_000);
+  $("#player-sleep-status").textContent = `· stops at ${deadline.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}`;
+  sleepTimer.timeout = setTimeout(() => {
+    $("#player-audio").pause();
+    clearSleepTimer();
+    $("#player-status").textContent = "Sleep timer finished. Playback paused.";
+    toast("Sleep timer finished. Playback paused.");
+  }, minutes * 60_000);
+}
+$("#player-sleep").onchange = () => setSleepTimer($("#player-sleep").value);
+
+function updateMediaSession(track) {
+  if (typeof navigator === "undefined" || !("mediaSession" in navigator) || typeof MediaMetadata === "undefined") return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: track.title, artist: track.artist || "", album: track.album || "",
+    artwork: track.cover_url ? [{src: new URL(track.cover_url, window.location.href).href}] : [],
+  });
+  for (const [action, handler] of [
+    ["play", () => { if ($("#player-audio").paused) toggleAudioPlayback(); }],
+    ["pause", () => $("#player-audio").pause()],
+    ["previoustrack", () => advancePlayback(-1)],
+    ["nexttrack", () => advancePlayback(1)],
+    ["stop", () => $("#player-close").click()],
+  ]) {
+    try { navigator.mediaSession.setActionHandler(action, handler); }
+    catch (error) {
+      if (error.name !== "NotSupportedError") throw error;
+      console.warn(`Media key ${action} is not supported by this browser.`, error);
+    }
+  }
+}
+function clearMediaSession() {
+  if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+  navigator.mediaSession.metadata = null;
+  navigator.mediaSession.playbackState = "none";
+  for (const action of ["play", "pause", "previoustrack", "nexttrack", "stop"]) {
+    try { navigator.mediaSession.setActionHandler(action, null); }
+    catch (error) {
+      if (error.name !== "NotSupportedError") throw error;
+      console.warn(`Media key ${action} is not supported by this browser.`, error);
+    }
+  }
+}
+
+function clampPlayerRect(rect, width, height) {
+  const margin = 12;
+  const w = Math.min(Math.max(320, rect.width), Math.max(0, width - margin * 2));
+  const h = Math.min(rect.height, Math.max(0, height - margin * 2));
+  return {
+    width: w, height: h,
+    left: Math.max(margin, Math.min(rect.left, width - w - margin)),
+    top: Math.max(margin, Math.min(rect.top, height - h - margin)),
+  };
+}
+function fitMiniPlayer() {
+  const player = $("#player");
+  if (!player.classList.contains("is-floating") || player.hidden) return;
+  const rect = clampPlayerRect(player.getBoundingClientRect(), window.innerWidth, window.innerHeight);
+  player.style.left = `${rect.left}px`;
+  player.style.top = `${rect.top}px`;
+}
+function resetMiniPlayerPosition() {
+  const player = $("#player");
+  player.style.width = `${Math.min(Number($("#player-size").value) || 410, window.innerWidth - 24)}px`;
+  player.style.height = "";
+  player.style.left = `${Math.max(12, window.innerWidth - player.getBoundingClientRect().width - 24)}px`;
+  player.style.top = "80px";
+  fitMiniPlayer();
+}
+function setMiniPlayer(floating) {
+  const player = $("#player");
+  player.classList.toggle("is-floating", floating);
+  document.body.classList.toggle("player-floating", floating);
+  $("#player-float").textContent = floating ? "Dock player" : "Mini-player";
+  $("#player-float").setAttribute("aria-pressed", String(floating));
+  if (floating) {
+    resetMiniPlayerPosition();
+    $("#player-drag").focus({preventScroll: true});
+  } else {
+    for (const property of ["left", "top", "width", "height"]) player.style[property] = "";
+  }
+}
+$("#player-float").onclick = () => setMiniPlayer(!$("#player").classList.contains("is-floating"));
+$("#player-reset-position").onclick = resetMiniPlayerPosition;
+$("#player-size").onchange = resetMiniPlayerPosition;
+let playerDrag = null;
+$("#player-drag").onpointerdown = event => {
+  if (event.button !== 0) return;
+  const rect = $("#player").getBoundingClientRect();
+  playerDrag = {id: event.pointerId, x: event.clientX - rect.left, y: event.clientY - rect.top};
+  event.currentTarget.setPointerCapture(event.pointerId);
+};
+$("#player-drag").onpointermove = event => {
+  if (!playerDrag || event.pointerId !== playerDrag.id) return;
+  $("#player").style.left = `${event.clientX - playerDrag.x}px`;
+  $("#player").style.top = `${event.clientY - playerDrag.y}px`;
+  fitMiniPlayer();
+};
+$("#player-drag").onpointerup = $("#player-drag").onpointercancel =
+  $("#player-drag").onlostpointercapture = () => { playerDrag = null; };
+$("#player-drag").onkeydown = event => {
+  const direction = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[event.key];
+  if (!direction) return;
+  event.preventDefault();
+  const rect = $("#player").getBoundingClientRect(), step = event.shiftKey ? 40 : 10;
+  $("#player").style.left = `${rect.left + direction[0] * step}px`;
+  $("#player").style.top = `${rect.top + direction[1] * step}px`;
+  fitMiniPlayer();
+};
+window.addEventListener("resize", fitMiniPlayer);
+if (typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(() => {
+    document.body.style.setProperty("--player-space", `${$("#player").getBoundingClientRect().height + 24}px`);
+    fitMiniPlayer();
+  }).observe($("#player"));
+}
 $("#player-prev").onclick = () => advancePlayback(-1);
 $("#player-next").onclick = () => advancePlayback(1);
 $("#player-shuffle").onclick = togglePlaybackShuffle;
@@ -1047,6 +1382,7 @@ $("#player-repeat").onclick = () => {
   playback.repeat = ({off: "all", all: "one", one: "off"})[playback.repeat];
   $("#player-repeat").textContent = `Repeat ${playback.repeat}`;
   $("#player-repeat").setAttribute("aria-pressed", String(playback.repeat !== "off"));
+  renderPlaybackQueue();
 };
 $("#player-queue-toggle").onclick = () => {
   setPlaybackQueueOpen($("#player-queue").hidden);
@@ -1062,13 +1398,16 @@ $("#player-close").onclick = () => {
   renderPlaybackQueue();
   setPlaybackQueueOpen(false);
   releaseAudio();
+  clearSleepTimer();
+  clearMediaSession();
+  syncPlayButton();
   $("#player").hidden = true;
   document.body.classList.remove("player-open");
   $("#library-album-page")?.classList.remove("album-dialog-playing");
 };
 $("#player-mode").onchange = () => setPlaybackSource($("#player-mode").value, playbackPosition(), !$("#player-audio").paused);
 $("#player-audio").ontimeupdate = updatePlaybackPosition;
-$("#player-audio").onended = () => advancePlayback(1, true);
+$("#player-audio").onended = () => { syncPlayButton(); advancePlayback(1, true); };
 $("#player-seek").oninput = () => {
   playback.dragging = true;
   $("#player-time").textContent = playbackTime(Number($("#player-seek").value));
@@ -1081,37 +1420,88 @@ $("#player-seek").onchange = () => {
 };
 document.addEventListener("click", event => {
   const button = event.target.closest("[data-play-track]");
-  if (button) playTrack(Number(button.dataset.playTrack));
+  if (button) {
+    const id = Number(button.dataset.playTrack);
+    const albumQueue = button.closest("[data-album-queue]");
+    if (albumQueue) {
+      const tracks = JSON.parse(albumQueue.dataset.albumQueue);
+      playQueue(tracks, tracks.findIndex(track => track.id === id));
+    } else playTrack(id);
+  }
   const addButton = event.target.closest("[data-add-playlist-track]");
   if (addButton) openPlaylistPicker([Number(addButton.dataset.addPlaylistTrack)]);
 });
 let pendingPlaylistTrackIds = [];
+let playlistPickerBusy = false;
+let playlistPickerOpener = null;
+function updatePlaylistPickerMode() {
+  const creating = $("#playlist-picker-select").value === "new";
+  $("#playlist-picker-name-label").hidden = !creating;
+  $("#playlist-picker-name").required = creating;
+  $("#playlist-picker-submit").textContent = creating ? "Create and add tracks" : "Add tracks";
+}
 async function openPlaylistPicker(trackIds) {
+  if (playlistPickerBusy || $("#playlist-picker").open) return;
+  const ids = [...new Set(trackIds)];
+  if (!ids.length) { toast("Choose a track or start playback first.", true); return; }
+  if (ids.length > 200) { toast("Save up to 200 distinct tracks at a time. Remove some queue items first.", true); return; }
+  playlistPickerBusy = true;
+  playlistPickerOpener = document.activeElement;
   try {
     const playlists = await api("/api/playlists");
-    if (!playlists.length) {
-      toast("Create a playlist first, then add tracks from the Library.", true);
-      state.tab = "playlists"; render();
-      return;
-    }
-    pendingPlaylistTrackIds = trackIds;
+    pendingPlaylistTrackIds = ids;
     $("#playlist-picker-select").innerHTML = playlists.map(playlist =>
       `<option value="${playlist.id}">${esc(playlist.name)}</option>`
-    ).join("");
+    ).join("") + '<option value="new">Create a new playlist…</option>';
+    $("#playlist-picker-select").value = playlists.length ? String(playlists[0].id) : "new";
+    $("#playlist-picker-name").value = "";
+    $("#playlist-picker-error").textContent = "";
+    $("#playlist-picker-summary").textContent = `${ids.length} distinct ${ids.length === 1 ? "track" : "tracks"} selected. Playback continues while you save.`;
+    updatePlaylistPickerMode();
     $("#playlist-picker").showModal();
+    if (!playlists.length) $("#playlist-picker-name").focus();
   } catch (error) { toast(error.message, true); }
+  finally { playlistPickerBusy = false; }
 }
-$("#playlist-picker-cancel").onclick = () => $("#playlist-picker").close();
+$("#playlist-picker-select").onchange = updatePlaylistPickerMode;
+$("#playlist-picker").onclose = () => {
+  pendingPlaylistTrackIds = [];
+  if (playlistPickerOpener?.isConnected) playlistPickerOpener.focus({preventScroll: true});
+};
+$("#playlist-picker").oncancel = event => { if (playlistPickerBusy) event.preventDefault(); };
+$("#playlist-picker-cancel").onclick = () => { if (!playlistPickerBusy) $("#playlist-picker").close(); };
 $("#playlist-picker-form").onsubmit = async event => {
   event.preventDefault();
-  const playlistId = Number($("#playlist-picker-select").value);
+  if (playlistPickerBusy || !pendingPlaylistTrackIds.length) return;
+  playlistPickerBusy = true;
+  const select = $("#playlist-picker-select");
+  const nameInput = $("#playlist-picker-name");
+  const controls = [select, nameInput, $("#playlist-picker-submit"), $("#playlist-picker-cancel")];
+  controls.forEach(control => { control.disabled = true; });
+  $("#playlist-picker-error").textContent = "";
   try {
+    let playlistId = select.value;
+    if (playlistId === "new") {
+      const name = nameInput.value.trim();
+      if (!name) throw new Error("Enter a name for your new playlist.");
+      const created = await post("/api/playlists", {name});
+      // Keep the new ID if adding fails, so a retry cannot create a duplicate playlist.
+      select.insertAdjacentHTML("afterbegin", `<option value="${created.id}">${esc(created.name)}</option>`);
+      select.value = String(created.id);
+      playlistId = created.id;
+      updatePlaylistPickerMode();
+    }
+    const added = pendingPlaylistTrackIds.length;
     const playlist = await post(`/api/playlists/${playlistId}/tracks`, {track_ids: pendingPlaylistTrackIds});
     $("#playlist-picker").close();
     pendingPlaylistTrackIds = [];
-    toast(`Added ${playlist.tracks.length} ${playlist.tracks.length === 1 ? "track" : "tracks"} to ${playlist.name}.`);
+    toast(`Added ${added} ${added === 1 ? "track" : "tracks"} to ${playlist.name}.`);
     if (state.tab === "playlists") render();
-  } catch (error) { toast(error.message, true); }
+  } catch (error) { $("#playlist-picker-error").textContent = error.message; }
+  finally {
+    playlistPickerBusy = false;
+    controls.forEach(control => { control.disabled = false; });
+  }
 };
 async function pollJob(id, label) {
   toast(`${label}: running...`);
@@ -1605,19 +1995,25 @@ const views = {
           `<div class="cover-ph" aria-hidden="true">♫</div>`}
           <div><p class="album-detail-kicker">Album player</p><h3 id="player-album-title">${esc(detail.album)}</h3>
             <p class="album-detail-meta">${esc(detail.album_artist)} · ${esc(detail.year || "Year unknown")} · ${detail.track_count} tracks</p>
-            <button type="button" class="action" id="player-play-album">Play album</button></div>
+            <div class="row"><button type="button" class="action" id="player-play-album">Play album</button>
+              <button type="button" class="action ghost" id="player-queue-album">Add album to queue</button></div></div>
         </div><ol class="album-track-list">${detail.tracks.map((track, index) =>
           `<li class="player-track-row"><div><strong>${esc(track.title || `Track ${index + 1}`)}</strong>
             <div class="hint">${esc(track.artist || detail.album_artist)} · Disc ${esc(track.disc_no || 1)} · Track ${esc(track.track_no || index + 1)}</div></div>
             <div class="row"><button type="button" class="action ghost" data-player-track-index="${index}">Play from here</button>
+            <button type="button" class="action ghost" data-player-next-index="${index}">Play next</button>
             <button type="button" class="action ghost" data-add-playlist-track="${track.id}">Add to playlist</button></div></li>`
         ).join("")}</ol></section>`;
       const queue = detail.tracks.map(track => ({
         id: track.id, artist: track.artist || detail.album_artist, title: track.title,
       }));
       $("#player-play-album").onclick = () => playQueue(queue, 0);
+      $("#player-queue-album").onclick = () => enqueueTracks(queue);
       $("#player-album-detail").querySelectorAll("[data-player-track-index]").forEach(button => {
         button.onclick = () => playQueue(queue, Number(button.dataset.playerTrackIndex));
+      });
+      $("#player-album-detail").querySelectorAll("[data-player-next-index]").forEach(button => {
+        button.onclick = () => enqueueTracks([queue[Number(button.dataset.playerNextIndex)]], true);
       });
     };
     $("#player-album-search").onclick = () => { offset = 0; loadPage().catch(error => toast(error.message, true)); };

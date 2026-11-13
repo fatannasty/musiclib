@@ -146,6 +146,27 @@ whether FFmpeg compatibility conversion is available. The player queue provides
 previous/next, shuffle, repeat-one/repeat-all, and direct queue selection.
 Playback never edits the source file.
 
+**Now Playing → Add to playlist** saves the current song without leaving playback.
+Choose an existing playlist or **Create a new playlist** in the same dialog,
+including when you have no playlists yet. **Show queue → Save queue to playlist**
+saves up to 200 distinct tracks; repeated queue entries are saved once. You can
+move or remove queue items, clear upcoming tracks, append an album, or choose
+**Play next** for an individual song without interrupting the current track.
+Starting a track from an album queues the album in disc/track order.
+
+Choose **Mini-player** to float a smaller player over the workspace. Drag its
+header to move it, resize its bottom-right corner, or use the size and reset
+controls under **Playback options**. The move handle also supports arrow keys
+(Shift for larger steps). **Dock player** returns to the bottom bar. The floating
+box stays inside this browser tab; it is not an independent desktop window.
+Switching views and changing player size do not restart audio.
+Volume/mute and play/pause are available directly; some mobile devices use the
+system volume instead. Supported browsers also expose media-key/lock-screen
+controls. **Playback options → Sleep timer** pauses after 15, 30, or 60 minutes,
+or stops at the end of the current track, even with repeat enabled. Manually
+changing tracks cancels an end-of-track timer. Signing out or stopping playback
+clears timers, queue contents, and media-key metadata; playback is not saved.
+
 **Original file** streams the unchanged audio with seeking, using the formats
 your browser supports (typically MP3, FLAC, WAV, AAC/M4A, Ogg, and Opus; support
 varies by browser and codec). If the browser cannot play it, the player falls
