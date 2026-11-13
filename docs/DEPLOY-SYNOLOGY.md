@@ -83,11 +83,17 @@ MUSIC_DIR=/volume1/music
 DATA_DIR=/volume1/docker/musiclib-data
 PUID=1026
 PGID=100
+MUSICLIB_COOKIE_SECURE=false
+MUSICLIB_ALLOWED_HOSTS=192.168.1.50
 EOT
 cat .env
 ```
 
 `MUSIC_DIR` must be a real folder (`ls /volume1/music` should list your files).
+Replace `192.168.1.50` with the NAS's LAN IP.
+The example is for trusted LAN-only HTTP access. For internet access, use a TLS
+reverse proxy, set `MUSICLIB_COOKIE_SECURE=true`, allow only your proxy hostname
+in `MUSICLIB_ALLOWED_HOSTS`, and do not expose port 8000 publicly.
 
 ## 7. Build and start
 
@@ -109,9 +115,16 @@ like `Uvicorn running on http://0.0.0.0:8000`.
 
 You can also watch it in DSM → **Container Manager** → **Container**.
 
-## 8. Open the dashboard
+## 8. Create the administrator and open the dashboard
 
-In a browser on any PC on your network: `http://NAS_IP:8000`
+Create the first administrator interactively; the password is hidden while you
+type and is never supplied as a command-line argument:
+
+```bash
+sudo docker exec -it musiclib musiclib create-admin --config /data/config.toml
+```
+
+Then open `http://NAS_IP:8000` in a browser on your network and sign in.
 
 Open the dashboard at `http://NAS_IP:8000`. Click **Scan** on the Overview tab.
 Done.

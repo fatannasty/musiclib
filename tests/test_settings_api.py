@@ -63,6 +63,7 @@ def test_existing_config_without_catalog_section_gets_compatible_defaults(lib_en
     path = lib_env.tmp / "old-config.toml"
     path.write_text(f'library = "{lib_env.library}"\ndb_path = "{lib_env.config.db_path}"\n')
     config = Config.load(path)
+    config.auth_required = False
     with TestClient(create_app(config)) as client:
         settings = client.get("/api/settings").json()
         assert settings["catalog"] == {"album_source": "all", "ipv4_only": False}

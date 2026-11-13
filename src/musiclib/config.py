@@ -157,6 +157,7 @@ class Config:
     config_path: Optional[Path] = None
     catalog: Dict[str, Any] = field(default_factory=dict)
     acoustid: Dict[str, Any] = field(default_factory=lambda: {"api_key": ""})
+    auth_required: bool = True
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "Config":

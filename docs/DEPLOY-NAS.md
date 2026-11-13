@@ -34,6 +34,10 @@ clients.
    ```
 
    ...or edit `docker-compose.yml` and set the two volume paths directly.
+   Before starting, choose the access mode: for trusted LAN-only HTTP, set
+   `MUSICLIB_COOKIE_SECURE=false`; for public access, keep it `true`, use a TLS
+   reverse proxy, and set `MUSICLIB_ALLOWED_HOSTS` to the exact hostnames or IPs
+   users will enter.
 
 4. Start it:
 
@@ -41,7 +45,23 @@ clients.
    docker compose up -d --build
    ```
 
-5. Open `http://<nas-ip>:8000` from any machine on the network.
+5. Create the first administrator account:
+
+   ```bash
+   docker exec -it musiclib musiclib create-admin --config /data/config.toml
+   ```
+
+   Choose a unique username and a strong passphrase when prompted. Existing
+   playlists are assigned to this first administrator.
+
+6. Open Musiclib using HTTPS. For an internet-facing installation, route the
+   public hostname through a TLS reverse proxy, set
+   `MUSICLIB_ALLOWED_HOSTS` to the public hostname (and any LAN hostname or IP
+   you use), and do not expose port 8000 directly to the internet. The
+   `MUSICLIB_COOKIE_SECURE` default is `true`, so sign-in cookies are only sent
+   over HTTPS. For a trusted, LAN-only installation accessed directly over
+   plain HTTP, set `MUSICLIB_COOKIE_SECURE=false` in the container environment
+   before starting or restarting the container.
 
 ## Permissions (recommended)
 

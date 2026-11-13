@@ -675,7 +675,11 @@ git clone https://github.com/<you>/musiclib.git && cd musiclib
 MUSIC_DIR=/volume1/music DATA_DIR=/volume1/docker/musiclib docker compose up -d --build
 ```
 
-Then open `http://<nas-ip>:8000`. Full guide: [docs/DEPLOY-NAS.md](docs/DEPLOY-NAS.md).
+Then create the administrator with
+`docker exec -it musiclib musiclib create-admin --config /data/config.toml`.
+Sign in over HTTPS. For public access, use a TLS reverse proxy, set
+`MUSICLIB_ALLOWED_HOSTS` to the hostnames you serve, and do not expose port 8000
+directly to the internet. Full guide: [docs/DEPLOY-NAS.md](docs/DEPLOY-NAS.md).
 
 ## CLI reference
 
@@ -693,6 +697,7 @@ Then open `http://<nas-ip>:8000`. Full guide: [docs/DEPLOY-NAS.md](docs/DEPLOY-N
 | `fill QUERY|--all [--apply] [--wait]` | send NZBs to SABnzbd, optionally import |
 | `sab` | SABnzbd queue/history |
 | `serve` | run the web dashboard |
+| `create-admin` | interactively create the first administrator account |
 | `config show` | print effective config (secrets redacted) |
 
 ## Development

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -19,6 +20,7 @@ from .duplicates import DuplicateFinder
 from .fingerprint import compute_all, fpcalc_available
 from .rename import Renamer
 from .scanner import Scanner
+from .server.auth import hash_password, valid_password, valid_username
 from .usenet import Sabnzbd, SabnzbdError, search_all
 
 app = typer.Typer(
@@ -78,6 +80,37 @@ def init(
     console.print(f"[green]config written to {config.config_path}[/green]")
     console.print(f"library: {config.library}")
     console.print("next: musiclib scan")
+
+
+@app.command("create-admin")
+def create_admin(config_path: Optional[str] = CONFIG_OPTION) -> None:
+    """Create the first administrator account for this Musiclib installation."""
+    config = get_config(config_path)
+    db = Database(config.db_path)
+    try:
+        if db.user_count():
+            console.print("[red]An account already exists; administrator bootstrap is closed.[/red]")
+            raise typer.Exit(1)
+        username = typer.prompt("Administrator username").strip().lower()
+        if not valid_username(username):
+            console.print(
+                "[red]Use 3–32 letters, numbers, dots, hyphens, or underscores; start with a letter.[/red]"
+            )
+            raise typer.Exit(1)
+        password = typer.prompt(
+            "Administrator password", hide_input=True, confirmation_prompt=True
+        )
+        if not valid_password(password):
+            console.print("[red]Use a password between 12 and 128 characters.[/red]")
+            raise typer.Exit(1)
+        try:
+            db.create_user(username, hash_password(password), role="admin")
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+        console.print("[green]Administrator account created. Sign in through the Musiclib website.[/green]")
+    finally:
+        db.close()
 
 
 @app.command()
