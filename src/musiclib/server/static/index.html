@@ -70,14 +70,14 @@ h1 span { color: var(--accent2); }
 .library-details { margin-top: 8px; }
 .library-details .chips { margin-top: 10px; border-bottom: 0; }
 .library-details .chip b { font-size: 19px; }
-nav { display: flex; gap: 4px; padding: 8px 28px 18px; flex-wrap: wrap; max-width: 1340px; margin: auto; }
-nav button {
+#nav { display: flex; gap: 4px; padding: 8px 28px 18px; flex-wrap: wrap; max-width: 1340px; margin: auto; }
+#nav button {
   background: transparent; border: 1px solid transparent; color: var(--dim);
   padding: 10px 13px; border-radius: 9px; cursor: pointer; font-size: 13px;
   transition: background-color .16s ease, color .16s ease, transform .16s ease;
 }
-nav button:hover { color: var(--text); background: var(--panel2); }
-nav button.active { color: var(--on-accent); background: var(--accent); font-weight: 650; }
+#nav button:hover { color: var(--text); background: var(--panel2); }
+#nav button.active { color: var(--on-accent); background: var(--accent); font-weight: 650; }
 main { padding: 12px 28px 40px; max-width: 1340px; margin: 0 auto; }
 #main > section { display: none; }
 #main > section.active { display: block; }
@@ -218,9 +218,9 @@ details > summary { cursor: pointer; color: var(--dim); padding: 6px 0; }
 .library-view-bar { justify-content: space-between; }
 .library-view-switch { display: flex; gap: 6px; flex-wrap: wrap; }
 .library-guide { margin: 4px 0 16px; }
-.library-results { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 14px; align-items: start; }
+.library-results { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 14px; align-items: start; }
 .library-results-content { min-width: 0; }
-.library-index { position: sticky; top: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; max-height: calc(100vh - 24px); overflow-y: auto; }
+.library-index { position: sticky; top: 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; margin: 0; padding: 0; max-height: calc(100vh - 24px); overflow-y: auto; }
 .library-index-title { grid-column: 1 / -1; color: var(--dim); font-size: 12px; font-weight: 650; }
 .library-index button, .pager-pages button { min-width: 36px; min-height: 36px; padding: 5px 8px; }
 .library-index button.action.ghost[aria-pressed=true], .pager-pages button.action.ghost[aria-current=page] {
@@ -360,8 +360,8 @@ body.player-open #toast { bottom: 260px; }
 }
 @media (max-width: 600px) {
   header { padding: 20px 16px 10px; }
-  nav { padding: 6px 12px 14px; gap: 4px; }
-  nav button { padding: 10px 11px; }
+  #nav { padding: 6px 12px 14px; gap: 4px; }
+  #nav button { padding: 10px 11px; }
   .brand img { width: 36px; height: 36px; }
   h1 { font-size: 24px; }
   .chips { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 16px; margin-top: 20px; }
@@ -376,7 +376,7 @@ body.player-open #toast { bottom: 260px; }
   .match-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .match-card { padding: 8px; }
   .library-results { display: block; }
-  .library-index { position: static; display: flex; overflow-x: auto; gap: 4px; margin: 0 0 12px; padding-bottom: 4px; }
+  .library-index { position: static; display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 4px; margin: 0 0 12px; padding-bottom: 4px; }
   .library-index-title { flex: 0 0 auto; align-self: center; margin-right: 4px; white-space: nowrap; }
   .library-index button { flex: 0 0 auto; }
   .widgets { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -69,6 +69,14 @@ test("tab visibility rules do not hide album and artwork result sections", () =>
   assert.doesNotMatch(styles, /(?:^|})\s*section\s*\{\s*display:\s*none\s*;/m);
 });
 
+test("alphabet navigation is isolated from the main nav and uses one ordered column", () => {
+  const styles = html.match(/<style>([\s\S]*?)<\/style>/)[1];
+  assert.doesNotMatch(styles, /(?:^|})\s*nav(?:\s+button(?:[.:][\w-]+)?)?\s*\{/m);
+  assert.match(styles, /#nav\s*\{[^}]*padding:/);
+  assert.match(styles, /\.library-index\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(styles, /\.library-index\s*\{[^}]*flex-wrap:\s*nowrap/);
+});
+
 test("album detail opens as an accessible listening dialog with reduced-motion fallback", () => {
   const styles = html.match(/<style>([\s\S]*?)<\/style>/)[1];
   assert.match(html, /<dialog id="library-album-page" class="album-dialog"/);
