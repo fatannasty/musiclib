@@ -128,7 +128,7 @@ td.path { font-family: var(--mono); font-size: 11.5px; color: var(--dim); word-b
 .auth-screen input { width: 100%; }
 .auth-error { min-height: 1.5em; color: var(--red); }
 .player-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
-.player-album-card { min-width: 0; overflow: hidden; padding: 0; text-align: left; }
+.player-album-card { min-width: 0; overflow: hidden; padding: 0; text-align: left; cursor: pointer; }
 .player-album-cover { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--cover-bg); }
 .player-album-copy { display: grid; gap: 2px; padding: 12px; }
 .player-album-copy strong, .player-album-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -421,6 +421,51 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .listen-album-heading { display: grid; grid-template-columns: 180px minmax(0, 1fr); align-items: center; gap: 24px; margin: 24px 0; }
 .listen-album-heading h3 { font-size: 28px; letter-spacing: -.025em; overflow-wrap: anywhere; }
 .listen-album-heading p { color: var(--dim); margin: 4px 0 16px; }
+.listen-intro {
+  display: flex; justify-content: space-between; align-items: end; gap: 24px;
+  padding: 28px; margin-bottom: 24px; border: 1px solid var(--border);
+  border-radius: 18px; background: var(--panel2);
+}
+.listen-intro h3 { font-size: clamp(24px, 3vw, 36px); letter-spacing: -.035em; line-height: 1.15; }
+.listen-intro p { margin-top: 6px; color: var(--dim); }
+.listen-intro .listen-search { width: min(100%, 520px); margin: 0; }
+.listen-intro .listen-search label { font-size: 13px; }
+.listen-toolbar { padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.listen-kinds { flex-wrap: wrap; }
+.player-library-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 20px; }
+.player-album-card { border: 0; border-radius: 12px; background: transparent; margin: 0; }
+.player-album-card .listen-album-art { border-radius: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12); }
+.player-album-card:hover .listen-album-art { outline: 2px solid var(--accent); outline-offset: 3px; }
+.player-album-copy { padding: 12px 2px 6px; gap: 3px; }
+.player-album-copy strong { font-size: 14px; }
+.listen-track { padding: 13px 12px; }
+.listen-track:hover { background: var(--panel2); }
+.listen-track-number { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 24px; text-align: center; }
+.listen-track { grid-template-columns: 24px minmax(0, 1fr) auto auto; }
+.listen-track .listen-actions button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+.listen-album-heading {
+  padding: 24px; border-radius: 16px; background: var(--panel2);
+}
+.player-heading .now-playing strong { overflow: hidden; text-overflow: ellipsis; }
+.player-heading .hint { overflow: hidden; text-overflow: ellipsis; }
+.player-transport .player-play { font-weight: 750; }
+.player-toolbar { justify-content: space-between; margin-top: 8px; }
+@media (min-width: 900px) {
+  #player:not(.is-floating) {
+    display: grid; grid-template-columns: minmax(180px, 1fr) minmax(320px, 1.3fr) minmax(180px, 1fr);
+    grid-template-areas: "heading transport actions" "heading seek toolbar" "options options options" "queue queue queue" "status status status";
+    column-gap: 16px; align-items: center;
+  }
+  #player:not(.is-floating) .player-heading { grid-area: heading; }
+  #player:not(.is-floating) .player-actions { grid-area: actions; }
+  #player:not(.is-floating) .player-transport { grid-area: transport; margin: 0 0 6px; gap: 5px; flex-wrap: nowrap; }
+  #player:not(.is-floating) .player-transport .action { padding: 7px 8px; }
+  #player:not(.is-floating) .seek { grid-area: seek; }
+  #player:not(.is-floating) .player-toolbar { grid-area: toolbar; margin: 0; }
+  #player:not(.is-floating) .player-options { grid-area: options; }
+  #player:not(.is-floating) #player-queue-panel { grid-area: queue; }
+  #player:not(.is-floating) #player-status { grid-area: status; }
+}
 body.listening-mode header { padding-bottom: 20px; }
 body.listening-mode #nav { border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .player .seek { display: flex; align-items: center; gap: 12px; }
@@ -512,9 +557,11 @@ body.player-floating #toast { bottom: 20px; z-index: 100; }
   #player-close::after { content: "Stop"; font-size: 12px; }
   .listen-search { flex-wrap: wrap; }
   .listen-search label { flex-basis: 100%; }
-  .listen-track { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 14px 0; }
+  .listen-intro { display: block; padding: 18px; }
+  .listen-intro .listen-search { margin-top: 16px; }
+  .listen-track { grid-template-columns: 24px minmax(0, 1fr) auto; gap: 8px; padding: 14px 0; }
   .listen-track .listen-actions { grid-column: 1 / -1; }
-  .listen-album-heading { grid-template-columns: 90px minmax(0, 1fr); gap: 16px; }
+  .listen-album-heading { grid-template-columns: 90px minmax(0, 1fr); gap: 16px; padding: 16px; }
   .listen-album-heading h3 { font-size: 22px; }
   .topbar-actions { flex-wrap: wrap; }
   .player-actions { width: 100%; justify-content: flex-start; }
@@ -571,12 +618,12 @@ body.player-floating #toast { bottom: 20px; z-index: 100; }
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13M9 9l12-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="16" rx="3" ry="3"/></svg>
     </div>
     <div class="now-playing"><strong id="player-title">Music player</strong><div id="player-album" class="hint"></div><div id="player-quality" class="hint"></div></div>
-    <div class="player-actions">
-      <button class="action ghost" id="player-favorite" aria-pressed="false" disabled>♡ Favorite</button>
-      <button class="action ghost" id="player-add-playlist" disabled>Add to playlist</button>
-      <button class="action ghost" id="player-float" aria-pressed="false">Mini-player</button>
-      <button class="action ghost" id="player-close">Stop and close</button>
-    </div>
+  </div>
+  <div class="player-actions">
+    <button class="action ghost" id="player-favorite" aria-pressed="false" disabled>♡ Favorite</button>
+    <button class="action ghost" id="player-add-playlist" disabled>Add to playlist</button>
+    <button class="action ghost" id="player-float" aria-pressed="false">Mini-player</button>
+    <button class="action ghost" id="player-close">Stop and close</button>
   </div>
   <audio id="player-audio" preload="none" aria-label="Audio playback"></audio>
   <div class="row player-transport" role="group" aria-label="Playback queue controls">
@@ -590,7 +637,7 @@ body.player-floating #toast { bottom: 20px; z-index: 100; }
     <input id="player-seek" type="range" min="0" max="1" step="1" value="0" disabled>
     <span id="player-time" class="hint">0:00</span>
   </div>
-  <div class="row" style="justify-content:space-between;margin-top:8px">
+  <div class="row player-toolbar">
     <div class="player-volume"><button type="button" class="action ghost" id="player-mute" aria-pressed="false">Mute</button>
       <input id="player-volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"></div>
     <button class="action ghost" id="player-queue-toggle" aria-expanded="false" aria-controls="player-queue-panel">Show queue</button>
@@ -2022,16 +2069,17 @@ function listenCoverMarkup(url) {
   return `<span class="listen-album-art" aria-hidden="true">♪
     ${url ? `<img data-listen-cover src="${esc(url)}" alt="" loading="lazy">` : ""}</span>`;
 }
-function listeningTracksMarkup(tracks) {
+function listeningTracksMarkup(tracks, offset = 0) {
   return `<ol class="listen-track-list">${tracks.map((track, index) =>
     `<li class="listen-track" data-listening-track-id="${track.id}">
+      <span class="listen-track-number" aria-hidden="true">${offset + index + 1}</span>
       <div class="listen-track-info"><strong>${esc(track.title || "Untitled track")}</strong>
         <span>${esc([track.artist || track.album_artist || "Unknown artist", track.album].filter(Boolean).join(" · "))}</span></div>
       <span class="listen-duration">${track.duration ? playbackTime(track.duration) : "—"}</span>
       <div class="listen-actions">
         <button type="button" class="action ghost" data-listen-play="${index}" aria-label="Play ${esc(track.title || "track")}">Play</button>
         <button type="button" class="action ghost" data-listen-next="${index}">Play next</button>
-        <button type="button" class="action ghost" data-listen-favorite="${index}" aria-pressed="${Boolean(track.is_favorite)}">${track.is_favorite ? "♥ Favorited" : "♡ Favorite"}</button>
+        <button type="button" class="action ghost" data-listen-favorite="${index}" aria-label="Favorite ${esc(track.title || "track")}" aria-pressed="${Boolean(track.is_favorite)}">${track.is_favorite ? "♥ Favorited" : "♡ Favorite"}</button>
         <button type="button" class="action ghost" data-add-playlist-track="${track.id}">Add to playlist</button>
       </div></li>`
   ).join("")}</ol>`;
@@ -2071,12 +2119,15 @@ const views = {
   async player(el) {
     const search = state.listen;
     el.innerHTML = `<div id="listen-browser">
-      <form class="listen-search" id="listen-search-form" role="search">
-        <label for="listen-query">Search your music
-          <input type="search" id="listen-query" maxlength="200" placeholder="Song, artist, or album" value="${esc(search.query)}"></label>
-        <button class="action" type="submit">Search</button>
-        <button class="action ghost" id="listen-clear" type="button">Clear</button>
-      </form>
+      <div class="listen-intro">
+        <div><h3>Your music, ready to play.</h3><p>Browse your collection, pick an album, or find a favorite.</p></div>
+        <form class="listen-search" id="listen-search-form" role="search">
+          <label for="listen-query">Search your music
+            <input type="search" id="listen-query" maxlength="200" placeholder="Song, artist, or album" value="${esc(search.query)}"></label>
+          <button class="action" type="submit">Search</button>
+          <button class="action ghost" id="listen-clear" type="button">Clear</button>
+        </form>
+      </div>
       <div class="listen-toolbar">
         <div class="listen-kinds" role="group" aria-label="Browse music">
           <button type="button" class="action ghost" data-listen-kind="albums">Albums</button>
@@ -2138,8 +2189,8 @@ const views = {
         const results = $("#listen-results");
         results.classList.toggle("player-library-grid", !songs && page.items.length > 0);
         results.innerHTML = !page.items.length ?
-          `<p class="empty">${search.query ? "Try another song, artist, or album, or clear your search." : "No playable music yet. Ask your administrator to scan the library."}</p>` :
-          songs ? listeningTracksMarkup(page.items) : page.items.map(album =>
+          `<p class="empty">${search.query ? "Try another song, artist, or album, or clear your search." : search.kind === "favorites" ? "No favorites yet. Select Favorite on a song to save it here." : "No playable music yet. Ask your administrator to scan the library."}</p>` :
+          songs ? listeningTracksMarkup(page.items, search.offset) : page.items.map(album =>
             `<button type="button" class="card player-album-card" data-listen-artist="${esc(album.album_artist)}" data-listen-album="${esc(album.album)}">
               ${listenCoverMarkup(album.cover_url)}<span class="player-album-copy"><strong>${esc(album.album)}</strong>
               <span>${esc(album.album_artist)} · ${album.track_count} songs</span></span></button>`
