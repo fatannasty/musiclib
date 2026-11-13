@@ -139,13 +139,15 @@ retain their original result format.
 Everyone signs in to a listening-first workspace. In **Listen**, search by song, artist, album artist, or
 album name; each word can match a different music field. Search updates after a
 short typing pause, and **Search** or Enter runs it immediately. Switch between
-**Albums** and **Songs**, sort by artist/title/recently added, and choose 25, 50,
-or 100 items per page. Searches do not match server file paths. Damaged/deleted
+**Albums**, **Songs**, and **Favorites**, sort by artist/title/recent, and choose
+25, 50, or 100 items per page. Searches do not match server file paths. Damaged/deleted
 catalog tracks are excluded from listening results.
 
 Open an album to play it in disc/track order, **Shuffle album**, or add it to the
 queue. **Back to music** restores the result page and focus without stopping
-audio. Songs results offer **Play**, **Play next**, and **Add to playlist**.
+audio. Songs results offer **Play**, **Play next**, **Favorite**, and **Add to playlist**.
+Favorites are private to each account; save or remove them from song lists or
+the player, then browse them under **Favorites**.
 Playing from a song continues through that result page; **Play this page** and
 **Shuffle this page** use only the displayed songs, not the whole library.
 The current track is highlighted. Search and paging choices remain while

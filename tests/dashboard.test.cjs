@@ -231,6 +231,22 @@ test("music search reports failures and retries without losing the query", async
   assert.equal(document.querySelector("#listen-paging").hidden, true);
 });
 
+test("Favorites empty state explains how to save music", async () => {
+  const {context, document, run} = dashboard();
+  run('state.listen.kind = "favorites"');
+  context.api = async () => ({items: [], total: 0});
+  await run("views.player")(new Element());
+  assert.match(document.querySelector("#listen-results").innerHTML, /No favorites yet/);
+  assert.doesNotMatch(document.querySelector("#listen-results").innerHTML, /scan the library/);
+});
+
+test("song list numbering follows the current page", () => {
+  const {context} = dashboard();
+  const markup = context.listeningTracksMarkup([{id: 26, title: "Next song"}], 25);
+  assert.match(markup, /listen-track-number" aria-hidden="true">26/);
+  assert.match(markup, /data-listen-play="0"/);
+});
+
 test("shuffle starts with the entire album and can restore the original order", async () => {
   const {run} = dashboard();
   run("loadPlaybackTrack = id => id; Math.random = () => 0");
