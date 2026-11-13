@@ -18,6 +18,16 @@ class Element {
     this.isConnected = true;
     this.children = [];
     this.writes = 0;
+    const classes = new Set();
+    this.classList = {
+      add: (...values) => values.forEach(value => classes.add(value)),
+      remove: (...values) => values.forEach(value => classes.delete(value)),
+      contains: value => classes.has(value),
+      toggle: (value, force = !classes.has(value)) => {
+        if (force) classes.add(value); else classes.delete(value);
+        return force;
+      },
+    };
   }
   set innerHTML(value) { this.html = value; this.writes++; }
   get innerHTML() { return this.html || ""; }
@@ -33,6 +43,7 @@ function dashboard({storage, reducedMotion = false} = {}) {
   const saved = new Map(), warnings = [], notices = [], scrolls = [], events = new Map();
   const document = {
     documentElement: new Element(),
+    body: new Element(),
     addEventListener() {},
     querySelector(selector) {
       if (!nodes.has(selector)) nodes.set(selector, new Element());
@@ -96,8 +107,52 @@ test("album track cards offer playback and individual edits without preselecting
   });
   assert.match(markup, /data-play-track="7"/);
   assert.match(markup, /data-edit-track="7"/);
+  assert.match(markup, /data-add-playlist-track="7"/);
   assert.match(markup, /&lt;Song&gt;/);
   assert.doesNotMatch(markup, /type="checkbox"[^>]*checked/);
+});
+
+test("the player offers playlist management and queue transport", () => {
+  const {run} = dashboard();
+  assert.equal(run('TABS.some(([id]) => id === "playlists")'), true);
+  assert.equal(run('Object.hasOwn(views, "playlists")'), true);
+  assert.match(html, /id="player-prev"/);
+  assert.match(html, /id="player-next"/);
+  assert.match(html, /id="player-shuffle"/);
+  assert.match(html, /id="player-repeat"/);
+  assert.match(html, /id="playlist-picker"/);
+  assert.match(html, /\/api\/playback\/formats/);
+});
+
+test("queue navigation wraps only when repeat-all is enabled", async () => {
+  const {run} = dashboard();
+  run('loadPlaybackTrack = id => id');
+  await run('playQueue([{id: 11, title: "First"}, {id: 12, title: "Second"}])');
+  assert.equal(run("playback.queueIndex"), 0);
+  assert.equal(await run("advancePlayback(1)"), 12);
+  assert.equal(run("playback.queueIndex"), 1);
+  assert.equal(await run("advancePlayback(-1)"), 11);
+  assert.equal(run("playback.queueIndex"), 0);
+  await run("advancePlayback(1)");
+  assert.equal(run("advancePlayback(1)"), undefined);
+  run('playback.repeat = "all"');
+  assert.equal(await run("advancePlayback(1)"), 11);
+  assert.equal(run("playback.queueIndex"), 0);
+});
+
+test("shuffle changes upcoming order but keeps previous-track navigation", async () => {
+  const {run} = dashboard();
+  run('loadPlaybackTrack = id => id');
+  run("Math.random = () => 0");
+  await run('playQueue([{id: 21}, {id: 22}, {id: 23}], 1)');
+  run("togglePlaybackShuffle()");
+  assert.equal(run("playback.queue[playback.queueIndex].id"), 22);
+  assert.equal(run("new Set(playback.queue.map(track => track.id)).size"), 3);
+  assert.equal(await run("advancePlayback(-1)"), 21);
+  assert.equal(await run("advancePlayback(1)"), 22);
+  run("togglePlaybackShuffle()");
+  assert.equal(run("playback.queue[playback.queueIndex].id"), 22);
+  assert.equal(run("playback.queueIndex"), 1);
 });
 
 test("album discovery select-all follows individual choices and can be cleared", () => {
@@ -125,6 +180,8 @@ test("album player stays outside the scrolling dialog surface", () => {
   assert.match(html, /surface\.append\(\$\("#library-workspace"\)\);\s*pageEl\.append\(player\);/);
   assert.match(styles, /\.album-dialog \.player\s*\{\s*position:\s*fixed;/);
   assert.match(styles, /\.album-dialog\.album-dialog-playing \.album-dialog-surface\s*\{\s*padding-bottom:\s*\d+px;/);
+  assert.match(styles, /\.album-dialog\.album-dialog-queue-open \.album-dialog-surface\s*\{\s*padding-bottom:\s*\d+px;/);
+  assert.match(styles, /\.player > \.row:first-child > button/);
 });
 
 test("track-list comparison displays uncertainty and escapes catalog and local data", () => {

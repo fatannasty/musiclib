@@ -139,7 +139,12 @@ retain their original result format.
 Use **Play** in Library track lists, album pages, Duplicates, or Bad Files to
 audition a file before editing or removing it. The player stays open while you
 switch tabs. It shows the source format, bitrate, sample rate, bit depth, and
-channel count when those are available. Playback never edits the source file.
+channel count when those are available. Playlist tracks can be added from Library
+or album pages. The **Playlists** page saves playlists in the Musiclib database,
+supports track ordering and removal, and shows the scanned format inventory and
+whether FFmpeg compatibility conversion is available. The player queue provides
+previous/next, shuffle, repeat-one/repeat-all, and direct queue selection.
+Playback never edits the source file.
 
 **Original file** streams the unchanged audio with seeking, using the formats
 your browser supports (typically MP3, FLAC, WAV, AAC/M4A, Ogg, and Opus; support
@@ -156,6 +161,8 @@ slider to jump within a compatibility stream. At most two compatibility streams
 can run per server process; switching tracks or choosing **Stop and close** releases the
 decoder. Missing, deleted, trashed, out-of-library, and symbolic-link sources
 cannot be played. Listening does not replace the **Bad Files** decode checks.
+The inventory reflects scanned filename formats; it does not identify every
+codec variant or guarantee that a particular browser can decode an original file.
 
 ## Duplicate detection
 

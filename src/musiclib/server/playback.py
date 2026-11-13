@@ -52,6 +52,22 @@ class Playback:
         self.db = db
         self.slots = BoundedSemaphore(2)
 
+    def format_inventory(self) -> Dict[str, Any]:
+        ffmpeg_available = shutil.which("ffmpeg") is not None
+        return {
+            "ffmpeg_available": ffmpeg_available,
+            "formats": [
+                {
+                    **item,
+                    "supported": item["format"] in MEDIA_TYPES,
+                    "compatibility_playback": (
+                        item["format"] in DEMUXERS and ffmpeg_available
+                    ),
+                }
+                for item in self.db.audio_format_counts()
+            ],
+        }
+
     def source(self, track_id: int) -> Track:
         track = self.db.get_track(track_id)
         if track is None or track.status == "deleted":
