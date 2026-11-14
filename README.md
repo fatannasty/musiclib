@@ -139,9 +139,10 @@ retain their original result format.
 Everyone signs in to a listening-first workspace. In **Listen**, search by song, artist, album artist, or
 album name; each word can match a different music field. Search updates after a
 short typing pause, and **Search** or Enter runs it immediately. Switch between
-**Albums**, **Songs**, and **Favorites**, sort by artist/title/recent, and choose
+**Albums**, **Artists**, **Songs**, and **Favorites**, sort by artist/title/recent, and choose
 25, 50, or 100 items per page. Searches do not match server file paths. Damaged/deleted
 catalog tracks are excluded from listening results.
+Artists search matches artist names; choose an artist to browse their albums.
 
 Open an album to play it in disc/track order, **Shuffle album**, or add it to the
 queue. **Back to music** restores the result page and focus without stopping
@@ -180,6 +181,10 @@ saves up to 200 distinct tracks; repeated queue entries are saved once. You can
 move or remove queue items, clear upcoming tracks, append an album, or choose
 **Play next** for an individual song without interrupting the current track.
 Starting a track from an album queues the album in disc/track order.
+
+On phones, the compact player keeps play/pause visible while browsing. Choose
+**Now playing** to expand the artwork, queue, and playback controls; **Collapse**
+returns to the compact bar without stopping playback. This works on desktop too.
 
 Choose **Mini-player** to float a smaller player over the workspace. Drag its
 header to move it, resize its bottom-right corner, or use the size and reset

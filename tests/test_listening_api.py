@@ -133,3 +133,23 @@ def test_listening_album_excludes_damaged_files_and_returns_only_public_metadata
         assert client.get("/api/listen/album", params={
             "album_artist": "Missing", "album": "Missing",
         }).status_code == 404
+
+
+def test_artist_browsing_is_bounded_and_filters_album_artist_exactly(lib_env):
+    add_track(lib_env, "One", artist="Guest", album_artist="The Artist", album="First")
+    add_track(lib_env, "Two", artist="Guest", album_artist="The Artist", album="Second")
+    add_track(lib_env, "Three", artist="The Artist Two", album="First")
+    add_track(lib_env, "Broken", artist="The Artist", status="bad")
+    with TestClient(create_app(lib_env.config)) as client:
+        page = client.get("/api/listen/artists", params={"query": "the artist", "limit": 1}).json()
+        assert page["total"] == 2
+        assert page["items"] == [{"name": "The Artist", "track_count": 2, "album_count": 2}]
+        assert client.get("/api/listen/artists", params={"offset": 1, "limit": 1}).json()["items"][0][
+            "name"
+        ] == "The Artist Two"
+        assert client.get("/api/listen/artists", params={"query": "%"}).json()["total"] == 0
+        albums = client.get("/api/listen/albums", params={"album_artist": "The Artist"}).json()
+        assert albums["total"] == 2
+        assert {item["album"] for item in albums["items"]} == {"First", "Second"}
+        assert "private-directory" not in str(albums)
+        assert client.get("/api/listen/artists", params={"limit": 101}).status_code == 422

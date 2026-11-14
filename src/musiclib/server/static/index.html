@@ -446,6 +446,26 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .listen-album-heading {
   padding: 24px; border-radius: 16px; background: var(--panel2);
 }
+.listen-artist-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.listen-artist { display: flex; align-items: center; gap: 14px; padding: 14px; text-align: left; }
+.listen-artist-initial { display: grid; place-items: center; width: 52px; height: 52px; flex: 0 0 auto; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 22px; font-weight: 700; }
+.listen-artist-copy { min-width: 0; overflow-wrap: anywhere; }
+.listen-artist-copy strong, .listen-artist-copy span { display: block; }
+.listen-artist-copy span { color: var(--dim); font-size: 12px; margin-top: 3px; }
+.listen-artist-filter { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.player-expand { flex: 0 0 auto; }
+#player.is-expanded:not(.is-floating) {
+  display: flex; flex-direction: column; align-items: stretch; gap: 12px;
+  width: min(680px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
+  padding: 24px; background: var(--panel);
+}
+#player.is-expanded .player-heading { flex-wrap: wrap; }
+#player.is-expanded .player-art { width: min(220px, 40vw); height: min(220px, 40vw); border-radius: 14px; }
+#player.is-expanded .player-art-placeholder svg { width: 40%; height: 40%; }
+#player.is-expanded .now-playing strong { font-size: clamp(20px, 3vw, 28px); }
+#player.is-expanded .player-transport { margin: 0; }
+#player.is-expanded .player-toolbar { margin: 0; }
+#player.is-expanded .player-options { margin: 0; }
 .player-heading .now-playing strong { overflow: hidden; text-overflow: ellipsis; }
 .player-heading .hint { overflow: hidden; text-overflow: ellipsis; }
 .player-transport .player-play { font-weight: 750; }
@@ -494,6 +514,8 @@ body.player-open, body.player-queue-open { padding-bottom: var(--player-space, 2
 body.player-open #toast, body.player-queue-open #toast { bottom: calc(var(--player-space, 290px) + 10px); }
 body.player-floating, body.player-floating.player-queue-open { padding-bottom: 24px; }
 body.player-floating #toast { bottom: 20px; z-index: 100; }
+body.player-expanded { padding-bottom: 110px; }
+body.player-expanded #toast { bottom: 20px; z-index: 110; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes album-flip-in {
   0% { opacity: 0; transform: perspective(1200px) rotateY(-72deg) scale(.78) translateY(24px); }
@@ -569,6 +591,35 @@ body.player-floating #toast { bottom: 20px; z-index: 100; }
   .player-transport .action { padding: 6px; font-size: 11px; min-height: 42px; }
   .player-transport .player-play { min-width: 60px; }
   .player-queue { max-height: 120px; }
+  #player:not(.is-floating):not(.is-expanded) {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px;
+    bottom: 8px; left: 8px; right: 8px; padding: 8px 10px;
+  }
+  #player:not(.is-floating):not(.is-expanded) .player-heading { flex-wrap: nowrap; min-width: 0; }
+  #player:not(.is-floating):not(.is-expanded) .player-heading .hint { white-space: nowrap; }
+  #player:not(.is-floating):not(.is-expanded) #player-quality,
+  #player:not(.is-floating):not(.is-expanded) .player-actions,
+  #player:not(.is-floating):not(.is-expanded) .seek,
+  #player:not(.is-floating):not(.is-expanded) .player-toolbar,
+  #player:not(.is-floating):not(.is-expanded) .player-options,
+  #player:not(.is-floating):not(.is-expanded) #player-queue-panel,
+  #player:not(.is-floating):not(.is-expanded) #player-status,
+  #player:not(.is-floating):not(.is-expanded) .player-transport button:not(#player-play) { display: none; }
+  #player:not(.is-floating):not(.is-expanded) .player-transport { margin: 0; }
+  #player:not(.is-floating):not(.is-expanded) #player-status:not(:empty) {
+    display: block; grid-column: 1 / -1; margin: 0; overflow-wrap: anywhere;
+  }
+  #player.is-expanded:not(.is-floating) {
+    inset: 0; width: 100%; max-width: none; height: 100dvh; max-height: 100dvh;
+    border-radius: 0; padding: max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom));
+  }
+  #player.is-expanded .player-heading { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; }
+  #player.is-expanded .player-art { width: min(60vw, 240px); height: min(60vw, 240px); }
+  #player.is-expanded .now-playing { text-align: center; }
+  #player.is-expanded .player-expand { order: -1; justify-self: end; }
+  #player.is-expanded .player-actions { justify-content: center; }
+  #player.is-expanded .player-queue { max-height: 180px; }
+  .album-dialog.album-dialog-playing .album-dialog-surface { padding-bottom: 100px; }
   .metadata-field { grid-template-columns: 1fr; }
   .job-row { grid-template-columns: minmax(0, 1fr) auto; }
   .job-row progress { grid-column: 1 / -1; grid-row: 2; }
@@ -618,6 +669,7 @@ body.player-floating #toast { bottom: 20px; z-index: 100; }
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13M9 9l12-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="16" rx="3" ry="3"/></svg>
     </div>
     <div class="now-playing"><strong id="player-title">Music player</strong><div id="player-album" class="hint"></div><div id="player-quality" class="hint"></div></div>
+    <button type="button" class="action ghost player-expand" id="player-expand" aria-expanded="false">Now playing</button>
   </div>
   <div class="player-actions">
     <button class="action ghost" id="player-favorite" aria-pressed="false" disabled>♡ Favorite</button>
@@ -703,7 +755,7 @@ const pageDescriptions = {
 };
 const state = {
   tab: "player", adminMode: false, jobs: [], libraryView: "albums", libraryBatch: 50,
-  listen: {kind: "albums", query: "", sort: "artist", size: 25, offset: 0},
+  listen: {kind: "albums", query: "", sort: "artist", size: 25, offset: 0, artist: ""},
 };
 const authState = {user: null, csrfToken: ""};
 function visibleTabs() {
@@ -1345,6 +1397,13 @@ $("#player-mute").onclick = () => {
   audio.muted = !wasMuted;
 };
 $("#player").onkeydown = event => {
+  if (event.key === "Escape" && $("#player").classList.contains("is-expanded")) {
+    event.preventDefault();
+    event.stopPropagation();
+    setPlayerExpanded(false);
+    $("#player-expand").focus();
+    return;
+  }
   if (event.code !== "Space" || event.target.closest("input, select, textarea, button, summary, [contenteditable]")) return;
   event.preventDefault();
   toggleAudioPlayback();
@@ -1440,6 +1499,7 @@ function resetMiniPlayerPosition() {
 }
 function setMiniPlayer(floating) {
   const player = $("#player");
+  if (floating && player.classList.contains("is-expanded")) setPlayerExpanded(false);
   player.classList.toggle("is-floating", floating);
   document.body.classList.toggle("player-floating", floating);
   $("#player-float").textContent = floating ? "Dock player" : "Mini-player";
@@ -1451,6 +1511,18 @@ function setMiniPlayer(floating) {
     for (const property of ["left", "top", "width", "height"]) player.style[property] = "";
   }
 }
+function setPlayerExpanded(expanded) {
+  const player = $("#player");
+  player.classList.toggle("is-expanded", expanded);
+  document.body.classList.toggle("player-expanded", expanded);
+  $("#player-expand").setAttribute("aria-expanded", String(expanded));
+  $("#player-expand").textContent = expanded ? "Collapse" : "Now playing";
+  if (!expanded) setPlaybackQueueOpen(false);
+}
+$("#player-expand").onclick = () => {
+  if ($("#player").classList.contains("is-floating")) setMiniPlayer(false);
+  setPlayerExpanded(!$("#player").classList.contains("is-expanded"));
+};
 $("#player-float").onclick = () => setMiniPlayer(!$("#player").classList.contains("is-floating"));
 $("#player-reset-position").onclick = resetMiniPlayerPosition;
 $("#player-size").onchange = resetMiniPlayerPosition;
@@ -1507,6 +1579,7 @@ $("#player-close").onclick = () => {
   playback.queueIndex = -1;
   renderPlaybackQueue();
   setPlaybackQueueOpen(false);
+  setPlayerExpanded(false);
   releaseAudio();
   clearSleepTimer();
   clearMediaSession();
@@ -2131,8 +2204,13 @@ const views = {
       <div class="listen-toolbar">
         <div class="listen-kinds" role="group" aria-label="Browse music">
           <button type="button" class="action ghost" data-listen-kind="albums">Albums</button>
+          <button type="button" class="action ghost" data-listen-kind="artists">Artists</button>
           <button type="button" class="action ghost" data-listen-kind="tracks">Songs</button>
           <button type="button" class="action ghost" data-listen-kind="favorites">Favorites</button>
+        </div>
+        <div id="listen-artist-filter" class="listen-artist-filter" hidden>
+          <strong id="listen-artist-name"></strong>
+          <button type="button" class="action ghost" id="listen-artist-back">All artists</button>
         </div>
         <label>Sort <select id="listen-sort"><option value="artist">Artist</option>
           <option value="title">Title</option><option value="recent">Recently added</option></select></label>
@@ -2174,23 +2252,32 @@ const views = {
         const params = new URLSearchParams({
           query: search.query, offset: String(search.offset), limit: String(search.size), sort: search.sort,
         });
+        if (search.kind === "albums" && search.artist) params.set("album_artist", search.artist);
+        $("#listen-artist-filter").hidden = !(search.kind === "albums" && search.artist);
+        $("#listen-artist-name").textContent = search.artist ? `Albums by ${search.artist}` : "";
         const page = await api(`/api/listen/${search.kind}?${params}`, {signal: controller.signal});
         if (!el.isConnected || current !== request) return;
         if (page.total && search.offset >= page.total) {
           search.offset = Math.floor((page.total - 1) / search.size) * search.size;
           return loadPage();
         }
-        const songs = search.kind !== "albums";
-        const noun = search.kind === "favorites" ? "favorites" : songs ? "songs" : "albums";
+        const songs = search.kind === "tracks" || search.kind === "favorites";
+        const artists = search.kind === "artists";
+        const noun = search.kind === "favorites" ? "favorites" : songs ? "songs" : artists ? "artists" : "albums";
         pageTracks = songs ? page.items : [];
         $("#listen-summary").textContent = page.total ?
           `${search.offset + 1}–${Math.min(search.offset + search.size, page.total)} of ${page.total} ${noun}${search.query ? ` matching “${search.query}”` : ""}` :
           `No ${noun} found${search.query ? ` for “${search.query}”` : ""}.`;
         const results = $("#listen-results");
-        results.classList.toggle("player-library-grid", !songs && page.items.length > 0);
+        results.classList.toggle("player-library-grid", !songs && !artists && page.items.length > 0);
+        results.classList.toggle("listen-artist-list", artists && page.items.length > 0);
         results.innerHTML = !page.items.length ?
           `<p class="empty">${search.query ? "Try another song, artist, or album, or clear your search." : search.kind === "favorites" ? "No favorites yet. Select Favorite on a song to save it here." : "No playable music yet. Ask your administrator to scan the library."}</p>` :
-          songs ? listeningTracksMarkup(page.items, search.offset) : page.items.map(album =>
+          songs ? listeningTracksMarkup(page.items, search.offset) : artists ? page.items.map(artist =>
+            `<button type="button" class="action ghost listen-artist" data-artist-name="${esc(artist.name)}">
+              <span class="listen-artist-initial" aria-hidden="true">${esc(artist.name.charAt(0).toUpperCase())}</span>
+              <span class="listen-artist-copy"><strong>${esc(artist.name)}</strong><span>${artist.album_count} albums · ${artist.track_count} songs</span></span></button>`
+          ).join("") : page.items.map(album =>
             `<button type="button" class="card player-album-card" data-listen-artist="${esc(album.album_artist)}" data-listen-album="${esc(album.album)}">
               ${listenCoverMarkup(album.cover_url)}<span class="player-album-copy"><strong>${esc(album.album)}</strong>
               <span>${esc(album.album_artist)} · ${album.track_count} songs</span></span></button>`
@@ -2198,6 +2285,14 @@ const views = {
         bindListeningTracks(results, pageTracks,
           search.kind === "favorites" ? loadPage : undefined);
         bindListenCovers(results);
+        results.querySelectorAll("[data-artist-name]").forEach(button => {
+          button.onclick = () => {
+            search.artist = button.dataset.artistName;
+            search.kind = "albums";
+            $("#listen-query").value = "";
+            return searchFromStart();
+          };
+        });
         results.querySelectorAll("[data-listen-album]").forEach(button => {
           button.onclick = () => loadAlbum(button.dataset.listenArtist, button.dataset.listenAlbum, button);
         });
@@ -2209,6 +2304,7 @@ const views = {
       } catch (error) {
         if (!el.isConnected || current !== request || error.name === "AbortError") return;
         $("#listen-results").classList.remove("player-library-grid");
+        $("#listen-results").classList.remove("listen-artist-list");
         $("#listen-results").innerHTML = `<div class="empty" role="alert">${esc(error.message)}
           <button class="action ghost" id="listen-retry">Try again</button></div>`;
         $("#listen-retry").onclick = loadPage;
@@ -2273,8 +2369,9 @@ const views = {
     };
     $("#listen-clear").onclick = () => { $("#listen-query").value = ""; return searchFromStart(); };
     el.querySelectorAll("[data-listen-kind]").forEach(button => {
-      button.onclick = () => { search.kind = button.dataset.listenKind; return searchFromStart(); };
+      button.onclick = () => { search.artist = ""; search.kind = button.dataset.listenKind; return searchFromStart(); };
     });
+    $("#listen-artist-back").onclick = () => { search.artist = ""; search.kind = "artists"; return searchFromStart(); };
     $("#listen-sort").onchange = () => { search.sort = $("#listen-sort").value; return searchFromStart(); };
     $("#listen-size").onchange = () => { search.size = Number($("#listen-size").value); return searchFromStart(); };
     $("#listen-prev").onclick = () => changePage(Math.max(0, search.offset - search.size));

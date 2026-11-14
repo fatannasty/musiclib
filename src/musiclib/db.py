@@ -571,7 +571,7 @@ class Database:
     def album_groups_page(
         self, query: str = "", status: str = "", genre: str = "", format: str = "",
         offset: int = 0, limit: int = 48, initial: str = "",
-        listening: bool = False, sort: str = "artist",
+        listening: bool = False, sort: str = "artist", album_artist: str = "",
     ) -> Dict[str, Any]:
         artist_expr = (
             "COALESCE(NULLIF(TRIM(album_artist), ''), NULLIF(TRIM(artist), ''), 'Unknown Artist')"
@@ -579,6 +579,9 @@ class Database:
         album_expr = "COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')"
         where = "status IN ('ok', 'suspect')" if listening else "status IN ('ok', 'suspect', 'bad')"
         params: List[Any] = []
+        if album_artist:
+            where += f" AND {artist_expr}=?"
+            params.append(album_artist)
         if status in ("ok", "suspect", "bad"):
             where += " AND status=?"
             params.append(status)
@@ -624,6 +627,30 @@ class Database:
             f"ORDER BY {ordering}, g.album_artist, g.album "
             "LIMIT ? OFFSET ?",
             params + [limit, offset],
+        )
+        return {"items": [dict(row) for row in rows], "total": total, "offset": offset}
+
+    def listening_artists_page(
+        self, query: str = "", offset: int = 0, limit: int = 25, sort: str = "artist",
+    ) -> Dict[str, Any]:
+        artist = "COALESCE(NULLIF(TRIM(album_artist), ''), NULLIF(TRIM(artist), ''), 'Unknown Artist')"
+        album = "COALESCE(NULLIF(TRIM(album), ''), 'Unknown Album')"
+        params: List[Any] = []
+        where = "status IN ('ok', 'suspect')"
+        for word in query.split():
+            pattern = "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            where += f" AND {artist} LIKE ? ESCAPE '\\' COLLATE NOCASE"
+            params.append(pattern)
+        grouped = (
+            f"SELECT {artist} AS name, COUNT(*) AS track_count, "
+            f"COUNT(DISTINCT {album}) AS album_count, MAX(id) AS latest_id "
+            f"FROM tracks WHERE {where} GROUP BY 1"
+        )
+        total = self.query_one(f"SELECT COUNT(*) AS n FROM ({grouped})", params)["n"]
+        order = "latest_id DESC, name COLLATE NOCASE, name" if sort == "recent" else "name COLLATE NOCASE, name"
+        rows = self.query(
+            f"SELECT name, track_count, album_count FROM ({grouped}) "
+            f"ORDER BY {order} LIMIT ? OFFSET ?", params + [limit, offset],
         )
         return {"items": [dict(row) for row in rows], "total": total, "offset": offset}
 
