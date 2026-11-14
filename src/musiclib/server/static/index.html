@@ -18,11 +18,11 @@
 <style>
 :root {
   color-scheme: light;
-  --bg: #f7f5fb; --panel: #ffffff; --panel2: #f0edf8; --border: #dcd5e8;
-  --text: #29233d; --dim: #655d77; --accent: #6544d8; --accent2: #e56038;
-  --on-accent: #ffffff; --accent-soft: #ebe5ff; --cover-bg: #f0edff; --control-border: #8573b2;
+  --bg: #f4f3ee; --panel: #fcfcf8; --panel2: #eaf0e7; --border: #dce4d8;
+  --text: #263936; --dim: #607367; --accent: #466e58; --accent2: #956344;
+  --on-accent: #ffffff; --accent-soft: #e1ebdf; --cover-bg: #e5ece2; --control-border: #799282;
   --accent-blue: #2876c7; --accent-gold: #bc7600;
-  --wash-one: rgba(101,68,216,.09); --wash-two: rgba(229,96,56,.07);
+  --wash-one: rgba(111,149,128,.06); --wash-two: rgba(216,196,164,.08);
   --green: #07635b; --red: #b42342; --yellow: #855000;
   --ok-bg: #e5f4ed; --bad-bg: #fff0f2; --warn-bg: #fff2d6;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -31,11 +31,11 @@
 }
 :root[data-theme=dark] {
   color-scheme: dark;
-  --bg: #171322; --panel: #211b30; --panel2: #2b2440; --border: #45395e;
-  --text: #f5f0ff; --dim: #c0b5d3; --accent: #bca3ff; --accent2: #ff9a76;
-  --on-accent: #21143f; --accent-soft: #382d52; --cover-bg: #302643; --control-border: #9380b5;
+  --bg: #15211e; --panel: #1e2d27; --panel2: #293c32; --border: #3d5447;
+  --text: #eef4eb; --dim: #b2c4b5; --accent: #a0c5a8; --accent2: #dbb48d;
+  --on-accent: #182b20; --accent-soft: #314c3a; --cover-bg: #2c4135; --control-border: #7d9a86;
   --accent-blue: #83baff; --accent-gold: #ffd078;
-  --wash-one: rgba(188,163,255,.13); --wash-two: rgba(255,154,118,.09);
+  --wash-one: rgba(160,197,168,.08); --wash-two: rgba(219,180,141,.05);
   --green: #89dec1; --red: #ff9aab; --yellow: #f9ce79;
   --ok-bg: #1c4239; --bad-bg: #482c37; --warn-bg: #43371e;
   --shadow: 0 4px 16px rgba(0,0,0,.12);
@@ -455,23 +455,50 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .listen-artist-filter { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .player-expand { flex: 0 0 auto; }
 #player.is-expanded:not(.is-floating) {
-  display: flex; flex-direction: column; align-items: stretch; gap: 12px;
-  width: min(680px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
-  padding: 24px; background: var(--panel);
+  display: grid; grid-template-columns: 230px minmax(0, 1fr);
+  grid-template-areas: "heading sound" "actions actions" "transport transport" "seek seek" "toolbar toolbar" "options options" "queue queue" "status status";
+  align-items: start; gap: 18px 36px;
+  width: min(1000px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
+  padding: 28px; background: var(--panel); border: 0; border-radius: 16px;
+  box-shadow: 0 16px 60px rgba(38,57,54,.18);
 }
-#player.is-expanded .player-heading { flex-wrap: wrap; }
-#player.is-expanded .player-art { width: min(220px, 40vw); height: min(220px, 40vw); border-radius: 14px; }
+#player.is-expanded .player-heading { display: flex; flex-direction: column; align-items: start; min-width: 0; }
+#player.is-expanded .player-art { width: 100%; height: auto; aspect-ratio: 1; border-radius: 10px; }
 #player.is-expanded .player-art-placeholder svg { width: 40%; height: 40%; }
 #player.is-expanded .now-playing strong { font-size: clamp(20px, 3vw, 28px); }
 #player.is-expanded .player-transport { margin: 0; }
 #player.is-expanded .player-toolbar { margin: 0; }
 #player.is-expanded .player-options { margin: 0; }
+.player-sound { display: none; min-width: 0; }
+#player.is-expanded .player-sound { display: block; grid-area: sound; }
+#player.is-expanded .player-heading { grid-area: heading; }
+#player.is-expanded .player-actions { grid-area: actions; flex-wrap: wrap; }
+#player.is-expanded .player-transport { grid-area: transport; justify-content: center; }
+#player.is-expanded .seek { grid-area: seek; }
+#player.is-expanded .player-toolbar { grid-area: toolbar; }
+#player.is-expanded .player-options { grid-area: options; }
+#player.is-expanded #player-queue-panel { grid-area: queue; }
+#player.is-expanded #player-status { grid-area: status; }
+#player.is-expanded .action.ghost { border-color: transparent; background: transparent; }
+#player.is-expanded .action.ghost:hover { background: var(--panel2); }
+#player.is-expanded .player-play { border-radius: 30px; min-height: 44px; }
+#player.is-expanded .now-playing { width: 100%; }
+#player.is-expanded .now-playing strong, #player.is-expanded .now-playing .hint { white-space: normal; overflow-wrap: anywhere; }
+.player-sound-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.player-sound-heading h3 { font-size: 14px; font-weight: 600; }
+.player-eq-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
+.player-eq-tools select { padding: 6px; font-size: 12px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; }
+.player-eq { display: grid; grid-template-columns: repeat(15, minmax(0,1fr)); gap: 4px; }
+.player-band { display: grid; justify-items: center; min-width: 0; gap: 6px; color: var(--dim); font-size: 9px; }
+.player-band input[type=range] { writing-mode: vertical-lr; direction: rtl; width: 24px; height: 100px; flex: none; accent-color: var(--accent); }
+.player-spectrum { display: block; width: 100%; height: 60px; margin-top: 20px; }
+.player-eq-note { color: var(--dim); font-size: 11px; margin-top: 8px; }
 .player-heading .now-playing strong { overflow: hidden; text-overflow: ellipsis; }
 .player-heading .hint { overflow: hidden; text-overflow: ellipsis; }
 .player-transport .player-play { font-weight: 750; }
 .player-toolbar { justify-content: space-between; margin-top: 8px; }
 @media (min-width: 900px) {
-  #player:not(.is-floating) {
+  #player:not(.is-floating):not(.is-expanded) {
     display: grid; grid-template-columns: minmax(180px, 1fr) minmax(320px, 1.3fr) minmax(180px, 1fr);
     grid-template-areas: "heading transport actions" "heading seek toolbar" "options options options" "queue queue queue" "status status status";
     column-gap: 16px; align-items: center;
@@ -612,11 +639,17 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
   #player.is-expanded:not(.is-floating) {
     inset: 0; width: 100%; max-width: none; height: 100dvh; max-height: 100dvh;
     border-radius: 0; padding: max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom));
+    display: flex; flex-direction: column; align-items: stretch; gap: 16px;
   }
-  #player.is-expanded .player-heading { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; }
-  #player.is-expanded .player-art { width: min(60vw, 240px); height: min(60vw, 240px); }
-  #player.is-expanded .now-playing { text-align: center; }
-  #player.is-expanded .player-expand { order: -1; justify-self: end; }
+  #player.is-expanded .player-heading { display: grid; grid-template-columns: 100px minmax(0, 1fr); align-items: center; gap: 16px; }
+  #player.is-expanded .player-art { width: 100px; height: 100px; grid-column: 1; grid-row: 2; }
+  #player.is-expanded .now-playing { text-align: left; grid-column: 2; grid-row: 2; }
+  #player.is-expanded .now-playing strong { font-size: 19px; }
+  #player.is-expanded .player-expand { grid-column: 1 / -1; grid-row: 1; justify-self: end; }
+  .player-band { font-size: 8px; }
+  .player-eq { gap: 2px; }
+  .player-band input[type=range] { width: 100%; max-width: 20px; height: 76px; }
+  .player-spectrum { height: 45px; }
   #player.is-expanded .player-actions { justify-content: center; }
   #player.is-expanded .player-queue { max-height: 180px; }
   .album-dialog.album-dialog-playing .album-dialog-surface { padding-bottom: 100px; }
@@ -670,6 +703,20 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
     </div>
     <div class="now-playing"><strong id="player-title">Music player</strong><div id="player-album" class="hint"></div><div id="player-quality" class="hint"></div></div>
     <button type="button" class="action ghost player-expand" id="player-expand" aria-expanded="false">Now playing</button>
+  </div>
+  <div class="player-sound">
+    <div class="player-sound-heading"><h3>Sound shaping</h3><span class="hint">15-band EQ</span></div>
+    <div class="player-eq-tools">
+      <button class="action ghost" id="player-eq-toggle" type="button" aria-pressed="false">Enable EQ</button>
+      <label class="hint">Preset <select id="player-eq-preset" aria-label="Equalizer preset">
+        <option value="flat">Flat</option><option value="warm">Warm &amp; balanced</option>
+        <option value="vocal">Vocal clarity</option><option value="custom" disabled>Custom</option>
+      </select></label>
+      <button class="action ghost" id="player-eq-reset" type="button">Reset</button>
+    </div>
+    <div id="player-eq-bands" class="player-eq"></div>
+    <canvas id="player-spectrum" class="player-spectrum" width="600" height="60" aria-label="Live audio spectrum"></canvas>
+    <p id="player-eq-status" class="player-eq-note" role="status">EQ off. Enable to shape sound and show the live spectrum.</p>
   </div>
   <div class="player-actions">
     <button class="action ghost" id="player-favorite" aria-pressed="false" disabled>♡ Favorite</button>
@@ -1040,6 +1087,153 @@ const playback = {
   track: null, request: 0, source: 0, offset: 0, mode: "original", dragging: false,
   controller: null, queue: [], originalQueue: [], queueIndex: -1, shuffle: false, repeat: "off",
 };
+const EQ_FREQUENCIES = [25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000];
+const EQ_PRESETS = {
+  flat: Array(15).fill(0),
+  warm: [3, 4, 3, 2, 1, 0, -1, -2, -1, 0, 1, 2, 2, 1, 0],
+  vocal: [-2, -2, -1, -1, 0, 1, 2, 3, 3, 2, 1, 0, -1, -1, -2],
+};
+const equalizer = {
+  context: null, source: null, filters: [], preamp: null, analyser: null,
+  gains: EQ_PRESETS.flat.slice(), enabled: false, frame: null, lastFrame: 0,
+};
+const eqLabel = frequency => frequency >= 1000 ? `${frequency / 1000}k` : String(frequency);
+$("#player-eq-bands").innerHTML = EQ_FREQUENCIES.map((frequency, index) =>
+  `<label class="player-band"><output id="eq-gain-${index}">0 dB</output>
+    <input type="range" data-eq-band="${index}" min="-6" max="6" step="1" value="0"
+      aria-label="${frequency} Hz gain" aria-valuetext="0 dB">
+    <span>${eqLabel(frequency)}</span></label>`
+).join("");
+function applyEqualizerGains() {
+  if (!equalizer.context) return;
+  const time = equalizer.context.currentTime;
+  equalizer.filters.forEach((filter, index) => {
+    filter.gain.setTargetAtTime(equalizer.gains[index], time, 0.015);
+  });
+  // Reserve headroom for combined boosts rather than clipping the signal.
+  const boost = equalizer.gains.reduce((sum, gain) => sum + Math.max(0, gain), 0);
+  equalizer.preamp.gain.setTargetAtTime(10 ** (-boost / 20), time, 0.015);
+}
+function routeEqualizer() {
+  if (!equalizer.source) return;
+  equalizer.source.disconnect();
+  equalizer.source.connect(equalizer.enabled ? equalizer.preamp : equalizer.context.destination);
+}
+async function ensureEqualizer() {
+  if (!equalizer.context) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) throw new Error("This browser does not support the Web Audio equalizer.");
+    const context = new AudioContextClass();
+    equalizer.context = context;
+    equalizer.preamp = context.createGain();
+    equalizer.analyser = context.createAnalyser();
+    equalizer.analyser.fftSize = 256;
+    equalizer.analyser.smoothingTimeConstant = 0.8;
+    equalizer.filters = EQ_FREQUENCIES.map(frequency => {
+      const filter = context.createBiquadFilter();
+      filter.type = "peaking";
+      filter.frequency.value = Math.min(frequency, context.sampleRate * 0.49);
+      filter.Q.value = 1.4;
+      return filter;
+    });
+    let node = equalizer.preamp;
+    equalizer.filters.forEach(filter => { node.connect(filter); node = filter; });
+    node.connect(equalizer.analyser);
+    equalizer.analyser.connect(context.destination);
+    equalizer.source = context.createMediaElementSource($("#player-audio"));
+    equalizer.source.connect(context.destination);
+    applyEqualizerGains();
+  }
+  await equalizer.context.resume();
+}
+function stopSpectrum() {
+  if (equalizer.frame !== null) cancelAnimationFrame(equalizer.frame);
+  equalizer.frame = null;
+  const canvas = $("#player-spectrum");
+  canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+}
+function startSpectrum() {
+  stopSpectrum();
+  if (!equalizer.enabled || $("#player-audio").paused || $("#player").hidden ||
+      !$("#player").classList.contains("is-expanded") || document.hidden ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const canvas = $("#player-spectrum"), drawing = canvas.getContext("2d");
+  if (!drawing) return;
+  const data = new Uint8Array(equalizer.analyser.frequencyBinCount);
+  const draw = time => {
+    if (time - equalizer.lastFrame >= 33) {
+      equalizer.lastFrame = time;
+      equalizer.analyser.getByteFrequencyData(data);
+      drawing.clearRect(0, 0, canvas.width, canvas.height);
+      drawing.fillStyle = getComputedStyle($("#player")).getPropertyValue("--accent").trim();
+      drawing.globalAlpha = 0.55;
+      const count = 48, width = canvas.width / count;
+      for (let index = 0; index < count; index++) {
+        const height = data[Math.floor(index * data.length / count)] / 255 * canvas.height;
+        drawing.fillRect(index * width, (canvas.height - height) / 2, width - 3, height);
+      }
+    }
+    equalizer.frame = requestAnimationFrame(draw);
+  };
+  equalizer.frame = requestAnimationFrame(draw);
+}
+function setEqualizerPreset(name) {
+  const gains = EQ_PRESETS[name];
+  if (!gains) return;
+  equalizer.gains = gains.slice();
+  $("#player-eq-preset").value = name;
+  $("#player-eq-bands").querySelectorAll("[data-eq-band]").forEach(input => {
+    const gain = gains[Number(input.dataset.eqBand)];
+    input.value = gain;
+    input.setAttribute("aria-valuetext", `${gain} dB`);
+    $(`#eq-gain-${input.dataset.eqBand}`).textContent = `${gain > 0 ? "+" : ""}${gain} dB`;
+  });
+  applyEqualizerGains();
+}
+$("#player-eq-toggle").onclick = async () => {
+  const button = $("#player-eq-toggle");
+  button.disabled = true;
+  try {
+    if (!equalizer.enabled) await ensureEqualizer();
+    equalizer.enabled = !equalizer.enabled;
+    routeEqualizer();
+    button.setAttribute("aria-pressed", String(equalizer.enabled));
+    button.textContent = equalizer.enabled ? "Bypass EQ" : "Enable EQ";
+    $("#player-eq-status").textContent = equalizer.enabled ?
+      "EQ enabled · headroom compensation active. Not a quality reference. Spectrum pauses with reduced motion." :
+      "EQ bypassed. Browser audio processing/resampling may still apply. Reload to return to native playback.";
+    startSpectrum();
+  } catch (error) {
+    equalizer.enabled = false;
+    routeEqualizer();
+    stopSpectrum();
+    button.setAttribute("aria-pressed", "false");
+    button.textContent = "Enable EQ";
+    if (equalizer.context && !equalizer.source) {
+      await equalizer.context.close();
+      equalizer.context = null;
+      equalizer.filters = [];
+      equalizer.preamp = null;
+      equalizer.analyser = null;
+    }
+    console.warn("Musiclib equalizer could not start.", error);
+    $("#player-eq-status").textContent = `Equalizer unavailable: ${error.message}`;
+  } finally { button.disabled = false; }
+};
+$("#player-eq-preset").onchange = event => setEqualizerPreset(event.target.value);
+$("#player-eq-reset").onclick = () => setEqualizerPreset("flat");
+$("#player-eq-bands").oninput = event => {
+  const input = event.target.closest("[data-eq-band]");
+  if (!input) return;
+  const gain = Number(input.value);
+  equalizer.gains[Number(input.dataset.eqBand)] = gain;
+  input.setAttribute("aria-valuetext", `${gain} dB`);
+  $(`#eq-gain-${input.dataset.eqBand}`).textContent = `${gain > 0 ? "+" : ""}${gain} dB`;
+  $("#player-eq-preset").value = "custom";
+  applyEqualizerGains();
+};
+document.addEventListener("visibilitychange", startSpectrum);
+window.matchMedia("(prefers-reduced-motion: reduce)").addEventListener?.("change", startSpectrum);
 let queueKey = 0;
 const playButton = (id, name) => `<button class="action ghost" data-play-track="${id}" aria-label="Play ${esc(name || "track")}">Play</button>`;
 function albumTrackListMarkup(detail) {
@@ -1112,7 +1306,11 @@ async function setPlaybackSource(mode, position = 0, autoplay = true) {
   audio.load();
   updatePlaybackPosition();
   if (autoplay) {
-    try { await audio.play(); }
+    try {
+      if (equalizer.context) await equalizer.context.resume();
+      if (source !== playback.source) return;
+      await audio.play();
+    }
     catch (error) {
       if (source !== playback.source || error.name === "AbortError" || error.name === "NotSupportedError") return;
       $("#player-status").textContent = error.name === "NotAllowedError" ?
@@ -1363,7 +1561,11 @@ async function toggleAudioPlayback() {
   if (!playback.track) return;
   const audio = $("#player-audio");
   if (!audio.paused) { audio.pause(); return; }
-  try { await audio.play(); }
+  try {
+    if (equalizer.context) await equalizer.context.resume();
+    if (!playback.track) return;
+    await audio.play();
+  }
   catch (error) { $("#player-status").textContent = `Playback failed: ${error.message}`; toast(error.message, true); }
 }
 function syncPlayButton() {
@@ -1374,6 +1576,7 @@ function syncPlayButton() {
   if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
     navigator.mediaSession.playbackState = !playback.track ? "none" : paused ? "paused" : "playing";
   }
+  startSpectrum();
 }
 $("#player-play").onclick = toggleAudioPlayback;
 $("#player-audio").onplay = syncPlayButton;
@@ -1518,6 +1721,7 @@ function setPlayerExpanded(expanded) {
   $("#player-expand").setAttribute("aria-expanded", String(expanded));
   $("#player-expand").textContent = expanded ? "Collapse" : "Now playing";
   if (!expanded) setPlaybackQueueOpen(false);
+  startSpectrum();
 }
 $("#player-expand").onclick = () => {
   if ($("#player").classList.contains("is-floating")) setMiniPlayer(false);
