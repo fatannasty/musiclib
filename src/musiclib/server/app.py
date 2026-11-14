@@ -320,7 +320,7 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
         if method == "GET":
             exact = {
                 "/api/listen/tracks", "/api/listen/albums", "/api/listen/album",
-                "/api/listen/favorites",
+                "/api/listen/favorites", "/api/listen/artists",
             }
             return path in exact or bool(re.fullmatch(
                 r"/api/(?:tracks/\d+/(?:playback|audio|cover)|favorites/\d+|playlists(?:/\d+(?:/tracks(?:/\d+|/order)?)?)?)",
@@ -1354,10 +1354,20 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
         query: str = Query("", max_length=200), offset: int = Query(0, ge=0),
         limit: int = Query(25, ge=1, le=100),
         sort: Literal["artist", "title", "recent"] = "artist",
+        album_artist: str = Query("", max_length=1024),
     ) -> Dict[str, Any]:
         return album_page_response(db.album_groups_page(
             query=query.strip(), offset=offset, limit=limit, listening=True, sort=sort,
+            album_artist=album_artist,
         ))
+
+    @app.get("/api/listen/artists")
+    def listen_artists(
+        query: str = Query("", max_length=200), offset: int = Query(0, ge=0),
+        limit: int = Query(25, ge=1, le=100),
+        sort: Literal["artist", "title", "recent"] = "artist",
+    ) -> Dict[str, Any]:
+        return db.listening_artists_page(query.strip(), offset, limit, sort)
 
     @app.get("/api/listen/album")
     def listen_album(

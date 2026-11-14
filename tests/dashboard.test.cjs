@@ -136,6 +136,21 @@ test("the player offers playlist management and queue transport", () => {
   assert.match(html, /\/api\/playback\/formats/);
 });
 
+test("expanding and collapsing preserves audio and closes the queue", () => {
+  const {document, run} = dashboard();
+  const player = document.querySelector("#player");
+  document.querySelector("#player-audio").src = "/stream";
+  document.querySelector("#player-expand").click();
+  assert.equal(player.classList.contains("is-expanded"), true);
+  assert.equal(document.querySelector("#player-expand").getAttribute("aria-expanded"), "true");
+  run("setPlaybackQueueOpen(true)");
+  document.querySelector("#player-expand").click();
+  assert.equal(player.classList.contains("is-expanded"), false);
+  assert.equal(document.querySelector("#player-queue-panel").hidden, true);
+  assert.equal(document.querySelector("#player-audio").src, "/stream");
+  assert.equal(document.querySelector("#player-expand").getAttribute("aria-expanded"), "false");
+});
+
 test("listening songs expose favorites and favorite changes update the control", async () => {
   const {context, run} = dashboard();
   const markup = context.listeningTracksMarkup([
