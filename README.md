@@ -54,7 +54,7 @@ Files placed directly in the library root are organized into
 `Singles/<Genre>/Artist - Title.ext`; files without a genre use `Unknown Genre`.
 Set `organize.root_singles = false` in the config to disable this rule.
 
-The dashboard opens with a bright, light appearance. Use **Dark mode** in the
+The dashboard opens with a soft sage-and-ivory appearance. Use **Dark mode** in the
 header to switch themes; your choice is saved in this browser, not on the server.
 If browser storage is blocked, the switch still works for the current page and
 an unsaved-preference notice appears. The header keeps four collection totals
@@ -138,8 +138,27 @@ retain their original result format.
 
 Use **Play** in Library track lists, album pages, Duplicates, or Bad Files to
 audition a file before editing or removing it. The player stays open while you
-switch tabs. It shows the source format, bitrate, sample rate, bit depth, and
-channel count when those are available. Playback never edits the source file.
+switch tabs. Starting a track in an album or table queues the other visible
+tracks there. Use the player controls to pause, skip, seek, shuffle, repeat, and
+adjust volume; open **Queue** to jump to or remove a queued track, or clear the
+upcoming tracks. The listening room places album artwork and information beside
+the sound controls, stacking them on phones. Use **Minimize** to keep just the
+transport controls visible. It shows the source format, bitrate, sample rate,
+bit depth, and channel count when those are available. Playback never edits the
+source file.
+
+The **15-band equalizer** provides ±6 dB adjustment, Flat, Warm & balanced, and
+Vocal clarity presets, plus Reset and Bypass. It starts off and is initialized
+only when you choose **Enable EQ**. Enabled EQ reserves headroom for boosts, so
+it may sound quieter. The spectrum reflects the actual processed audio and
+stops while paused, minimized, in a background tab, or when reduced motion is
+requested. Web Audio support is required; unsupported browsers show an error
+and retain native playback. On phones, use the device's volume controls.
+
+EQ changes the listening signal, not the source file. After enabling it, Bypass
+skips the filters but audio still passes through the browser's Web Audio output,
+which can resample. Reload the dashboard to return to native playback for
+quality comparisons. Equalizer settings are kept only for the current page.
 
 **Original file** streams the unchanged audio with seeking, using the formats
 your browser supports (typically MP3, FLAC, WAV, AAC/M4A, Ogg, and Opus; support

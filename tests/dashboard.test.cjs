@@ -26,6 +26,7 @@ class Element {
   removeAttribute(key) { this.attributes.delete(key); }
   replaceChildren() { this.children = []; }
   querySelectorAll() { return []; }
+  getContext() { return null; }
 }
 
 function dashboard({storage, reducedMotion = false} = {}) {
@@ -52,6 +53,7 @@ function dashboard({storage, reducedMotion = false} = {}) {
       },
     },
     console: {...console, warn: (...args) => warnings.push(args)}, setTimeout, clearTimeout,
+    AbortController, cancelAnimationFrame() {},
     requestAnimationFrame: callback => callback(),
     confirm: () => true,
   });
@@ -125,6 +127,106 @@ test("album player stays outside the scrolling dialog surface", () => {
   assert.match(html, /surface\.append\(\$\("#library-workspace"\)\);\s*pageEl\.append\(player\);/);
   assert.match(styles, /\.album-dialog \.player\s*\{\s*position:\s*fixed;/);
   assert.match(styles, /\.album-dialog\.album-dialog-playing \.album-dialog-surface\s*\{\s*padding-bottom:\s*\d+px;/);
+});
+
+test("responsive player exposes transport controls and safely renders its track queue", () => {
+  const styles = html.match(/<style>([\s\S]*?)<\/style>/)[1];
+  assert.match(html, /id="player-toggle"/);
+  assert.match(html, /id="player-previous"/);
+  assert.match(html, /id="player-next"/);
+  assert.match(html, /id="player-shuffle"/);
+  assert.match(html, /id="player-repeat"/);
+  assert.match(html, /id="player-volume"/);
+  assert.match(styles, /@media \(max-width: 600px\)[\s\S]*?\.player-main\s*\{/);
+  const {context, document, run} = dashboard();
+  const queue = context.queueFromButtons([
+    {dataset: {playTrack: "3"}, getAttribute: () => "Play First"},
+    {dataset: {playTrack: "4"}, getAttribute: () => "Play <Second>"},
+    {dataset: {playTrack: "4"}, getAttribute: () => "Play Duplicate"},
+    {dataset: {playTrack: "invalid"}, getAttribute: () => "Play Invalid"},
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(queue)), [
+    {id: 3, title: "First"}, {id: 4, title: "<Second>"},
+  ]);
+  run("playback.queue = queueFromButtons([{dataset: {playTrack: '4'}, getAttribute: () => 'Play <Second>'}]); playback.index = 0; renderPlaybackQueue()");
+  assert.match(document.querySelector("#player-queue-list").innerHTML, /&lt;Second&gt;/);
+  run("playback.queue = [{id: 1}, {id: 2}]; playback.index = 1; playback.repeat = 'off'; playback.shuffle = false");
+  assert.equal(run("nextPlaybackIndex()"), -1);
+  run("playback.repeat = 'all'");
+  assert.equal(run("nextPlaybackIndex()"), 0);
+  run("playback.repeat = 'one'");
+  assert.equal(run("nextPlaybackIndex(true)"), 1);
+  run("playback.repeat = 'off'; playback.shuffle = true");
+  assert.equal(run("nextPlaybackIndex()"), 0);
+  run("playback.queue = [{id: 1}, {id: 2}, {id: 3}]; playback.index = 1; playback.shuffle = false");
+  assert.equal(run("removeQueuedTrack(2)"), false);
+  assert.equal(run("removeQueuedTrack(1)"), true);
+  assert.equal(run("JSON.stringify([playback.queue.map(track => track.id), playback.index])"), '[[2,3],0]');
+  run("playback.queue = [{id: 1}, {id: 2}, {id: 3}]; playback.index = 1; clearUpcomingTracks()");
+  assert.equal(run("JSON.stringify([playback.queue.map(track => track.id), playback.index])"), '[[1,2],1]');
+});
+
+test("equalizer connects 15 real filters, compensates boosts, and bypasses without losing playback", async () => {
+  const {context, document, run} = dashboard();
+  const nodes = [];
+  const parameter = () => ({value: 0, setTargetAtTime(value) { this.value = value; }});
+  const node = () => {
+    const result = {connections: [], gain: parameter(), frequency: parameter(), Q: parameter(),
+      connect(target) { this.connections.push(target); },
+      disconnect() { this.connections = []; }};
+    nodes.push(result);
+    return result;
+  };
+  let mediaSources = 0;
+  context.window.AudioContext = class {
+    constructor() { this.sampleRate = 48000; this.currentTime = 0; this.destination = node(); }
+    createGain() { return node(); }
+    createAnalyser() { return node(); }
+    createBiquadFilter() { return node(); }
+    createMediaElementSource() { mediaSources++; return node(); }
+    async resume() {}
+  };
+  assert.equal(run("equalizer.context"), null);
+  document.querySelector("#player-audio").paused = true;
+  await document.querySelector("#player-eq-toggle").onclick();
+  assert.equal(run("equalizer.filters.length"), 15);
+  assert.equal(run("equalizer.enabled"), true);
+  assert.equal(run("equalizer.source.connections[0] === equalizer.preamp"), true);
+  assert.equal(run("equalizer.filters[14].frequency.value"), 16000);
+  context.setEqualizerPreset("warm");
+  assert.equal(run("equalizer.filters[1].gain.value"), 4);
+  assert.ok(run("equalizer.preamp.gain.value") < 1);
+  context.setEqualizerPreset("flat");
+  assert.equal(run("equalizer.preamp.gain.value"), 1);
+  await document.querySelector("#player-eq-toggle").onclick();
+  assert.equal(run("equalizer.source.connections[0] === equalizer.context.destination"), true);
+  await document.querySelector("#player-eq-toggle").onclick();
+  assert.equal(mediaSources, 1);
+});
+
+test("unsupported equalizers report an error without taking over native audio", async () => {
+  const {document, run, warnings} = dashboard();
+  await document.querySelector("#player-eq-toggle").onclick();
+  assert.match(document.querySelector("#player-eq-status").textContent, /does not support/);
+  assert.equal(run("equalizer.context"), null);
+  assert.equal(run("equalizer.enabled"), false);
+  assert.equal(warnings.length, 1);
+});
+
+test("repeat-one restarts compatibility playback from the beginning of the track", async () => {
+  const {context, run, document} = dashboard();
+  run("playback.queue = [{id: 1}]; playback.index = 0; playback.repeat = 'one'; playback.mode = 'compatible'; playback.track = {id: 1}");
+  const sources = [];
+  context.setPlaybackSource = async (...args) => sources.push(args);
+  await context.playNextTrack(true);
+  assert.deepEqual(sources, [["compatible", 0]]);
+  run("playback.mode = 'original'");
+  document.querySelector("#player-audio").currentTime = 42;
+  let plays = 0;
+  document.querySelector("#player-audio").play = async () => { plays++; };
+  await context.playNextTrack(true);
+  assert.equal(document.querySelector("#player-audio").currentTime, 0);
+  assert.equal(plays, 1);
 });
 
 test("track-list comparison displays uncertainty and escapes catalog and local data", () => {
