@@ -54,7 +54,7 @@ Files placed directly in the library root are organized into
 `Singles/<Genre>/Artist - Title.ext`; files without a genre use `Unknown Genre`.
 Set `organize.root_singles = false` in the config to disable this rule.
 
-The dashboard opens with a bright, light appearance. Use **Dark mode** in the
+The dashboard opens with a soft sage-and-ivory appearance. Use **Dark mode** in the
 header to switch themes; your choice is saved in this browser, not on the server.
 If browser storage is blocked, the switch still works for the current page and
 an unsaved-preference notice appears. In **Administration**, the header keeps four collection totals
@@ -185,6 +185,21 @@ Starting a track from an album queues the album in disc/track order.
 On phones, the compact player keeps play/pause visible while browsing. Choose
 **Now playing** to expand the artwork, queue, and playback controls; **Collapse**
 returns to the compact bar without stopping playback. This works on desktop too.
+
+The expanded listening room places artwork and information to the left of the
+**15-band equalizer**, with a compact stacked layout on phones. EQ provides ±6 dB
+adjustment, Flat, Warm & balanced, and Vocal clarity presets, plus Reset and Bypass.
+It starts off and initializes Web Audio only when you choose **Enable EQ**.
+Enabled EQ reserves headroom for boosts, so it may sound quieter. The spectrum
+reflects processed audio and stops while paused, collapsed, in a background tab,
+or when reduced motion is requested. Unsupported browsers display an error and
+retain native playback. Equalizer settings last only for the current page.
+
+EQ changes the listening signal, never the source file. After enabling it,
+Bypass skips the filters but still uses the browser's Web Audio output, which can
+resample. Reload the dashboard to return to native playback for quality
+comparisons. Favorites, account permissions, playlists, sleep timers, media keys,
+and the floating mini-player remain available.
 
 Choose **Mini-player** to float a smaller player over the workspace. Drag its
 header to move it, resize its bottom-right corner, or use the size and reset

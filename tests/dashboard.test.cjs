@@ -45,6 +45,7 @@ class Element {
   showModal() { this.open = true; }
   close() { this.open = false; this.onclose?.(); }
   insertAdjacentHTML(position, value) { this.innerHTML = value + this.innerHTML; }
+  getContext() { return null; }
 }
 
 function dashboard({storage, reducedMotion = false} = {}) {
@@ -73,6 +74,7 @@ function dashboard({storage, reducedMotion = false} = {}) {
     },
     console: {...console, warn: (...args) => warnings.push(args)}, setTimeout, clearTimeout,
     URLSearchParams, AbortController,
+    cancelAnimationFrame() {},
     requestAnimationFrame: callback => callback(),
     confirm: () => true,
   });
@@ -90,6 +92,69 @@ test("tab visibility rules do not hide album and artwork result sections", () =>
   assert.match(styles, /#main\s*>\s*section\s*\{\s*display:\s*none\s*;/);
   assert.match(styles, /#main\s*>\s*section\.active\s*\{\s*display:\s*block\s*;/);
   assert.doesNotMatch(styles, /(?:^|})\s*section\s*\{\s*display:\s*none\s*;/m);
+});
+
+test("equalizer preserves native audio until enabled and reuses a single media source", async () => {
+  const {context, document, run} = dashboard();
+  const parameter = () => ({value: 0, setTargetAtTime(value) { this.value = value; }});
+  const node = () => ({
+    connections: [], gain: parameter(), frequency: parameter(), Q: parameter(),
+    connect(target) { this.connections.push(target); },
+    disconnect() { this.connections = []; },
+  });
+  let sources = 0;
+  context.window.AudioContext = class {
+    constructor() { this.sampleRate = 48000; this.currentTime = 0; this.destination = node(); }
+    createGain() { return node(); }
+    createAnalyser() { return node(); }
+    createBiquadFilter() { return node(); }
+    createMediaElementSource() { sources++; return node(); }
+    async resume() {}
+  };
+  assert.equal(run("equalizer.context"), null);
+  document.querySelector("#player-audio").paused = true;
+  await document.querySelector("#player-eq-toggle").onclick();
+  assert.equal(run("equalizer.filters.length"), 15);
+  assert.equal(run("equalizer.enabled"), true);
+  assert.equal(run("equalizer.source.connections[0] === equalizer.preamp"), true);
+  assert.equal(run("equalizer.filters[14].frequency.value"), 16000);
+  context.setEqualizerPreset("warm");
+  assert.equal(run("equalizer.filters[1].gain.value"), 4);
+  assert.ok(run("equalizer.preamp.gain.value") < 1);
+  context.setEqualizerPreset("flat");
+  assert.equal(run("equalizer.preamp.gain.value"), 1);
+  await document.querySelector("#player-eq-toggle").onclick();
+  assert.equal(run("equalizer.source.connections[0] === equalizer.context.destination"), true);
+  await document.querySelector("#player-eq-toggle").onclick();
+  assert.equal(sources, 1);
+});
+
+test("unsupported equalizers explicitly report failure without taking over playback", async () => {
+  const {document, run, warnings} = dashboard();
+  await document.querySelector("#player-eq-toggle").onclick();
+  assert.match(document.querySelector("#player-eq-status").textContent, /does not support/);
+  assert.equal(run("equalizer.context"), null);
+  assert.equal(run("equalizer.enabled"), false);
+  assert.equal(warnings.length, 1);
+});
+
+test("spectrum stops on collapse and respects reduced motion", () => {
+  for (const reducedMotion of [false, true]) {
+    const {context, document, run} = dashboard({reducedMotion});
+    const canvas = document.querySelector("#player-spectrum");
+    let clears = 0, frames = 0;
+    canvas.getContext = () => ({clearRect() { clears++; }});
+    context.requestAnimationFrame = () => { frames++; return frames; };
+    run("equalizer.enabled = true; equalizer.analyser = {frequencyBinCount: 128};");
+    const player = document.querySelector("#player");
+    player.hidden = false;
+    document.querySelector("#player-audio").paused = false;
+    context.setPlayerExpanded(true);
+    assert.equal(frames, reducedMotion ? 0 : 1);
+    context.setPlayerExpanded(false);
+    assert.equal(run("equalizer.frame"), null);
+    assert.ok(clears >= 2);
+  }
 });
 
 test("alphabet navigation is isolated from the main nav and uses one ordered column", () => {
