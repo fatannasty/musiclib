@@ -89,6 +89,17 @@ def test_music_search_combines_terms_and_does_not_search_server_paths(lib_env):
         assert albums["items"][0]["track_count"] == 1
 
 
+def test_song_search_returns_artwork_availability_without_private_paths(lib_env):
+    with_art = add_track(lib_env, "Art song", has_embedded_art=True)
+    without_art = add_track(lib_env, "Plain song", has_embedded_art=False)
+    with TestClient(create_app(lib_env.config)) as client:
+        page = client.get("/api/listen/tracks", params={"query": "song"}).json()
+        items = {item["id"]: item for item in page["items"]}
+        assert items[with_art.id]["has_embedded_art"] is True
+        assert items[without_art.id]["has_embedded_art"] is False
+        assert "private-directory" not in str(page)
+
+
 @pytest.mark.parametrize("query", ["%", "_", "\\"])
 def test_music_search_treats_wildcards_as_literal_characters(lib_env, query):
     expected = add_track(lib_env, f"Song {query} special")
