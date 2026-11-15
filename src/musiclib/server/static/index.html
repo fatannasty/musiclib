@@ -936,6 +936,7 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
     <div class="player-actions">
       <button class="action ghost" id="player-favorite" aria-pressed="false" disabled>♡ Favorite</button>
       <button class="action ghost" id="player-add-playlist" disabled>Add to playlist</button>
+      <button class="action ghost" id="player-radio" title="Replace the queue with tracks sharing the current song's artist or genre" disabled>Start song radio</button>
       <button class="action ghost" id="player-auto-playlist" aria-pressed="false">Auto-save played songs</button>
       <button class="action ghost" id="player-float" aria-pressed="false">Mini-player</button>
       <button class="action ghost" id="player-close">Stop and close</button>
@@ -2049,6 +2050,7 @@ async function loadPlaybackTrack(id, expand = false) {
   $("#player-favorite").textContent = "♡ Favorite";
   $("#player-favorite").setAttribute("aria-pressed", "false");
   $("#player-add-playlist").disabled = true;
+  $("#player-radio").disabled = true;
   $("#player-album").textContent = "";
   $("#player-art").hidden = true;
   $("#player-art-placeholder").hidden = false;
@@ -2080,6 +2082,7 @@ async function loadPlaybackTrack(id, expand = false) {
     $("#player-favorite").textContent = track.is_favorite ? "♥ Favorited" : "♡ Favorite";
     $("#player-favorite").setAttribute("aria-pressed", String(Boolean(track.is_favorite)));
     $("#player-add-playlist").disabled = false;
+    $("#player-radio").disabled = false;
     $("#player-play").disabled = false;
     syncPlayButton();
     const art = $("#player-art");
@@ -2192,6 +2195,41 @@ function commitQueueEdit(currentKey) {
   $("#player-shuffle").setAttribute("aria-pressed", "false");
   renderPlaybackQueue();
 }
+$("#player-radio").onclick = async () => {
+  const track = playback.track, request = playback.request;
+  if (!track) return;
+  const queueSnapshot = playback.queue.map(item => item._queueKey).join(",");
+  const queueIndex = playback.queueIndex;
+  const button = $("#player-radio");
+  button.disabled = true;
+  try {
+    const response = await api(`/api/tracks/${track.id}/radio`);
+    if (request !== playback.request || playback.track?.id !== track.id) return;
+    if (queueIndex !== playback.queueIndex || queueSnapshot !== playback.queue.map(item => item._queueKey).join(",")) {
+      $("#player-status").textContent = "Queue changed while building radio. Try again.";
+      return;
+    }
+    if (!response.items.length) {
+      $("#player-status").textContent = "No radio matches found. Radio uses shared artist or genre tags.";
+      return;
+    }
+    if (playback.queue.length > 1 && !confirm(
+      "Replace your current queue and its history with this song radio? The current song will keep playing."
+    )) return;
+    const current = playback.queue[playback.queueIndex];
+    if (!current) return;
+    playback.queue = [current, ...response.items.map(item => ({...item, _queueKey: ++queueKey}))];
+    commitQueueEdit(current._queueKey);
+    $("#player-status").textContent = `Song radio queued ${response.items.length} tracks using shared artist or genre tags.`;
+  } catch (error) {
+    if (request === playback.request) {
+      $("#player-status").textContent = `Song radio unavailable: ${error.message}`;
+      toast(error.message, true);
+    }
+  } finally {
+    button.disabled = !playback.track;
+  }
+};
 function enqueueTracks(tracks, next = false) {
   if (!tracks.length) return;
   if (!playback.queue.length) return playQueue(tracks);
@@ -2735,7 +2773,7 @@ function tracklistAuditMarkup(job, editions) {
       ${edition.error ? `<p role="alert">${esc(edition.error)}</p>` : `
       <div class="table-scroll"><table><thead><tr><th>Catalog disc / track</th><th>Catalog title / duration</th><th>Local disc / track</th><th>Local title / duration</th><th>Review</th></tr></thead>
       <tbody>${edition.tracks.map(item => `<tr><td>${esc(position(item.catalog.disc, item.catalog.position))}</td>
-        <td>${esc(item.catalog.title || "Unknown")} · ${esc(duration(item.catalog.duration))}</td>
+        <td>${esc(item.catalog.title || "Unknown")}${item.catalog.artist ? ` · ${esc(item.catalog.artist)}` : ""} · ${esc(duration(item.catalog.duration))}</td>
         <td>${item.local ? esc(position(item.local.disc_no, item.local.track_no)) : "—"}</td>
         <td>${item.local ? `${esc(item.local.title)} · ${esc(duration(item.local.duration))}` : "No unique match"}</td>
         <td>${esc(item.flags.join("; ") || "Title matches")}</td></tr>`).join("")}</tbody></table></div>
@@ -4156,6 +4194,9 @@ const views = {
               <p class="album-detail-meta">${esc(detail.album_artist)} · ${esc(detail.year || "—")} · ${detail.track_count} tracks${detail.bad_count ? ` · ${detail.bad_count} need review` : ""}</p>
               <div class="row"><button class="action ghost" data-tracklist-audit data-lookup-operation>Compare track lists</button>
                 <span class="hint">Play the original file to listen and inspect its audio quality.</span></div>
+              <label>MusicBrainz release link (optional)
+                <input type="url" data-release-link placeholder="https://musicbrainz.org/release/…"></label>
+              <p class="hint">Paste a MusicBrainz release link to compare that exact edition; leave blank to search.</p>
               <div class="row selection-actions" data-album-selection-actions hidden>
                 <button class="action" data-edit-album data-operation>Edit selected tags</button>
                 <button class="action ghost" data-tag-album data-lookup-operation>Find catalog matches</button>
@@ -4198,6 +4239,7 @@ const views = {
           try {
             const {job_id} = await post("/api/metadata/album-tracklist-audit", {
               album_artist: detail.album_artist, album: detail.album,
+              release_url: pageEl.querySelector("[data-release-link]").value.trim() || null,
             });
             await refreshActivity();
             const job = await pollJob(job_id, "Track-list comparison");
@@ -4457,10 +4499,13 @@ const views = {
         Previewing does not modify music files. The reviewed cover replaces only the main embedded cover;
         other pictures, text tags, filenames, and folder images stay unchanged.</p>
         <label>Cover image <input type="file" accept="image/jpeg,image/png" data-artwork-file></label>
+        <label>Or MusicBrainz release link <input type="url" data-artwork-link placeholder="https://musicbrainz.org/release/…"></label>
+        <p class="hint">The release's front cover comes from the Cover Art Archive. Choose either a file or a link.</p>
         <button type="submit" class="action" data-operation>Preview artwork</button>
         <button type="button" class="action ghost" data-artwork-upload-close>Close</button>
         <p role="status" data-artwork-upload-status></p></form>`;
       const input = panel.querySelector("[data-artwork-file]");
+      const link = panel.querySelector("[data-artwork-link]");
       const status = panel.querySelector("[data-artwork-upload-status]");
       const submit = panel.querySelector('[type="submit"]');
       panel.querySelector("[data-artwork-upload-close]").onclick = () => { workspace.leave(); };
@@ -4469,28 +4514,45 @@ const views = {
         workspace.stage(token, "select");
         status.textContent = input.files.length ? "Image selected. Preview artwork before applying." : "";
       };
+      link.oninput = () => {
+        rememberReview("artwork"); $("#album-artwork-review").innerHTML = "";
+        workspace.stage(token, "select");
+        status.textContent = link.value.trim() ? "Release link entered. Preview artwork before applying." : "";
+      };
       let uploading = false;
       panel.querySelector("form").onsubmit = async event => {
         event.preventDefault();
         if (uploading) return;
         const file = input.files[0];
-        if (!file || !file.size || file.size > 8 * 1024 * 1024) {
+        const releaseUrl = link.value.trim();
+        if (file && releaseUrl) {
+          status.textContent = "Choose either a file or a MusicBrainz release link, not both."; return;
+        }
+        if (!releaseUrl && (!file || !file.size || file.size > 8 * 1024 * 1024)) {
           status.textContent = "Choose a JPEG or PNG image no larger than 8 MiB."; return;
         }
-        uploading = true; input.disabled = true; submit.disabled = true;
+        uploading = true; input.disabled = true; link.disabled = true; submit.disabled = true;
         workspace.busy(token, true); workspace.stage(token, "preview");
         status.textContent = "Preparing an artwork preview. No music files are being changed.";
         try {
-          const image_base64 = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result).split(",")[1]);
-            reader.onerror = () => reject(new Error("Cannot read the selected image."));
-            reader.readAsDataURL(file);
-          });
-          if (!workspace.owns(token)) return;
-          const { job_id } = await post("/api/artwork/preview", {
-            track_ids: tracks.map(track => track.id), image_base64, filename: file.name,
-          });
+          let result;
+          if (releaseUrl) {
+            result = await post("/api/artwork/link-preview", {
+              track_ids: tracks.map(track => track.id), release_url: releaseUrl,
+            });
+          } else {
+            const image_base64 = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result).split(",")[1]);
+              reader.onerror = () => reject(new Error("Cannot read the selected image."));
+              reader.readAsDataURL(file);
+            });
+            if (!workspace.owns(token)) return;
+            result = await post("/api/artwork/preview", {
+              track_ids: tracks.map(track => track.id), image_base64, filename: file.name,
+            });
+          }
+          const {job_id} = result;
           if (!workspace.owns(token)) return;
           rememberReview("artwork", job_id);
           await refreshActivity();
@@ -4501,7 +4563,7 @@ const views = {
         } catch (e) { status.textContent = e.message; toast(e.message, true); }
         finally {
           workspace.busy(token, false);
-          uploading = false; input.disabled = false; submit.disabled = false;
+          uploading = false; input.disabled = false; link.disabled = false; submit.disabled = false;
         }
       };
       scrollReview();

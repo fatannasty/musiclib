@@ -100,6 +100,31 @@ def test_song_search_returns_artwork_availability_without_private_paths(lib_env)
         assert "private-directory" not in str(page)
 
 
+def test_listener_radio_uses_available_library_tracks_without_leaking_paths(lib_env):
+    lib_env.db.create_user("admin", hash_password("Correct horse battery staple!"), "admin")
+    lib_env.db.create_user("listener", hash_password("A different secure passphrase"), "user")
+    seed_path = make_wav(lib_env.library / "seed.wav", seconds=0.1)
+    match_path = make_wav(lib_env.library / "match.wav", seconds=0.1)
+    seed = lib_env.db.upsert_track(Track(
+        path=seed_path, title="Seed", artist="Band", genre="Jazz", format="wav",
+    ))
+    match = lib_env.db.upsert_track(Track(
+        path=match_path, title="Match", artist="Another", genre="Jazz", format="wav",
+    ))
+    lib_env.db.upsert_track(Track(
+        path=str(lib_env.library / "missing.wav"), title="Missing", artist="Band", genre="Jazz",
+    ))
+    with TestClient(create_app(lib_env.config, require_auth=True), base_url="https://testserver") as client:
+        assert client.post("/api/auth/login", json={
+            "username": "listener", "password": "A different secure passphrase",
+        }, headers=ORIGIN).status_code == 200
+        response = client.get(f"/api/tracks/{seed.id}/radio")
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["items"]] == [match.id]
+        assert str(lib_env.library) not in response.text
+        assert client.get("/api/tracks/99999/radio").status_code == 404
+
+
 @pytest.mark.parametrize("query", ["%", "_", "\\"])
 def test_music_search_treats_wildcards_as_literal_characters(lib_env, query):
     expected = add_track(lib_env, f"Song {query} special")

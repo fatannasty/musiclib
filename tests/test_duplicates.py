@@ -215,6 +215,35 @@ def test_recording_id_finds_differently_tagged_tracks_but_respects_duration(lib_
     assert "MusicBrainz recording" in groups[0].members[1].evidence[0]
 
 
+def test_conflicting_recording_ids_do_not_match_on_tags_alone(lib_env):
+    for index in range(2):
+        lib_env.db.upsert_track(_track(
+            path=f"/lib/conflict-{index}.flac", file_hash=str(index),
+            mbid_track=f"recording-{index}",
+        ))
+    assert DuplicateFinder(lib_env.config, lib_env.db).find() == []
+
+
+def test_matching_recording_id_with_missing_duration_is_reviewable(lib_env):
+    for index, duration in enumerate((None, 180)):
+        lib_env.db.upsert_track(_track(
+            path=f"/lib/unknown-duration-{index}.flac", file_hash=str(index),
+            title=f"Different {index}", mbid_track="same-recording", duration=duration,
+        ))
+    groups = DuplicateFinder(lib_env.config, lib_env.db).find()
+    assert len(groups) == 1
+    assert "duration unavailable" in groups[0].members[1].evidence[0]
+
+
+def test_featured_artist_does_not_hide_live_or_remix_edition(lib_env):
+    for index, title in enumerate(("Song (feat. Guest)", "Song (feat. Guest) (Live)",
+                                   "Song (feat. Guest) (Remix)")):
+        lib_env.db.upsert_track(_track(
+            path=f"/lib/edition-{index}.flac", file_hash=str(index), title=title,
+        ))
+    assert DuplicateFinder(lib_env.config, lib_env.db).find() == []
+
+
 def test_hash_only_strategy_does_not_remove_tag_matches(lib_env):
     for index in range(2):
         lib_env.db.upsert_track(_track(path=f"/lib/{index}.flac", file_hash=str(index)))
