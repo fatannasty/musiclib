@@ -6,7 +6,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from threading import BoundedSemaphore
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import anyio
 from fastapi import HTTPException
@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.types import Receive, Scope, Send
 
+from ..artwork import CAA_FRONT_THUMB, FOLDER_IMAGE_CANDIDATES
 from ..config import Config
 from ..db import Database
 from ..fsops import is_inside
@@ -87,6 +88,33 @@ class Playback:
             raise HTTPException(404, "Audio file is missing.")
         return track
 
+    def cover_url(self, track: Track) -> Optional[str]:
+        try:
+            local = self.source(track.id)
+        except HTTPException as exc:
+            logger.debug("Unavailable artwork source %s: %s", track.id, exc.detail)
+        else:
+            if local.has_embedded_art or any(
+                (Path(local.path).parent / name).is_file() for name in FOLDER_IMAGE_CANDIDATES
+            ):
+                return f"/api/tracks/{local.id}/cover"
+        rows = self.db.album_tracks(
+            track.album_artist or track.artist or "", track.album, listening=True,
+        ) if track.album else []
+        for row in rows:
+            if not row["has_embedded_art"]:
+                continue
+            try:
+                cover_track = self.source(row["id"])
+            except HTTPException as exc:
+                logger.debug("Unavailable album artwork source %s: %s", row["id"], exc.detail)
+                continue
+            return f"/api/tracks/{cover_track.id}/cover"
+        mbid = track.mbid_release or next(
+            (row["mbid_release"] for row in rows if row["mbid_release"]), None,
+        )
+        return CAA_FRONT_THUMB.format(mbid=mbid) if mbid else None
+
     def info(self, track_id: int) -> Dict[str, Any]:
         track = self.source(track_id)
         return {
@@ -94,7 +122,7 @@ class Playback:
             "artist": track.artist, "album_artist": track.album_artist, "album": track.album,
             "year": track.year, "genre": track.genre, "track_no": track.track_no,
             "track_total": track.track_total, "disc_no": track.disc_no, "disc_total": track.disc_total,
-            "cover_url": f"/api/tracks/{track.id}/cover" if track.has_embedded_art else None,
+            "cover_url": self.cover_url(track),
             "format": track.format or audio_format(track.path),
             "duration": track.duration, "bitrate": track.bitrate,
             "sample_rate": track.sample_rate, "bit_depth": track.bit_depth,

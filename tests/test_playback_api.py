@@ -80,6 +80,53 @@ def test_now_playing_artwork_uses_authenticated_local_cover(lib_env):
         assert cover.content == JPEG_600x400
 
 
+def test_folder_artwork_reaches_player_album_search_and_playlist(lib_env):
+    folder = lib_env.library / "record"
+    folder.mkdir()
+    path = make_wav(folder / "song.wav", seconds=0.1)
+    (folder / "folder.jpg").write_bytes(JPEG_600x400)
+    track = lib_env.db.upsert_track(Track(
+        path=str(path), title="Song", artist="Band", album="Record", format="wav",
+    ))
+    playlist = lib_env.db.create_playlist("Saved")
+    lib_env.db.append_playlist_tracks(playlist, [track.id])
+    with TestClient(create_app(lib_env.config)) as client:
+        cover_url = f"/api/tracks/{track.id}/cover"
+        assert client.get(f"/api/tracks/{track.id}/playback").json()["cover_url"] == cover_url
+        assert client.get("/api/listen/tracks").json()["items"][0]["cover_url"] == cover_url
+        album = client.get("/api/listen/album", params={"album_artist": "Band", "album": "Record"}).json()
+        assert album["cover_url"] == album["tracks"][0]["cover_url"] == cover_url
+        assert client.get(f"/api/playlists/{playlist}").json()["tracks"][0]["cover_url"] == cover_url
+        assert client.get(cover_url).content == JPEG_600x400
+        assert str(folder) not in str(album)
+
+
+def test_tracks_share_existing_album_art_and_release_fallback(lib_env):
+    first = lib_env.library / "first"
+    second = lib_env.library / "second"
+    first.mkdir()
+    second.mkdir()
+    path = make_wav(first / "song.wav", seconds=0.1)
+    other_path = second / "art.flac"
+    make_flac(other_path, art=JPEG_600x400)
+    track = lib_env.db.upsert_track(Track(
+        path=str(path), title="Plain", artist="Band", album="Record", format="wav",
+    ))
+    art = lib_env.db.upsert_track(Track(
+        path=str(other_path), title="Art", artist="Band", album="Record", format="flac",
+        has_embedded_art=True, mbid_release="b27e07e7-a8d7-4d98-ae32-d834d7d8c41c",
+    ))
+    with TestClient(create_app(lib_env.config)) as client:
+        info = client.get(f"/api/tracks/{track.id}/playback").json()
+        assert info["cover_url"] == f"/api/tracks/{art.id}/cover"
+        assert client.get(info["cover_url"]).content == JPEG_600x400
+        other_path.unlink()
+        info = client.get(f"/api/tracks/{track.id}/playback").json()
+        assert info["cover_url"] == (
+            "https://coverartarchive.org/release/b27e07e7-a8d7-4d98-ae32-d834d7d8c41c/front-250"
+        )
+
+
 @pytest.mark.parametrize("case", [
     "unknown", "deleted", "outside", "trash", "symlink", "symlink-parent",
     "missing", "not-audio", "directory",
