@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import musicbrainzngs
@@ -13,12 +14,29 @@ from .db import Database
 from .duplicates import normalize
 
 
-def _release_tracks(release_id: str, ipv4_only: bool) -> List[Dict[str, Any]]:
+def release_id_from_url(url: str) -> str:
+    try:
+        parsed = urlsplit(url.strip())
+        if (parsed.scheme != "https" or parsed.hostname != "musicbrainz.org" or
+                parsed.username or parsed.password or parsed.port not in (None, 443)):
+            raise ValueError
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) != 2 or parts[0] != "release":
+            raise ValueError
+        return str(UUID(parts[1]))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError("Paste a MusicBrainz release link (https://musicbrainz.org/release/…).") from exc
+
+
+def _release_tracks(
+    release_id: str, ipv4_only: bool, payload: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     try:
         release_id = str(UUID(release_id))
     except (ValueError, TypeError, AttributeError) as exc:
         raise RuntimeError("MusicBrainz returned an invalid release ID.") from exc
-    payload = brainz.get_release(release_id, ipv4_only=ipv4_only)
+    if payload is None:
+        payload = brainz.get_release(release_id, ipv4_only=ipv4_only)
     tracks = []
     for medium_index, medium in enumerate(payload["media"], 1):
         if not isinstance(medium, dict) or not isinstance(medium.get("tracks"), list):
@@ -32,6 +50,14 @@ def _release_tracks(release_id: str, ipv4_only: bool) -> List[Dict[str, Any]]:
             recording = entry.get("recording") or {}
             if not isinstance(recording, dict):
                 raise RuntimeError("MusicBrainz returned an invalid recording.")
+            credits = entry.get("artist-credit") or recording.get("artist-credit") or []
+            if not isinstance(credits, list):
+                raise RuntimeError("MusicBrainz returned an invalid artist credit.")
+            artist = "".join(
+                (credit.get("name") or (credit.get("artist") or {}).get("name") or "") +
+                (credit.get("joinphrase") or "")
+                for credit in credits if isinstance(credit, dict)
+            ).strip()
             duration = entry.get("length")
             if duration is None:
                 duration = recording.get("length")
@@ -39,6 +65,7 @@ def _release_tracks(release_id: str, ipv4_only: bool) -> List[Dict[str, Any]]:
                 "disc": medium.get("position") or medium_index,
                 "position": entry.get("position"),
                 "title": entry.get("title") or recording.get("title") or "",
+                "artist": artist,
                 "duration": duration / 1000 if isinstance(duration, (int, float)) and duration >= 0 else None,
             })
     if not tracks:
@@ -81,6 +108,7 @@ def compare_tracks(local: List[Dict[str, Any]], expected: List[Dict[str, Any]]) 
 def audit_album(
     config: Config, db: Database, artist: str, album: str,
     progress: Callable[..., None], check_cancelled: Callable[[], None],
+    release_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     rows = db.album_tracks(artist, album)
     if not rows:
@@ -99,6 +127,18 @@ def audit_album(
         })
     brainz.configure_musicbrainz(config)
     ipv4 = bool(config.catalog.get("ipv4_only", False))
+    if release_id:
+        check_cancelled()
+        progress("Comparing linked MusicBrainz release", 0, 1, release_id)
+        payload = brainz.get_release(release_id, ipv4_only=ipv4)
+        edition = {
+            "id": release_id, "title": payload.get("title") or album,
+            "date": payload.get("date") or "", "country": payload.get("country") or "",
+            "status": payload.get("status") or "", "source": "MusicBrainz",
+        }
+        edition.update(compare_tracks(local, _release_tracks(release_id, ipv4, payload)))
+        progress("Comparing linked MusicBrainz release", 1, 1, edition["title"])
+        return {"album_artist": artist, "album": album, "local_count": len(local), "editions": [edition]}
     try:
         response = brainz.search_releases(
             limit=6, artist=artist, release=album, ipv4_only=ipv4,

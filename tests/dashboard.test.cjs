@@ -886,6 +886,43 @@ test("Cover Flow follows queue playback and centers only when expanded", async (
   assert.equal(document.querySelector("#player").classList.contains("is-expanded"), true);
 });
 
+test("song radio replaces the upcoming queue without interrupting playback", async () => {
+  const {context, document, run} = playbackDashboard();
+  await run('playQueue([{id: 7, title: "Current"}, {id: 8, title: "Old"}])');
+  const audio = document.querySelector("#player-audio");
+  audio.src = "original"; audio.currentTime = 27;
+  context.api = async path => {
+    assert.equal(path, "/api/tracks/7/radio");
+    return {items: [{id: 9, title: "Related"}]};
+  };
+  await document.querySelector("#player-radio").onclick();
+  assert.deepEqual(Array.from(run("playback.queue.map(track => track.id)")), [7, 9]);
+  assert.equal(audio.src, "original");
+  assert.equal(audio.currentTime, 27);
+  assert.match(document.querySelector("#player-status").textContent, /shared artist or genre/);
+});
+
+test("song radio does not overwrite edits made while searching or clear a queue on no matches", async () => {
+  const {context, document, run} = playbackDashboard();
+  await run('playQueue([{id: 7, title: "Current"}, {id: 8, title: "Old"}])');
+  let resolve;
+  context.api = () => new Promise(done => { resolve = done; });
+  const search = document.querySelector("#player-radio").onclick();
+  run('enqueueTracks([{id: 10, title: "Added"}])');
+  resolve({items: [{id: 9, title: "Related"}]});
+  await search;
+  assert.deepEqual(Array.from(run("playback.queue.map(track => track.id)")), [7, 8, 10]);
+  assert.match(document.querySelector("#player-status").textContent, /Queue changed/);
+  context.api = async () => ({items: []});
+  await document.querySelector("#player-radio").onclick();
+  assert.deepEqual(Array.from(run("playback.queue.map(track => track.id)")), [7, 8, 10]);
+  assert.match(document.querySelector("#player-status").textContent, /No radio matches/);
+  context.confirm = () => false;
+  context.api = async () => ({items: [{id: 9, title: "Related"}]});
+  await document.querySelector("#player-radio").onclick();
+  assert.deepEqual(Array.from(run("playback.queue.map(track => track.id)")), [7, 8, 10]);
+});
+
 test("Cover Flow keyboard and wheel browsing do not change playback", () => {
   const {context, document, run} = dashboard({reducedMotion: true});
   const flow = document.querySelector("#player-cover-flow");

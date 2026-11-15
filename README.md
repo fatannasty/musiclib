@@ -196,6 +196,12 @@ saves up to 200 distinct tracks; repeated queue entries are saved once. You can
 move or remove queue items, clear upcoming tracks, append an album, or choose
 **Play next** for an individual song without interrupting the current track.
 Starting a track from an album queues the album in disc/track order.
+**Start song radio** replaces the upcoming queue with up to 50 playable library
+songs sharing the current song's artist or genre tags. It keeps the current
+song playing, asks before replacing an existing queue, and avoids repeated
+artist/title pairs. This is a finite queue,
+not an audio-analysis or streaming service; sparse tags may yield no matches.
+Use **Save queue to playlist** to keep the selection.
 **Auto-save played songs** creates a private listening-session playlist when
 the first song actually starts playing and adds each played song once. Enable
 it during playback to include the current song; pause, seek, and repeat do not
@@ -292,7 +298,9 @@ Three evidence sources produce review candidates across folders:
 
 1. **Exact** — identical SHA-256 file hash
 2. **Tags / recording ID** — matching artist/title or MusicBrainz recording ID,
-   with duration within tolerance. Album names need not match: compilation,
+   with duration within tolerance. Matching recording IDs with missing duration
+   are also flagged for listening review; conflicting recording IDs are not
+   grouped by tags alone. Album names need not match: compilation,
    differently tagged, and cross-folder copies can be found. Unicode, punctuation,
    and explicit `(copy)`/`(duplicate)` title suffixes are normalized; live/remix
    qualifiers are preserved. Unknown/various-artist placeholders are not enough
@@ -507,7 +515,8 @@ unchanged. Unavailable files retain their sequence slot rather than shifting
 the rest. Moved/changed files are skipped at apply time, per-file errors remain
 in Activity, and there is no catalog lookup or automatic organization.
 
-On an album page, **Change artwork** lets you upload a JPEG or PNG cover for up
+On an album page, **Change artwork** lets you upload a JPEG or PNG cover, or paste
+a MusicBrainz release link to preview its Cover Art Archive front cover, for up
 to 200 selected tracks. Images must be no larger than 8 MiB or 25 million pixels;
 damaged or animated images are rejected. **Preview artwork** shows the uploaded
 image, dimensions, an example of current embedded art, and the exact ready or
@@ -694,7 +703,10 @@ with more than 200 tracks are skipped with an explanation. Use **Select loaded
 albums** to choose a page, or pick fewer albums for a batch.
 
 On an album page, **Compare track lists** searches up to six MusicBrainz editions
-in a read-only background job, which can run alongside cover discovery. Open its
+in a read-only background job, which can run alongside cover discovery. To compare
+a specific mixtape or other edition, paste its `https://musicbrainz.org/release/...`
+link before comparing. Other sites and direct image links are not supported.
+Open its
 saved results in Activity to compare catalog and local titles, disc/track numbers,
 and available durations. Only unique normalized titles are paired; repeated titles
 and unmatched tracks require manual investigation. A difference does not prove a

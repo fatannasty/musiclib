@@ -8,7 +8,7 @@ from conftest import make_mp3
 from fastapi.testclient import TestClient
 from test_jobs_api import wait_job
 
-from musiclib.edition_audit import compare_tracks
+from musiclib.edition_audit import compare_tracks, release_id_from_url
 from musiclib.scanner import Scanner
 from musiclib.server.app import create_app
 
@@ -48,6 +48,52 @@ def test_duplicate_titles_are_not_guessed():
     assert all(item["local"] is None for item in result["tracks"])
     assert len(result["unmatched_local"]) == 2
 
+
+@pytest.mark.parametrize("url", [
+    "http://musicbrainz.org/release/12345678-1234-5678-1234-567812345678",
+    "https://musicbrainz.org.evil.example/release/12345678-1234-5678-1234-567812345678",
+    "https://musicbrainz.org@localhost/release/12345678-1234-5678-1234-567812345678",
+    "https://musicbrainz.org:444/release/12345678-1234-5678-1234-567812345678",
+    "https://musicbrainz.org/release-group/12345678-1234-5678-1234-567812345678",
+    "https://musicbrainz.org/release/not-a-uuid",
+])
+def test_link_import_rejects_untrusted_or_invalid_urls(url):
+    with pytest.raises(ValueError, match="MusicBrainz release link"):
+        release_id_from_url(url)
+
+
+def test_exact_release_link_compares_without_catalog_search_or_file_changes(lib_env, monkeypatch):
+    path = lib_env.library / "track.mp3"
+    make_mp3(path, tags={
+        "artist": "Artist", "albumartist": "Artist", "album": "Mixtape", "title": "First",
+    })
+    Scanner(lib_env.config, lib_env.db, workers=1).scan()
+    before = path.read_bytes()
+    requests = []
+    def get_release(release_id, **kwargs):
+        requests.append(release_id)
+        return {"id": release_id, "title": "Linked mixtape", "media": [{
+            "position": 1, "tracks": [{"title": "First", "position": 1, "artist-credit": [
+                {"artist": {"name": "First Artist"}, "joinphrase": " feat. "},
+                {"name": "Guest"},
+            ]}],
+        }]}
+    monkeypatch.setattr("musiclib.edition_audit.brainz.get_release", get_release)
+    with TestClient(create_app(lib_env.config)) as client:
+        body = {"album_artist": "Artist", "album": "Mixtape",
+                "release_url": f"https://musicbrainz.org/release/{RELEASE}?utm=share"}
+        response = client.post("/api/metadata/album-tracklist-audit", json=body)
+        job_id = response.json()["job_id"]
+        assert wait_job(client, job_id)["status"] == "done"
+        editions = client.get(f"/api/jobs/{job_id}/results/editions?limit=6").json()["items"]
+        assert editions[0]["title"] == "Linked mixtape"
+        assert editions[0]["tracks"][0]["local"]["title"] == "First"
+        assert editions[0]["tracks"][0]["catalog"]["artist"] == "First Artist feat. Guest"
+        assert requests == [RELEASE]
+        assert path.read_bytes() == before
+        body["release_url"] = "https://127.0.0.1/secret"
+        assert client.post("/api/metadata/album-tracklist-audit", json=body).status_code == 400
+        assert requests == [RELEASE]
 
 def test_album_audit_saves_multiple_editions_without_changing_files(lib_env, monkeypatch):
     paths = []

@@ -114,7 +114,7 @@ def get_release(release_id: str, *, ipv4_only: bool = False) -> Dict[str, Any]:
         with musicbrainz_request(timeout=4.0):
             response = catalog_get(
                 f"https://musicbrainz.org/ws/2/release/{release_id}",
-                params={"inc": "recordings", "fmt": "json"},
+                params={"inc": "recordings+artist-credits", "fmt": "json"},
                 headers={"User-Agent": _user_agent},
                 timeout=4.0, ipv4_only=ipv4_only,
             )

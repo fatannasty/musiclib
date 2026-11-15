@@ -24,7 +24,7 @@ from ..config import Config
 from ..db import Database
 from ..doctor import Doctor
 from ..duplicates import DuplicateFinder
-from ..edition_audit import audit_album
+from ..edition_audit import audit_album, release_id_from_url
 from ..fingerprint import compute_all, fpcalc_available
 from ..fsops import is_inside, move_no_replace
 from ..metadata_review import (
@@ -35,7 +35,8 @@ from ..metadata_review import (
     MetadataReview,
     check_catalog_connections,
 )
-from ..models import audio_format
+from ..models import Track, audio_format
+from ..radio import radio_tracks
 from ..rename import Renamer
 from ..restore_review import RestoreReview
 from ..scanner import Scanner, file_hash
@@ -186,6 +187,10 @@ class AlbumIdentity(BaseModel):
     album: str = Field(min_length=1, max_length=1000)
 
 
+class AlbumTracklistAuditBody(AlbumIdentity):
+    release_url: Optional[str] = Field(default=None, max_length=2048)
+
+
 class AlbumBatchSuggestBody(BaseModel):
     albums: List[AlbumIdentity]
     source: Optional[Literal["all", "musicbrainz", "itunes", "deezer", "library"]] = None
@@ -240,6 +245,11 @@ class ArtworkCandidatePreviewBody(BaseModel):
     discovery_job_id: str
     album_index: int = Field(ge=0)
     candidate_index: int = Field(ge=0)
+
+
+class ArtworkLinkPreviewBody(BaseModel):
+    track_ids: List[int]
+    release_url: str = Field(min_length=1, max_length=2048)
 
 
 class SabAddBody(BaseModel):
@@ -323,7 +333,7 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
                 "/api/listen/favorites", "/api/listen/artists",
             }
             return path in exact or bool(re.fullmatch(
-                r"/api/(?:tracks/\d+/(?:playback|audio|cover)|favorites/\d+|playlists(?:/\d+(?:/tracks(?:/\d+|/order)?)?)?)",
+                r"/api/(?:tracks/\d+/(?:playback|audio|cover|radio)|favorites/\d+|playlists(?:/\d+(?:/tracks(?:/\d+|/order)?)?)?)",
                 path,
             ))
         if method == "POST":
@@ -1145,13 +1155,17 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
             raise HTTPException(502, str(exc)) from exc
 
     @app.post("/api/metadata/album-tracklist-audit")
-    def metadata_album_tracklist_audit(body: AlbumIdentity) -> Dict[str, str]:
+    def metadata_album_tracklist_audit(body: AlbumTracklistAuditBody) -> Dict[str, str]:
         artist, album = body.album_artist.strip(), body.album.strip()
         if not artist or not album:
             raise HTTPException(400, "An album artist and album name are required.")
+        try:
+            release_id = release_id_from_url(body.release_url) if body.release_url and body.release_url.strip() else None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         return {"job_id": jobs.start(
             "album-tracklist-audit",
-            lambda job: audit_album(config, db, artist, album, jobs.update, jobs.check_cancelled),
+            lambda job: audit_album(config, db, artist, album, jobs.update, jobs.check_cancelled, release_id),
             read_only=True,
         )}
 
@@ -1320,6 +1334,30 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
         )
         add_playback_covers(page["items"])
         return page
+
+    @app.get("/api/tracks/{track_id}/radio")
+    def track_radio(track_id: int) -> Dict[str, Any]:
+        seed = playback.source(track_id)
+        def available(track: Track) -> bool:
+            try:
+                playback.source(track.id)
+            except HTTPException as exc:
+                logger.debug("Skipping unavailable radio track %s: %s", track.id, exc.detail)
+                return False
+            return True
+
+        candidates = [Track(**dict(row)) for row in db.query(
+            "SELECT id, title, artist, album_artist, album, genre, duration "
+            "FROM tracks WHERE status='ok' AND title IS NOT NULL"
+        )]
+        matches = radio_tracks(seed, candidates, available=available)
+        items = [{
+            "id": track.id, "title": track.title, "artist": track.artist,
+            "album_artist": track.album_artist, "album": track.album,
+            "genre": track.genre, "duration": track.duration,
+        } for track in matches]
+        add_playback_covers(items)
+        return {"items": items, "basis": "shared artist or genre"}
 
     @app.get("/api/listen/favorites")
     def listen_favorites(
@@ -1657,6 +1695,29 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
                 body.track_ids, body.image_base64, body.filename, progress=jobs.update,
             ),
         )}
+
+    @app.post("/api/artwork/link-preview")
+    def artwork_link_preview(body: ArtworkLinkPreviewBody) -> Dict[str, str]:
+        if not 1 <= len(body.track_ids) <= 200 or len(set(body.track_ids)) != len(body.track_ids):
+            raise HTTPException(400, "Select between 1 and 200 distinct tracks.")
+        try:
+            release_id = release_id_from_url(body.release_url)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        def preview(job: Dict[str, Any]) -> Dict[str, Any]:
+            jobs.update("Downloading linked cover", 0, 1, "Cover Art Archive")
+            candidate = {
+                "source": "MusicBrainz", "cover_url": CAA_FRONT_THUMB.format(mbid=release_id),
+                "fields": {"mbid_release": release_id},
+            }
+            image = download_candidate_cover(candidate, config, db)
+            return ArtworkReview(config, db).preview(
+                body.track_ids, base64.b64encode(image).decode("ascii"),
+                filename=f"MusicBrainz release {release_id}", progress=jobs.update,
+            )
+
+        return {"job_id": jobs.start("artwork-preview", preview, read_only=True, lane="artwork")}
 
     @app.get("/api/artwork/reviews/{review_id}/cover")
     def reviewed_cover(review_id: str) -> Response:

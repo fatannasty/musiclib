@@ -17,6 +17,7 @@ from .trash_review import TrashReview
 
 _PUNCT_TABLE = str.maketrans("", "", string.punctuation)
 _REMOVE_FEAT_RE = re.compile(r"\s*(?:feat|ft|featuring)\.?\s+.*$", re.IGNORECASE)
+_BRACKETED_FEAT_RE = re.compile(r"\s*[\[(]\s*(?:feat|ft|featuring)\.?\s+[^\])]*[\])]", re.IGNORECASE)
 
 
 def normalize(text: Optional[str]) -> str:
@@ -31,6 +32,7 @@ def duplicate_text(text: Optional[str], title: bool = False) -> str:
     text = unicodedata.normalize("NFKD", text or "").casefold()
     if title:
         text = re.sub(r"\s*[\[(](?:copy|duplicate)(?:\s*\d+)?[\])]\s*$", "", text)
+        text = _BRACKETED_FEAT_RE.sub("", text)
     text = _REMOVE_FEAT_RE.sub("", text)
     return " ".join("".join(
         char if char.isalnum() or char.isspace() else " "
@@ -191,7 +193,7 @@ class DuplicateFinder:
                     artist, title,
                 )
                 by_tags.setdefault(key, []).append(track)
-        for group in [*by_tags.values(), *(by_recording.values() if strategy != "hash" else [])]:
+        for group in by_tags.values():
             if progress_state:
                 progress_state("Comparing track tags", 0, len(tracks), group[0].path)
             group.sort(key=lambda t: (t.duration or 0))
@@ -202,9 +204,20 @@ class DuplicateFinder:
                     ):
                         break
                     if _duration_close(track.duration, other.duration, self.tolerance):
-                        same_recording = track.mbid_track and track.mbid_track == other.mbid_track
-                        match(track, other, "Same MusicBrainz recording and similar duration" if same_recording
-                              else "Same artist/title and similar duration (may be a different edition)")
+                        if track.mbid_track and other.mbid_track and track.mbid_track != other.mbid_track:
+                            continue
+                        if track.mbid_track and track.mbid_track == other.mbid_track:
+                            continue
+                        match(track, other, "Same artist/title and similar duration (may be a different edition)")
+
+        if strategy != "hash":
+            for group in by_recording.values():
+                for index, track in enumerate(group):
+                    for other in group[index + 1:]:
+                        if track.duration is None or other.duration is None:
+                            match(track, other, "Same MusicBrainz recording; duration unavailable, verify by listening")
+                        elif _duration_close(track.duration, other.duration, self.tolerance):
+                            match(track, other, "Same MusicBrainz recording and similar duration")
 
         if fingerprint_pass is None:
             fingerprint_pass = strategy == "fingerprint"

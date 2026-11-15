@@ -119,6 +119,37 @@ def test_candidate_cover_uses_snapshot_review_before_embedding(lib_env, monkeypa
         assert all(path.is_file() for path in paths)
 
 
+def test_linked_cover_requires_review_before_embedding(lib_env, monkeypatch):
+    paths = _seed_album(lib_env)
+    originals = [path.read_bytes() for path in paths]
+    track_ids = [track.id for track in lib_env.db.all_tracks()]
+    candidates = []
+    def download(candidate, *args):
+        candidates.append(candidate)
+        return _image()
+    monkeypatch.setattr("musiclib.server.app.download_candidate_cover", download)
+    release_id = "12345678-1234-5678-1234-567812345678"
+    with TestClient(create_app(lib_env.config)) as client:
+        response = client.post("/api/artwork/link-preview", json={
+            "track_ids": track_ids, "release_url": f"https://musicbrainz.org/release/{release_id}",
+        })
+        job_id = response.json()["job_id"]
+        preview = wait_job(client, job_id)
+        assert preview["status"] == "done" and preview["read_only"]
+        assert candidates[0]["fields"]["mbid_release"] == release_id
+        assert candidates[0]["source"] == "MusicBrainz"
+        assert [path.read_bytes() for path in paths] == originals
+        assert client.get(f"/api/artwork/reviews/{preview['summary']['review_id']}").json()["status"] == "review"
+        apply = client.post("/api/artwork/apply-reviewed", json={"preview_job_id": job_id})
+        assert wait_job(client, apply.json()["job_id"])["status"] == "done"
+        assert all(path.read_bytes() != original for path, original in zip(paths, originals))
+        invalid = client.post("/api/artwork/link-preview", json={
+            "track_ids": track_ids, "release_url": "https://localhost/secret",
+        })
+        assert invalid.status_code == 400
+        assert len(candidates) == 1
+
+
 def test_candidate_preview_refuses_files_changed_after_discovery(lib_env, monkeypatch):
     paths = _seed_album(lib_env)
     monkeypatch.setattr(
