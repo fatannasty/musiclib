@@ -201,17 +201,30 @@ returns to the compact bar without stopping playback. Automatic track advances
 and repeat do not reopen it; selecting another song, album, playlist, or queue
 item to play opens it again. This works on desktop too.
 
+The player uses a charcoal palette independently of the dashboard theme.
+Expanded Now Playing includes a **Cover Flow–style queue**: swipe or scroll
+through artwork, use Left/Right/Home/End to browse, and select a cover to play
+that song. Automatic advancement centers the current item while expanded;
+it does not reopen a collapsed player. Missing artwork uses a placeholder.
+
 The expanded listening room shows the album artwork and transport alongside a
 side panel with album metadata, the upcoming queue, and the **15-band equalizer**.
 Use **EQ position** to move the equalizer and its controls together below the main
 controls instead, or back to the side panel. The layout stacks on phones. EQ provides
-±6 dB adjustment, with Flat, Warm & balanced, and Vocal clarity presets, plus Reset
-and Enable/Bypass controls below the 15 bands.
-It starts off and initializes Web Audio only when you choose **Enable EQ**.
+±6 dB adjustment, with Flat, Warm & balanced, Vocal clarity, Bass boost, Rock,
+Electronic, Acoustic, Jazz, and Classical presets, plus Reset and Enable/Bypass
+controls below the 15 bands.
+EQ starts off. Enabling EQ, effects, or standalone visuals initializes the shared
+Web Audio source.
 Enabled EQ reserves headroom for boosts, so it may sound quieter. The spectrum
 reflects processed audio and stops while paused, collapsed, in a background tab,
 or when reduced motion is requested. Unsupported browsers display an error and
 retain native playback. Equalizer settings last only for the current page.
+**Enable visualizer** also shows a live 15-band spectrum with EQ and effects
+bypassed. This explicitly initializes Web Audio; browser resampling may apply.
+The bars react to actual audio, not simulated animation, and stop while paused,
+buffering, ended, collapsed, or hidden. **Hide visualizer** stops the animation
+without changing EQ or effect settings. Reduced-motion preferences are respected.
 
 **Audio effects** starts below the EQ in the side panel. Its own **Effects position**
 selector moves it to the main panel without moving the EQ or resetting playback.
