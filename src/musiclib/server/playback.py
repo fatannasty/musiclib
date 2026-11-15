@@ -91,7 +91,9 @@ class Playback:
         track = self.source(track_id)
         return {
             "id": track.id, "title": track.title or Path(track.path).name,
-            "artist": track.artist, "album": track.album,
+            "artist": track.artist, "album_artist": track.album_artist, "album": track.album,
+            "year": track.year, "genre": track.genre, "track_no": track.track_no,
+            "track_total": track.track_total, "disc_no": track.disc_no, "disc_total": track.disc_total,
             "cover_url": f"/api/tracks/{track.id}/cover" if track.has_embedded_art else None,
             "format": track.format or audio_format(track.path),
             "duration": track.duration, "bitrate": track.bitrate,

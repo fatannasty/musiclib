@@ -38,6 +38,12 @@ class Element {
   hasAttribute(key) { return this.attributes.has(key); }
   removeAttribute(key) { this.attributes.delete(key); }
   replaceChildren() { this.children = []; }
+  appendChild(child) {
+    child.parentElement?.children.splice(child.parentElement.children.indexOf(child), 1);
+    this.children.push(child);
+    child.parentElement = this;
+    return child;
+  }
   querySelectorAll() { return []; }
   focus() {}
   scrollIntoView() {}
@@ -153,6 +159,31 @@ test("signing out removes the sidebar layout and leaves a usable login screen", 
   assert.equal(document.body.classList.contains("listening-mode"), false);
   assert.equal(document.querySelector("#nav").hidden, true);
   assert.match(document.querySelector("#main").innerHTML, /id="login-form"/);
+});
+
+test("expanded player offers an adjustable EQ location and escaped album details", () => {
+  const {document, run} = dashboard();
+  const player = document.querySelector("#player");
+  assert.equal(document.querySelector("#player-eq-side-slot").children[0],
+    document.querySelector("#player-sound"));
+  const placement = document.querySelector("#player-eq-placement");
+  placement.value = "main";
+  placement.onchange({target: placement});
+  assert.equal(document.querySelector("#player-eq-main-slot").children[0],
+    document.querySelector("#player-sound"));
+  assert.equal(player.classList.contains("eq-main"), true);
+  assert.equal(placement.value, "main");
+  run('renderPlaybackDetails({album: "<Album>", album_artist: "Artist", year: 2001, genre: "Jazz", track_no: 2, track_total: 9, disc_no: 1, disc_total: 2, duration: 125})');
+  const details = document.querySelector("#player-details-list").innerHTML;
+  assert.match(details, /&lt;Album&gt;/);
+  assert.match(details, /<dt>Artist<\/dt><dd>Artist<\/dd>/);
+  assert.match(details, /<dt>Track<\/dt><dd>2 of 9<\/dd>/);
+  assert.match(details, /<dt>Disc<\/dt><dd>1 of 2<\/dd>/);
+  assert.match(details, /<dt>Length<\/dt><dd>2:05<\/dd>/);
+  run("setPlayerExpanded(true)");
+  assert.equal(document.querySelector("#player-queue-panel").hidden, false);
+  run("setPlayerExpanded(false)");
+  assert.equal(document.querySelector("#player-queue-panel").hidden, true);
 });
 
 test("equalizer preserves native audio until enabled and reuses a single media source", async () => {

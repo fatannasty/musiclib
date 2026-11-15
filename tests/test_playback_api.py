@@ -36,6 +36,19 @@ def test_original_audio_metadata_and_range_seeking(lib_env):
         assert info["sample_rate"] == 44100
         assert info["media_type"] == "audio/mpeg"
         assert info["cover_url"] is None
+        env.db.update_track_columns(
+            track.id, album_artist="Album artist", year=1998, genre="Jazz",
+            track_no=3, track_total=10, disc_no=2, disc_total=2,
+        )
+        info = client.get(f"/api/tracks/{track.id}/playback").json()
+        assert {
+            key: info[key] for key in (
+                "album_artist", "year", "genre", "track_no", "track_total", "disc_no", "disc_total",
+            )
+        } == {
+            "album_artist": "Album artist", "year": 1998, "genre": "Jazz",
+            "track_no": 3, "track_total": 10, "disc_no": 2, "disc_total": 2,
+        }
         response = client.get(info["original_url"])
         assert response.status_code == 200
         assert response.content == data

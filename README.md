@@ -196,8 +196,10 @@ On phones, the compact player keeps play/pause visible while browsing. Choose
 **Now playing** to expand the artwork, queue, and playback controls; **Collapse**
 returns to the compact bar without stopping playback. This works on desktop too.
 
-The expanded listening room places artwork and information to the left of the
-**15-band equalizer**, with a compact stacked layout on phones. EQ provides ±6 dB
+The expanded listening room shows the album artwork and transport alongside a
+side panel with album metadata, the upcoming queue, and the **15-band equalizer**.
+Use **EQ position** to move the equalizer below the main controls instead. The
+layout stacks on phones. EQ provides ±6 dB
 adjustment, Flat, Warm & balanced, and Vocal clarity presets, plus Reset and Bypass.
 It starts off and initializes Web Audio only when you choose **Enable EQ**.
 Enabled EQ reserves headroom for boosts, so it may sound quieter. The spectrum
