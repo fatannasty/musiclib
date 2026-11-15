@@ -105,6 +105,37 @@ function playbackDashboard() {
   return app;
 }
 
+function installEffectsAudio(context, failEffects = false) {
+  const parameter = () => ({value: 0, setTargetAtTime(value) { this.value = value; }});
+  const node = () => ({
+    connections: [], gain: parameter(), frequency: parameter(), Q: parameter(),
+    connect(target) { this.connections.push(target); },
+    disconnect() { this.connections = []; },
+  });
+  let sources = 0;
+  context.window.AudioContext = class {
+    constructor() { this.sampleRate = 48000; this.currentTime = 0; this.destination = node(); }
+    createGain() { return node(); }
+    createAnalyser() { return node(); }
+    createBiquadFilter() { return node(); }
+    createMediaElementSource() { sources++; return node(); }
+    createConvolver() {
+      if (failEffects) throw new Error("Reverb unavailable");
+      return node();
+    }
+    createDynamicsCompressor() {
+      return {...node(), threshold: parameter(), knee: parameter(), ratio: parameter(),
+        attack: parameter(), release: parameter()};
+    }
+    createBuffer(channels, length) {
+      const data = Array.from({length: channels}, () => new Float32Array(length));
+      return {numberOfChannels: channels, length, getChannelData: channel => data[channel]};
+    }
+    async resume() {}
+  };
+  return () => sources;
+}
+
 test("tab visibility rules do not hide album and artwork result sections", () => {
   const styles = html.match(/<style>([\s\S]*?)<\/style>/)[1];
   assert.match(styles, /#main\s*>\s*section\s*\{\s*display:\s*none\s*;/);
@@ -271,14 +302,104 @@ test("unsupported equalizers explicitly report failure without taking over playb
   assert.equal(warnings.length, 1);
 });
 
+test("effects share the audio source and route independently of EQ without recreating nodes", async () => {
+  const {context, document, run} = dashboard();
+  const sourceCount = installEffectsAudio(context);
+  document.querySelector("#player-audio").paused = true;
+  const toggle = document.querySelector("#player-effects-toggle");
+  assert.equal(run("effects.enabled"), false);
+  assert.equal(run("effects.nodes"), null);
+  context.setEffectsPreset("night");
+  assert.equal(run("equalizer.context"), null);
+  context.setEffectsPreset("room");
+  await toggle.onclick();
+  const nodes = run("effects.nodes");
+  assert.equal(run("equalizer.enabled"), false);
+  assert.equal(run("equalizer.source.connections[0] === effects.nodes.input"), true);
+  assert.equal(nodes.dry.gain.value, 0.85);
+  assert.equal(nodes.wet.gain.value, 0.15);
+  assert.equal(run("effects.nodes.mix.connections[0] === equalizer.analyser"), true);
+  assert.equal(nodes.reverb.buffer.numberOfChannels, 2);
+  assert.equal(nodes.reverb.buffer.length, 57600);
+  assert.equal(nodes.compressor.ratio.value, 3);
+  await document.querySelector("#player-eq-toggle").onclick();
+  assert.equal(run("equalizer.source.connections[0] === equalizer.preamp"), true);
+  assert.equal(run("equalizer.filters[14].connections[0] === effects.nodes.input"), true);
+  await toggle.onclick();
+  assert.equal(run("equalizer.filters[14].connections[0] === equalizer.analyser"), true);
+  await toggle.onclick();
+  context.setEffectsPreset("night");
+  assert.equal(nodes.wet.gain.value, 0);
+  assert.equal(nodes.dry.gain.value, 1);
+  assert.equal(nodes.mix.connections[0], nodes.compressor);
+  assert.equal(run("effects.nodes.compressor.connections[0] === equalizer.analyser"), true);
+  await document.querySelector("#player-eq-toggle").onclick();
+  assert.equal(run("equalizer.source.connections[0] === effects.nodes.input"), true);
+  context.setEqualizerPlacement("side");
+  const effectsSection = document.querySelector("#player-effects");
+  for (const placement of ["main", "side"]) {
+    const select = document.querySelector("#player-effects-placement");
+    select.onchange({target: {value: placement}});
+    assert.equal(document.querySelector(`#player-effects-${placement}-slot`).children[0], effectsSection);
+    assert.equal(document.querySelector("#player-eq-side-slot").children[0], document.querySelector("#player-sound"));
+    assert.equal(run("effects.nodes"), nodes);
+    assert.equal(run("effects.compression"), true);
+  }
+  document.querySelector("#player-effects-reset").click();
+  assert.equal(run("effects.enabled"), true);
+  assert.equal(run("effects.compression"), false);
+  assert.equal(nodes.mix.connections[0], run("equalizer.analyser"));
+  await toggle.onclick();
+  assert.equal(run("equalizer.source.connections[0] === equalizer.context.destination"), true);
+  const reverb = document.querySelector("#player-reverb");
+  reverb.value = "40";
+  reverb.oninput({target: reverb});
+  assert.equal(nodes.wet.gain.value, 0.4);
+  assert.equal(nodes.dry.gain.value, 0.6);
+  assert.equal(document.querySelector("#player-effects-preset").value, "custom");
+  assert.equal(reverb.getAttribute("aria-valuetext"), "40 percent");
+  assert.equal(document.querySelector("#player-reverb-value").textContent, "40%");
+  assert.equal(run("equalizer.source.connections[0] === equalizer.context.destination"), true);
+  assert.equal(sourceCount(), 1);
+});
+
+test("unavailable effects report failure and preserve a working equalizer", async () => {
+  const {context, document, run, warnings} = dashboard();
+  installEffectsAudio(context, true);
+  document.querySelector("#player-audio").paused = true;
+  await document.querySelector("#player-eq-toggle").onclick();
+  await document.querySelector("#player-effects-toggle").onclick();
+  assert.equal(run("effects.enabled"), false);
+  assert.equal(run("effects.nodes"), null);
+  assert.equal(run("equalizer.enabled"), true);
+  assert.equal(run("equalizer.source.connections[0] === equalizer.preamp"), true);
+  assert.equal(run("equalizer.filters[14].connections[0] === equalizer.analyser"), true);
+  assert.match(document.querySelector("#player-effects-status").textContent, /Reverb unavailable/);
+  assert.equal(document.querySelector("#player-effects-toggle").disabled, false);
+  assert.equal(warnings.length, 1);
+});
+
+test("unsupported effects explicitly report failure without initializing audio", async () => {
+  const {document, run, warnings} = dashboard();
+  await document.querySelector("#player-effects-toggle").onclick();
+  assert.equal(run("equalizer.context"), null);
+  assert.equal(run("effects.enabled"), false);
+  assert.equal(run("effects.nodes"), null);
+  assert.match(document.querySelector("#player-effects-status").textContent, /does not support/);
+  assert.equal(document.querySelector("#player-effects-toggle").getAttribute("aria-pressed"), "false");
+  assert.equal(warnings.length, 1);
+});
+
 test("spectrum stops on collapse and respects reduced motion", () => {
-  for (const reducedMotion of [false, true]) {
+  for (const [processing, reducedMotion] of [
+    ["equalizer", false], ["equalizer", true], ["effects", false], ["effects", true],
+  ]) {
     const {context, document, run} = dashboard({reducedMotion});
     const canvas = document.querySelector("#player-spectrum");
     let clears = 0, frames = 0;
     canvas.getContext = () => ({clearRect() { clears++; }});
     context.requestAnimationFrame = () => { frames++; return frames; };
-    run("equalizer.enabled = true; equalizer.analyser = {frequencyBinCount: 128};");
+    run(`${processing}.enabled = true; equalizer.analyser = {frequencyBinCount: 128};`);
     const player = document.querySelector("#player");
     player.hidden = false;
     document.querySelector("#player-audio").paused = false;
@@ -508,6 +629,41 @@ test("music search ignores stale responses and preserves its search between view
   assert.match(document.querySelector("#listen-results").innerHTML, /&lt;Artist&gt;/);
   assert.doesNotMatch(document.querySelector("#listen-results").innerHTML, /Stale song/);
   assert.equal(run("state.listen.query"), "new artist");
+});
+
+test("song search cards keep artwork, escaped labels, playback and secondary actions", async () => {
+  const {context, document, run} = dashboard();
+  run('state.listen.kind = "tracks"; state.listen.query = "song"');
+  document.querySelector("#listen-query").value = "song";
+  const tracks = [
+    {id: 7, title: "<Song>", artist: "Band", has_embedded_art: true, is_favorite: true},
+    {id: 8, title: "Plain song", has_embedded_art: false},
+  ];
+  context.api = async () => ({items: tracks, total: 2});
+  const played = [], next = [];
+  const play = new Element({listenPlay: "1"}), enqueue = new Element({listenNext: "0"});
+  document.querySelector("#listen-results").querySelectorAll = selector =>
+    selector === "[data-listen-play]" ? [play] : selector === "[data-listen-next]" ? [enqueue] : [];
+  context.playQueue = (queue, index) => played.push([queue, index]);
+  context.enqueueTracks = (queue, after) => next.push([queue, after]);
+  await run("views.player")(new Element());
+  const markup = document.querySelector("#listen-results").innerHTML;
+  assert.match(markup, /listen-track-cards/);
+  assert.match(markup, /src="\/api\/tracks\/7\/cover"/);
+  assert.doesNotMatch(markup, /\/api\/tracks\/8\/cover/);
+  assert.match(markup, /aria-label="Play &lt;Song&gt;"/);
+  assert.match(markup, /<details class="listen-track-menu"><summary>More actions/);
+  assert.match(markup, /data-listen-favorite="0"[^>]*aria-pressed="true"/);
+  assert.match(markup, /data-add-playlist-track="7"/);
+  play.click();
+  enqueue.click();
+  assert.equal(played[0][0], tracks);
+  assert.equal(played[0][1], 1);
+  assert.equal(next[0][0][0], tracks[0]);
+  assert.equal(next[0][1], true);
+  await document.querySelector("#listen-clear").onclick();
+  assert.doesNotMatch(document.querySelector("#listen-results").innerHTML, /listen-track-cards/);
+  assert.match(document.querySelector("#listen-results").innerHTML, /listen-track-number/);
 });
 
 test("music search reports failures and retries without losing the query", async () => {

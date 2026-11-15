@@ -464,12 +464,12 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 }
 #player.is-expanded .player-main-panel {
   display: grid; grid-area: main; grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "heading" "actions" "transport" "seek" "toolbar" "sound" "options" "status";
-  align-content: start; align-items: start; gap: 16px; min-width: 0; padding: 28px; overflow-y: auto;
+  grid-template-areas: "heading" "actions" "transport" "seek" "toolbar" "sound" "effects" "options" "status";
+  align-content: start; align-items: start; gap: 12px; min-width: 0; padding: 24px; overflow-y: auto;
 }
 #player.is-expanded .player-side-panel {
-  display: flex; grid-area: side; flex-direction: column; gap: 20px; min-width: 0;
-  padding: 24px; border-left: 1px solid var(--border); background: var(--panel2); overflow-y: auto;
+  display: flex; grid-area: side; flex-direction: column; gap: 16px; min-width: 0;
+  padding: 24px; border-left: 1px solid var(--border); background: var(--panel); overflow-y: auto;
 }
 #player.is-expanded .player-heading { display: grid; grid-template-columns: minmax(100px, 160px) minmax(0, 1fr); align-items: center; gap: 18px; min-width: 0; }
 #player.is-expanded .player-art { width: 100%; height: auto; aspect-ratio: 1; border-radius: 10px; grid-column: 1; grid-row: 1 / span 2; }
@@ -494,6 +494,7 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 #player.is-expanded .player-sound { display: block; }
 #player.is-expanded .player-main-panel > .player-sound { grid-area: sound; }
 #player.is-expanded .player-side-panel > #player-eq-side-slot { order: 3; }
+#player.is-expanded .player-side-panel > #player-effects-side-slot { order: 4; }
 #player.is-expanded .player-side-panel > #player-queue-panel { order: 2; }
 #player.is-expanded .player-side-panel > .player-details { order: 1; }
 #player.is-expanded .player-side-panel #player-queue-panel { display: block; }
@@ -511,12 +512,15 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 #player.is-expanded .player-queue-toggle { font-size: 12px; }
 #player.is-expanded .player-sound-heading { align-items: start; flex-wrap: wrap; }
 #player.is-expanded .player-sound-heading label { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11px; }
-#player.is-expanded #player-eq-placement { max-width: 150px; padding: 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); font-size: 11px; }
+#player.is-expanded .player-sound-heading select { max-width: 150px; padding: 5px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text); font-size: 11px; }
 #player.is-expanded .player-side-panel #player-eq-side-slot .player-spectrum { margin-top: 12px; }
 #player.is-expanded .player-side-panel #player-eq-side-slot .player-eq-note { margin-top: 6px; }
 #player.is-expanded #player-eq-main-slot { display: none; }
 #player.is-expanded.eq-main #player-eq-main-slot { display: block; grid-area: sound; }
 #player.is-expanded.eq-main #player-eq-side-slot { display: none; }
+#player.is-expanded #player-effects-main-slot { display: none; }
+#player.is-expanded.effects-main #player-effects-main-slot { display: block; grid-area: effects; }
+#player.is-expanded.effects-main #player-effects-side-slot { display: none; }
 @media (max-width: 760px) {
   #player.is-expanded:not(.is-floating) {
     grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto;
@@ -541,6 +545,14 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .player-band input[type=range] { writing-mode: vertical-lr; direction: rtl; width: 24px; height: 100px; flex: none; accent-color: var(--accent); }
 .player-spectrum { display: block; width: 100%; height: 60px; margin-top: 20px; }
 .player-eq-note { color: var(--dim); font-size: 11px; margin-top: 8px; }
+.player-effects { padding-top: 16px; border-top: 1px solid var(--border); }
+.player-effects .player-eq-tools { margin-top: 0; }
+.player-effect-control { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12px; color: var(--dim); }
+.player-effect-control input { width: 100%; }
+.player-effect-control output { min-width: 32px; text-align: right; font-variant-numeric: tabular-nums; }
+#player.is-expanded .player-actions { gap: 4px; }
+#player.is-expanded .player-actions .action { font-size: 12px; padding: 6px 10px; }
+#player.is-expanded .player-options { padding: 0; border: 0; background: transparent; }
 .player-heading .now-playing strong { overflow: hidden; text-overflow: ellipsis; }
 .player-heading .hint { overflow: hidden; text-overflow: ellipsis; }
 .player-transport .player-play { font-weight: 750; }
@@ -600,6 +612,26 @@ body.listening-mode .listen-actions .action.ghost:hover { background: var(--acce
 .listen-track.is-current:not(.is-playing) { background: var(--panel2); }
 .listen-track-state { display: block; color: var(--accent); font-size: 11px; }
 .listen-track-state:empty { display: none; }
+.listen-track-list.listen-track-cards { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 24px 20px; }
+.listen-track-cards .listen-track { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 0; min-width: 0; border: 0; background: transparent; }
+.listen-track-cards .listen-track.is-current { background: transparent; }
+.listen-track-cards .listen-track.is-current .listen-track-art { outline: 2px solid var(--accent); outline-offset: 3px; }
+.listen-track-art { display: block; position: relative; width: 100%; padding: 0; border: 0; border-radius: 10px; overflow: hidden; background: var(--cover-bg); cursor: pointer; }
+.listen-track-art .listen-album-art { width: 100%; }
+.listen-track-art .listen-card-play { position: absolute; right: 10px; bottom: 10px; padding: 9px 14px; border-radius: 24px; background: var(--accent); color: var(--on-accent); font-size: 12px; }
+.listen-track-cards .listen-track-info { padding: 0 2px; }
+.listen-track-cards .listen-track-info strong { white-space: normal; overflow-wrap: anywhere; }
+.listen-track-cards .listen-card-footer { display: flex; align-items: start; justify-content: space-between; gap: 8px; padding: 0 2px; }
+.listen-track-menu { min-width: 0; padding: 0; border: 0; background: transparent; }
+.listen-track-menu summary { cursor: pointer; color: var(--dim); font-size: 11px; min-height: 44px; display: flex; align-items: center; }
+.listen-track-menu .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.listen-track-menu .listen-actions { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+.listen-track-menu .listen-actions .action { text-align: left; font-size: 11px; padding: 8px; }
+.listen-track-art:focus-visible, .listen-track-menu summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 600px) {
+  .listen-track-list.listen-track-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 14px; }
+  body.listening-mode .listen-track-cards .listen-track { padding: 0; }
+}
 .player-playback-state { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--dim); }
 .player-playback-state::before { content: ""; width: 5px; height: 5px; background: var(--border); border-radius: 50%; }
 .player-playback-state[data-state=playing] { color: var(--accent); }
@@ -892,6 +924,7 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
     </details>
     <p id="player-status" class="hint" role="status" aria-live="polite"></p>
     <div class="player-eq-slot" id="player-eq-main-slot"></div>
+    <div id="player-effects-main-slot"></div>
   </div>
   <div class="player-side-panel">
     <section class="player-details" aria-labelledby="player-details-heading">
@@ -906,6 +939,7 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
       <ol id="player-queue" class="player-queue"></ol>
     </section>
     <div id="player-eq-side-slot"></div>
+    <div id="player-effects-side-slot"></div>
   </div>
   <div id="player-sound" class="player-sound">
     <div class="player-sound-heading">
@@ -926,6 +960,28 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
     <canvas id="player-spectrum" class="player-spectrum" width="600" height="60" aria-label="Live audio spectrum"></canvas>
     <p id="player-eq-status" class="player-eq-note" role="status">EQ off. Enable to shape sound and show the live spectrum.</p>
   </div>
+  <section id="player-effects" class="player-sound player-effects" aria-labelledby="player-effects-heading">
+    <div class="player-sound-heading">
+      <h3 id="player-effects-heading">Audio effects</h3>
+      <label>Effects position <select id="player-effects-placement" aria-label="Audio effects position">
+        <option value="side">Side panel</option><option value="main">Main panel</option>
+      </select></label>
+    </div>
+    <div class="player-eq-tools">
+      <button class="action ghost" id="player-effects-toggle" type="button" aria-pressed="false">Enable effects</button>
+      <label class="hint">Preset <select id="player-effects-preset" aria-label="Audio effects preset">
+        <option value="clean">Clean</option><option value="room" selected>Small room</option>
+        <option value="night">Late night</option><option value="custom" disabled>Custom</option>
+      </select></label>
+      <button class="action ghost" id="player-effects-reset" type="button">Reset</button>
+    </div>
+    <label class="player-effect-control" for="player-reverb">Room reverb
+      <input id="player-reverb" type="range" min="0" max="40" step="1" value="15" aria-valuetext="15 percent">
+      <output id="player-reverb-value" for="player-reverb">15%</output>
+    </label>
+    <button class="action ghost" id="player-compression" type="button" aria-pressed="false">Compression off</button>
+    <p id="player-effects-status" class="player-eq-note" role="status">Effects off. Reverb adds space; compression softens loud peaks.</p>
+  </section>
 </aside></div>
 <dialog id="playlist-picker" class="playlist-picker" aria-label="Add tracks to playlist">
   <form id="playlist-picker-form">
@@ -1273,6 +1329,14 @@ const equalizer = {
   context: null, source: null, filters: [], preamp: null, analyser: null,
   gains: EQ_PRESETS.flat.slice(), enabled: false, frame: null, lastFrame: 0,
 };
+const EFFECT_PRESETS = {
+  clean: {reverb: 0, compression: false},
+  room: {reverb: 15, compression: false},
+  night: {reverb: 0, compression: true},
+};
+const effects = {
+  enabled: false, reverb: 15, compression: false, nodes: null,
+};
 function setEqualizerPlacement(placement) {
   if (placement !== "side" && placement !== "main") return;
   const slot = $(`#player-eq-${placement}-slot`);
@@ -1282,6 +1346,14 @@ function setEqualizerPlacement(placement) {
 }
 setEqualizerPlacement("side");
 $("#player-eq-placement").onchange = event => setEqualizerPlacement(event.target.value);
+function setEffectsPlacement(placement) {
+  if (placement !== "side" && placement !== "main") return;
+  $(`#player-effects-${placement}-slot`).appendChild($("#player-effects"));
+  $("#player-effects-placement").value = placement;
+  $("#player").classList.toggle("effects-main", placement === "main");
+}
+setEffectsPlacement("side");
+$("#player-effects-placement").onchange = event => setEffectsPlacement(event.target.value);
 const eqLabel = frequency => frequency >= 1000 ? `${frequency / 1000}k` : String(frequency);
 $("#player-eq-bands").innerHTML = EQ_FREQUENCIES.map((frequency, index) =>
   `<label class="player-band"><output id="eq-gain-${index}">0 dB</output>
@@ -1302,7 +1374,28 @@ function applyEqualizerGains() {
 function routeEqualizer() {
   if (!equalizer.source) return;
   equalizer.source.disconnect();
-  equalizer.source.connect(equalizer.enabled ? equalizer.preamp : equalizer.context.destination);
+  const lastFilter = equalizer.filters[equalizer.filters.length - 1];
+  lastFilter.disconnect();
+  if (effects.nodes) {
+    effects.nodes.mix.disconnect();
+    effects.nodes.compressor.disconnect();
+  }
+  const output = effects.enabled ? effects.nodes.input :
+    equalizer.enabled ? equalizer.analyser : equalizer.context.destination;
+  if (equalizer.enabled) {
+    equalizer.source.connect(equalizer.preamp);
+    lastFilter.connect(output);
+  } else {
+    equalizer.source.connect(output);
+  }
+  if (effects.enabled) {
+    if (effects.compression) {
+      effects.nodes.mix.connect(effects.nodes.compressor);
+      effects.nodes.compressor.connect(equalizer.analyser);
+    } else {
+      effects.nodes.mix.connect(equalizer.analyser);
+    }
+  }
 }
 async function ensureEqualizer() {
   if (!equalizer.context) {
@@ -1331,6 +1424,15 @@ async function ensureEqualizer() {
   }
   await equalizer.context.resume();
 }
+async function releaseUninitializedEqualizer() {
+  if (equalizer.context && !equalizer.source) {
+    await equalizer.context.close();
+    equalizer.context = null;
+    equalizer.filters = [];
+    equalizer.preamp = null;
+    equalizer.analyser = null;
+  }
+}
 function stopSpectrum() {
   if (equalizer.frame !== null) cancelAnimationFrame(equalizer.frame);
   equalizer.frame = null;
@@ -1339,7 +1441,7 @@ function stopSpectrum() {
 }
 function startSpectrum() {
   stopSpectrum();
-  if (!equalizer.enabled || $("#player-audio").paused || $("#player").hidden ||
+  if (!(equalizer.enabled || effects.enabled) || $("#player-audio").paused || $("#player").hidden ||
       !$("#player").classList.contains("is-expanded") || document.hidden ||
       window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const canvas = $("#player-spectrum"), drawing = canvas.getContext("2d");
@@ -1391,16 +1493,10 @@ $("#player-eq-toggle").onclick = async () => {
   } catch (error) {
     equalizer.enabled = false;
     routeEqualizer();
-    stopSpectrum();
+    startSpectrum();
     button.setAttribute("aria-pressed", "false");
     button.textContent = "Enable EQ";
-    if (equalizer.context && !equalizer.source) {
-      await equalizer.context.close();
-      equalizer.context = null;
-      equalizer.filters = [];
-      equalizer.preamp = null;
-      equalizer.analyser = null;
-    }
+    await releaseUninitializedEqualizer();
     console.warn("Musiclib equalizer could not start.", error);
     $("#player-eq-status").textContent = `Equalizer unavailable: ${error.message}`;
   } finally { button.disabled = false; }
@@ -1416,6 +1512,92 @@ $("#player-eq-bands").oninput = event => {
   $(`#eq-gain-${input.dataset.eqBand}`).textContent = `${gain > 0 ? "+" : ""}${gain} dB`;
   $("#player-eq-preset").value = "custom";
   applyEqualizerGains();
+};
+async function ensureEffects() {
+  await ensureEqualizer();
+  if (effects.nodes) return;
+  const context = equalizer.context;
+  const input = context.createGain(), dry = context.createGain(), wet = context.createGain();
+  const mix = context.createGain(), reverb = context.createConvolver();
+  const compressor = context.createDynamicsCompressor();
+  const impulse = context.createBuffer(2, Math.floor(context.sampleRate * 1.2), context.sampleRate);
+  for (let channel = 0; channel < impulse.numberOfChannels; channel++) {
+    const data = impulse.getChannelData(channel);
+    for (let index = 0; index < data.length; index++) {
+      data[index] = (Math.random() * 2 - 1) * (1 - index / data.length) ** 3;
+    }
+  }
+  reverb.buffer = impulse;
+  compressor.threshold.value = -24;
+  compressor.knee.value = 30;
+  compressor.ratio.value = 3;
+  compressor.attack.value = 0.01;
+  compressor.release.value = 0.25;
+  input.connect(dry);
+  dry.connect(mix);
+  input.connect(reverb);
+  reverb.connect(wet);
+  wet.connect(mix);
+  effects.nodes = {input, dry, wet, mix, reverb, compressor};
+  applyEffects();
+}
+function applyEffects() {
+  const value = effects.reverb / 100;
+  if (effects.nodes) {
+    effects.nodes.dry.gain.setTargetAtTime(1 - value, equalizer.context.currentTime, 0.015);
+    effects.nodes.wet.gain.setTargetAtTime(value, equalizer.context.currentTime, 0.015);
+  }
+  $("#player-reverb").value = effects.reverb;
+  $("#player-reverb").setAttribute("aria-valuetext", `${effects.reverb} percent`);
+  $("#player-reverb-value").textContent = `${effects.reverb}%`;
+  $("#player-compression").setAttribute("aria-pressed", String(effects.compression));
+  $("#player-compression").textContent = effects.compression ? "Compression on" : "Compression off";
+}
+function setEffectsPreset(name) {
+  const preset = EFFECT_PRESETS[name];
+  if (!preset) return;
+  effects.reverb = preset.reverb;
+  effects.compression = preset.compression;
+  $("#player-effects-preset").value = name;
+  applyEffects();
+  routeEqualizer();
+}
+$("#player-effects-preset").onchange = event => setEffectsPreset(event.target.value);
+$("#player-effects-reset").onclick = () => setEffectsPreset("clean");
+$("#player-reverb").oninput = event => {
+  effects.reverb = Number(event.target.value);
+  $("#player-effects-preset").value = "custom";
+  applyEffects();
+};
+$("#player-compression").onclick = () => {
+  effects.compression = !effects.compression;
+  $("#player-effects-preset").value = "custom";
+  applyEffects();
+  routeEqualizer();
+};
+$("#player-effects-toggle").onclick = async () => {
+  const button = $("#player-effects-toggle");
+  button.disabled = true;
+  try {
+    if (!effects.enabled) await ensureEffects();
+    effects.enabled = !effects.enabled;
+    routeEqualizer();
+    button.setAttribute("aria-pressed", String(effects.enabled));
+    button.textContent = effects.enabled ? "Bypass effects" : "Enable effects";
+    $("#player-effects-status").textContent = effects.enabled ?
+      "Effects enabled. Changes only your listening audio, not the source file." :
+      "Effects bypassed. Reload to return to native playback.";
+    startSpectrum();
+  } catch (error) {
+    effects.enabled = false;
+    routeEqualizer();
+    startSpectrum();
+    await releaseUninitializedEqualizer();
+    button.setAttribute("aria-pressed", "false");
+    button.textContent = "Enable effects";
+    console.warn("Musiclib audio effects could not start.", error);
+    $("#player-effects-status").textContent = `Audio effects unavailable: ${error.message}`;
+  } finally { button.disabled = false; }
 };
 document.addEventListener("visibilitychange", startSpectrum);
 window.matchMedia("(prefers-reduced-motion: reduce)").addEventListener?.("change", startSpectrum);
@@ -2577,21 +2759,27 @@ function listenCoverMarkup(url) {
   return `<span class="listen-album-art" aria-hidden="true">♪
     ${url ? `<img data-listen-cover src="${esc(url)}" alt="" loading="lazy">` : ""}</span>`;
 }
-function listeningTracksMarkup(tracks, offset = 0) {
-  return `<ol class="listen-track-list">${tracks.map((track, index) =>
+function listeningTracksMarkup(tracks, offset = 0, cards = false) {
+  return `<ol class="listen-track-list${cards ? " listen-track-cards" : ""}">${tracks.map((track, index) => {
+    const play = `<button type="button" class="action ghost" data-listen-play="${index}" aria-label="Play ${esc(track.title || "track")}">Play</button>`;
+    const actions = `<button type="button" class="action ghost" data-listen-next="${index}">Play next</button>
+      <button type="button" class="action ghost" data-listen-favorite="${index}" aria-label="Favorite ${esc(track.title || "track")}" aria-pressed="${Boolean(track.is_favorite)}">${track.is_favorite ? "♥ Favorited" : "♡ Favorite"}</button>
+      <button type="button" class="action ghost" data-add-playlist-track="${track.id}">Add to playlist</button>`;
+    const info = `<div class="listen-track-info"><strong>${esc(track.title || "Untitled track")}</strong>
+      <span>${esc([track.artist || track.album_artist || "Unknown artist", track.album].filter(Boolean).join(" · "))}</span>
+      <small class="listen-track-state"></small></div>`;
+    const duration = `<span class="listen-duration">${track.duration ? playbackTime(track.duration) : "—"}</span>`;
+    return cards ? `<li class="listen-track" data-listening-track-id="${track.id}">
+      <button type="button" class="listen-track-art" data-listen-play="${index}" aria-label="Play ${esc(track.title || "track")}">
+        ${listenCoverMarkup(track.has_embedded_art ? `/api/tracks/${track.id}/cover` : null)}
+        <span class="listen-card-play" aria-hidden="true">Play</span></button>
+      ${info}<div class="listen-card-footer">${duration}
+        <details class="listen-track-menu"><summary>More actions<span class="sr-only"> for ${esc(track.title || "track")}</span></summary>
+          <div class="listen-actions">${actions}</div></details></div></li>` :
     `<li class="listen-track" data-listening-track-id="${track.id}">
       <span class="listen-track-number" aria-hidden="true">${offset + index + 1}</span>
-      <div class="listen-track-info"><strong>${esc(track.title || "Untitled track")}</strong>
-        <span>${esc([track.artist || track.album_artist || "Unknown artist", track.album].filter(Boolean).join(" · "))}</span>
-        <small class="listen-track-state"></small></div>
-      <span class="listen-duration">${track.duration ? playbackTime(track.duration) : "—"}</span>
-      <div class="listen-actions">
-        <button type="button" class="action ghost" data-listen-play="${index}" aria-label="Play ${esc(track.title || "track")}">Play</button>
-        <button type="button" class="action ghost" data-listen-next="${index}">Play next</button>
-        <button type="button" class="action ghost" data-listen-favorite="${index}" aria-label="Favorite ${esc(track.title || "track")}" aria-pressed="${Boolean(track.is_favorite)}">${track.is_favorite ? "♥ Favorited" : "♡ Favorite"}</button>
-        <button type="button" class="action ghost" data-add-playlist-track="${track.id}">Add to playlist</button>
-      </div></li>`
-  ).join("")}</ol>`;
+      ${info}${duration}<div class="listen-actions">${play}${actions}</div></li>`;
+  }).join("")}</ol>`;
 }
 async function toggleTrackFavorite(track, button, onRemoved) {
   button.disabled = true;
@@ -2709,7 +2897,7 @@ const views = {
         results.classList.toggle("listen-artist-list", artists && page.items.length > 0);
         results.innerHTML = !page.items.length ?
           `<p class="empty">${search.query ? "Try another song, artist, or album, or clear your search." : search.kind === "favorites" ? "No favorites yet. Select Favorite on a song to save it here." : "No playable music yet. Ask your administrator to scan the library."}</p>` :
-          songs ? listeningTracksMarkup(page.items, search.offset) : artists ? page.items.map(artist =>
+          songs ? listeningTracksMarkup(page.items, search.offset, Boolean(search.query)) : artists ? page.items.map(artist =>
             `<button type="button" class="action ghost listen-artist" data-artist-name="${esc(artist.name)}">
               <span class="listen-artist-initial" aria-hidden="true">${esc(artist.name.charAt(0).toUpperCase())}</span>
               <span class="listen-artist-copy"><strong>${esc(artist.name)}</strong><span>${artist.album_count} albums · ${artist.track_count} songs</span></span></button>`

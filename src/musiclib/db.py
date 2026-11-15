@@ -717,7 +717,7 @@ class Database:
         )
         row_params = ([favorite_user_id] if favorite_user_id is not None else []) + params
         rows = self.query(
-            "SELECT id, title, artist, album_artist, album, duration, genre, format, disc_no, track_no "
+            "SELECT id, title, artist, album_artist, album, duration, genre, format, disc_no, track_no, has_embedded_art "
             f", {favorite} AS is_favorite "
             f"FROM tracks WHERE {where} ORDER BY {ordering}, id LIMIT ? OFFSET ?",
             row_params + ordering_params + [limit, offset],
@@ -725,6 +725,7 @@ class Database:
         items = [dict(row) for row in rows]
         for item in items:
             item["is_favorite"] = bool(item["is_favorite"])
+            item["has_embedded_art"] = bool(item["has_embedded_art"])
         return {"items": items, "total": total, "offset": offset}
 
     def add_favorite(self, user_id: int, track_id: int) -> bool:

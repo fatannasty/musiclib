@@ -158,6 +158,9 @@ Favorites are private to each account; save or remove them from song lists or
 the player, then browse them under **Favorites**.
 Playing from a song continues through that result page; **Play this page** and
 **Shuffle this page** use only the displayed songs, not the whole library.
+Song and Favorites searches display artwork-first cards: choose the cover to play,
+or **More actions** for Play next, Favorite, and Add to playlist. Clearing the
+search restores the compact song list. Missing artwork uses a music placeholder.
 The current track is highlighted. Search and paging choices remain while
 switching listening tabs in the same page session; playback is not restored on reload.
 The current song and player distinguish **Playing**, **Paused**, **Buffering**,
@@ -209,6 +212,15 @@ Enabled EQ reserves headroom for boosts, so it may sound quieter. The spectrum
 reflects processed audio and stops while paused, collapsed, in a background tab,
 or when reduced motion is requested. Unsupported browsers display an error and
 retain native playback. Equalizer settings last only for the current page.
+
+**Audio effects** starts below the EQ in the side panel. Its own **Effects position**
+selector moves it to the main panel without moving the EQ or resetting playback.
+Choose **Enable effects** for room reverb (0–40%) and optional gentle dynamics
+compression. **Small room** adds space, **Late night** softens loud peaks, and
+**Clean** or **Reset** clears both adjustments. Effects can be enabled or bypassed
+independently of EQ; both start off and share one Web Audio source. They change
+only listening audio, not files, and settings last for the current page.
+Unsupported effects report an error without disabling a working EQ.
 
 EQ changes the listening signal, never the source file. After enabling it,
 Bypass skips the filters but still uses the browser's Web Audio output, which can
