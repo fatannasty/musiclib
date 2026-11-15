@@ -534,7 +534,7 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 #player.is-expanded .now-playing strong, #player.is-expanded .now-playing .hint { white-space: normal; overflow-wrap: anywhere; }
 .player-sound-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
 .player-sound-heading h3 { font-size: 14px; font-weight: 600; }
-.player-eq-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
+.player-eq-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
 .player-eq-tools select { padding: 6px; font-size: 12px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; }
 .player-eq { display: grid; grid-template-columns: repeat(15, minmax(0,1fr)); gap: 4px; }
 .player-band { display: grid; justify-items: center; min-width: 0; gap: 6px; color: var(--dim); font-size: 9px; }
@@ -914,6 +914,7 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
         <option value="side">Side panel</option><option value="main">Main panel</option>
       </select></label>
     </div>
+    <div id="player-eq-bands" class="player-eq"></div>
     <div class="player-eq-tools">
       <button class="action ghost" id="player-eq-toggle" type="button" aria-pressed="false">Enable EQ</button>
       <label class="hint">Preset <select id="player-eq-preset" aria-label="Equalizer preset">
@@ -922,7 +923,6 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
       </select></label>
       <button class="action ghost" id="player-eq-reset" type="button">Reset</button>
     </div>
-    <div id="player-eq-bands" class="player-eq"></div>
     <canvas id="player-spectrum" class="player-spectrum" width="600" height="60" aria-label="Live audio spectrum"></canvas>
     <p id="player-eq-status" class="player-eq-note" role="status">EQ off. Enable to shape sound and show the live spectrum.</p>
   </div>
@@ -1519,7 +1519,7 @@ function renderPlaybackQueue() {
       </span></li>`
   ).join("");
   queue.querySelectorAll("[data-player-queue-index]").forEach(button => {
-    button.onclick = () => playQueueIndex(Number(button.dataset.playerQueueIndex));
+    button.onclick = () => playQueueIndex(Number(button.dataset.playerQueueIndex), true);
   });
   for (const [attribute, action] of [
     ["data-queue-up", index => moveQueueTrack(index, -1)],
@@ -1560,7 +1560,7 @@ function setPlaybackQueueOpen(open) {
   $("#player-queue-toggle").textContent = open ? "Hide queue" : "Show queue";
   $("#player-queue-toggle").setAttribute("aria-expanded", String(open));
 }
-async function loadPlaybackTrack(id) {
+async function loadPlaybackTrack(id, expand = false) {
   if (sleepTimer.endOfTrack) clearSleepTimer();
   const request = ++playback.request;
   playback.source++;
@@ -1571,6 +1571,10 @@ async function loadPlaybackTrack(id) {
   syncPlayButton();
   playback.dragging = false;
   $("#player").hidden = false;
+  if (expand) {
+    if ($("#player").classList.contains("is-floating")) setMiniPlayer(false);
+    setPlayerExpanded(true);
+  }
   fitMiniPlayer();
   const albumDialog = $("#library-album-page");
   if (albumDialog?.open) albumDialog.classList.add("album-dialog-playing");
@@ -1646,7 +1650,7 @@ function playTrack(id) {
   $("#player-shuffle").textContent = "Shuffle off";
   $("#player-shuffle").setAttribute("aria-pressed", "false");
   renderPlaybackQueue();
-  return loadPlaybackTrack(id);
+  return loadPlaybackTrack(id, true);
 }
 function playQueue(tracks, index = 0, shuffle = false) {
   playback.queue = tracks.map(track => ({
@@ -1668,13 +1672,13 @@ function playQueue(tracks, index = 0, shuffle = false) {
   $("#player-shuffle").setAttribute("aria-pressed", String(shuffle));
   renderPlaybackQueue();
   if (!playback.queue.length) return;
-  return loadPlaybackTrack(playback.queue[playback.queueIndex].id);
+  return loadPlaybackTrack(playback.queue[playback.queueIndex].id, true);
 }
-function playQueueIndex(index) {
+function playQueueIndex(index, expand = false) {
   if (index < 0 || index >= playback.queue.length) return;
   playback.queueIndex = index;
   renderPlaybackQueue();
-  return loadPlaybackTrack(playback.queue[index].id);
+  return loadPlaybackTrack(playback.queue[index].id, expand);
 }
 function advancePlayback(direction = 1, ended = false) {
   if (!playback.queue.length || playback.queueIndex < 0) return;

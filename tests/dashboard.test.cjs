@@ -93,6 +93,18 @@ function dashboard({storage, reducedMotion = false} = {}) {
     run: script => vm.runInContext(script, context)};
 }
 
+function playbackDashboard() {
+  const app = dashboard();
+  const audio = app.document.querySelector("#player-audio");
+  audio.pause = () => { audio.paused = true; };
+  audio.load = () => {};
+  app.document.querySelector("#player-mode").querySelector = () => new Element();
+  app.context.api = async path => ({id: Number(path.split("/")[3]), title: "Song"});
+  app.context.setPlaybackSource = async () => {};
+  app.document.querySelector("#player").hidden = true;
+  return app;
+}
+
 test("tab visibility rules do not hide album and artwork result sections", () => {
   const styles = html.match(/<style>([\s\S]*?)<\/style>/)[1];
   assert.match(styles, /#main\s*>\s*section\s*\{\s*display:\s*none\s*;/);
@@ -213,12 +225,41 @@ test("equalizer preserves native audio until enabled and reuses a single media s
   context.setEqualizerPreset("warm");
   assert.equal(run("equalizer.filters[1].gain.value"), 4);
   assert.ok(run("equalizer.preamp.gain.value") < 1);
+  const audioContext = run("equalizer.context"), mediaSource = run("equalizer.source");
+  const sound = document.querySelector("#player-sound");
+  for (const position of ["main", "side"]) {
+    const placement = document.querySelector("#player-eq-placement");
+    placement.value = position;
+    placement.onchange({target: placement});
+    assert.equal(document.querySelector(`#player-eq-${position}-slot`).children[0], sound);
+    assert.equal(document.querySelector(`#player-eq-${position === "main" ? "side" : "main"}-slot`).children.length, 0);
+    assert.equal(document.querySelector("#player").classList.contains("eq-main"), position === "main");
+    assert.equal(document.querySelector("#player-eq-preset").value, "warm");
+    assert.equal(run("equalizer.enabled"), true);
+    assert.equal(run("equalizer.context"), audioContext);
+    assert.equal(run("equalizer.source"), mediaSource);
+    assert.equal(run("equalizer.source.connections[0] === equalizer.preamp"), true);
+    assert.equal(run("equalizer.filters[1].gain.value"), 4);
+  }
   context.setEqualizerPreset("flat");
   assert.equal(run("equalizer.preamp.gain.value"), 1);
   await document.querySelector("#player-eq-toggle").onclick();
   assert.equal(run("equalizer.source.connections[0] === equalizer.context.destination"), true);
   await document.querySelector("#player-eq-toggle").onclick();
   assert.equal(sources, 1);
+});
+
+test("EQ presets and enable/reset controls follow all 15 bands in the movable sound section", () => {
+  const start = html.indexOf('<div id="player-sound"');
+  const sound = html.slice(start, html.indexOf("</aside>", start));
+  const bands = sound.indexOf('id="player-eq-bands"');
+  assert.ok(bands >= 0);
+  for (const id of ["player-eq-toggle", "player-eq-preset", "player-eq-reset"]) {
+    assert.ok(sound.indexOf(`id="${id}"`) > bands);
+  }
+  const {document} = dashboard();
+  const markup = document.querySelector("#player-eq-bands").innerHTML;
+  assert.equal((markup.match(/data-eq-band=/g) || []).length, 15);
 });
 
 test("unsupported equalizers explicitly report failure without taking over playback", async () => {
@@ -306,6 +347,84 @@ test("expanding and collapsing preserves audio and closes the queue", () => {
   assert.equal(document.querySelector("#player-queue-panel").hidden, true);
   assert.equal(document.querySelector("#player-audio").src, "/stream");
   assert.equal(document.querySelector("#player-expand").getAttribute("aria-expanded"), "false");
+});
+
+test("explicit playback selections expand immediately before metadata arrives, even after collapse", async () => {
+  const {context, document, run} = playbackDashboard();
+  const player = document.querySelector("#player");
+  for (const selection of [
+    "playTrack(7)", "playQueue([{id: 8}, {id: 9}])",
+    "playQueue([{id: 10}, {id: 11}], 1)", "playQueue([{id: 12}, {id: 13}], 0, true)",
+  ]) {
+    context.setPlayerExpanded(false);
+    let resolveTrack;
+    context.api = () => new Promise(resolve => { resolveTrack = resolve; });
+    const pending = run(selection);
+    assert.equal(player.hidden, false);
+    assert.equal(player.classList.contains("is-expanded"), true);
+    assert.equal(document.body.classList.contains("player-expanded"), true);
+    assert.equal(document.querySelector("#player-expand").getAttribute("aria-expanded"), "true");
+    assert.equal(document.querySelector("#player-queue-panel").hidden, false);
+    assert.equal(document.querySelector("#player-title").textContent, "Loading track...");
+    assert.equal(run("playback.track"), null);
+    document.querySelector("#player-expand").click();
+    resolveTrack({id: run("playback.queue[playback.queueIndex].id"), title: "Selected song"});
+    await pending;
+    assert.equal(document.querySelector("#player-title").textContent, "Selected song");
+    assert.equal(player.classList.contains("is-expanded"), false);
+  }
+});
+
+test("selecting a song docks the floating player before expanding it", async () => {
+  const {context, document} = playbackDashboard();
+  const player = document.querySelector("#player");
+  player.getBoundingClientRect = () => ({left: 20, top: 20, width: 410, height: 300});
+  context.window.innerWidth = 1365;
+  document.querySelector("#player-size").value = "410";
+  context.setMiniPlayer(true);
+  const pending = context.playTrack(7);
+  assert.equal(player.classList.contains("is-floating"), false);
+  assert.equal(document.body.classList.contains("player-floating"), false);
+  assert.equal(player.classList.contains("is-expanded"), true);
+  assert.equal(document.querySelector("#player-float").getAttribute("aria-pressed"), "false");
+  assert.equal(player.style.width, "");
+  await pending;
+});
+
+test("automatic advance and repeat preserve a collapsed player while a new selection reopens it", async () => {
+  for (const repeat of ["off", "all", "one"]) {
+    const {context, document, run} = playbackDashboard();
+    await run("playQueue([{id: 7}, {id: 8}])");
+    run(`playback.repeat = "${repeat}"; playback.queueIndex = ${repeat === "all" ? 1 : 0}`);
+    document.querySelector("#player-expand").click();
+    const sources = [];
+    context.setPlaybackSource = async (...args) => { sources.push(args); };
+    await context.advancePlayback(1, true);
+    assert.equal(document.querySelector("#player").classList.contains("is-expanded"), false);
+    assert.equal(document.querySelector("#player-queue-panel").hidden, true);
+    assert.equal(run("playback.queueIndex"), repeat === "off" ? 1 : 0);
+    assert.deepEqual(sources, [repeat === "one" ? ["original", 0, true] : ["original"]]);
+    await context.playTrack(9);
+    assert.equal(document.querySelector("#player").classList.contains("is-expanded"), true);
+  }
+});
+
+test("direct queue selection expands Now Playing but an empty queue does not", async () => {
+  const {context, document} = playbackDashboard();
+  const player = document.querySelector("#player");
+  await context.playQueue([]);
+  assert.equal(player.hidden, true);
+  assert.equal(player.classList.contains("is-expanded"), false);
+  await context.playQueue([{id: 7}, {id: 8}]);
+  const button = new Element({playerQueueIndex: "1"});
+  document.querySelector("#player-queue").querySelectorAll = selector =>
+    selector === "[data-player-queue-index]" ? [button] : [];
+  context.renderPlaybackQueue();
+  document.querySelector("#player-expand").click();
+  const pending = button.onclick();
+  assert.equal(player.classList.contains("is-expanded"), true);
+  await pending;
+  assert.equal(document.querySelector("#player-title").textContent, "Song");
 });
 
 test("listening songs expose favorites and favorite changes update the control", async () => {
