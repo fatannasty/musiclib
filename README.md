@@ -147,9 +147,9 @@ Artists search matches artist names; choose an artist to browse their albums.
 The listening workspace uses a desktop sidebar, a cover-focused album grid, and
 a compact full-width bottom player. On smaller screens the sidebar becomes
 horizontal navigation, albums form a responsive grid, and play/pause stays
-visible beside the current song. Choose **Now playing** for the full controls,
-queue, favorites, playlist actions, and equalizer. Administration retains its
-separate management layout.
+visible beside the current song. Selecting a song, album, or playlist to play
+immediately opens **Now playing** with full controls, queue, favorites, playlist
+actions, and equalizer. Administration retains its separate management layout.
 
 Open an album to play it in disc/track order, **Shuffle album**, or add it to the
 queue. **Back to music** restores the result page and focus without stopping
@@ -194,13 +194,16 @@ Starting a track from an album queues the album in disc/track order.
 
 On phones, the compact player keeps play/pause visible while browsing. Choose
 **Now playing** to expand the artwork, queue, and playback controls; **Collapse**
-returns to the compact bar without stopping playback. This works on desktop too.
+returns to the compact bar without stopping playback. Automatic track advances
+and repeat do not reopen it; selecting another song, album, playlist, or queue
+item to play opens it again. This works on desktop too.
 
 The expanded listening room shows the album artwork and transport alongside a
 side panel with album metadata, the upcoming queue, and the **15-band equalizer**.
-Use **EQ position** to move the equalizer below the main controls instead. The
-layout stacks on phones. EQ provides ±6 dB
-adjustment, Flat, Warm & balanced, and Vocal clarity presets, plus Reset and Bypass.
+Use **EQ position** to move the equalizer and its controls together below the main
+controls instead, or back to the side panel. The layout stacks on phones. EQ provides
+±6 dB adjustment, with Flat, Warm & balanced, and Vocal clarity presets, plus Reset
+and Enable/Bypass controls below the 15 bands.
 It starts off and initializes Web Audio only when you choose **Enable EQ**.
 Enabled EQ reserves headroom for boosts, so it may sound quieter. The spectrum
 reflects processed audio and stops while paused, collapsed, in a background tab,
