@@ -367,6 +367,12 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .metadata-select-toolbar label { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--text); font-size: 13px; font-weight: 650; }
 .metadata-select-toolbar .hint { margin: 0; }
 .player {
+  color-scheme: dark;
+  --bg: #10151d; --panel: #171e28; --panel2: #202a37; --border: #354254;
+  --text: #eef3f9; --dim: #adbbcc; --accent: #9dcbd7; --accent2: #b9b8e0;
+  --on-accent: #102029; --accent-soft: #273c49; --cover-bg: #263443; --control-border: #71859d;
+  --green: #94ddbd; --red: #ffabb5; --yellow: #f1d18c;
+  color: var(--text);
   position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 90;
   max-width: 1100px; max-height: calc(100dvh - 24px); overflow: auto;
   margin: auto; padding: 14px 18px; border: 1px solid var(--border);
@@ -398,6 +404,26 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .player-queue .queue-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .player-queue .queue-tools { display: flex; gap: 3px; flex: 0 0 auto; }
 .player-queue button[aria-current=true] { border-color: var(--accent); color: var(--accent); }
+.player-cover-flow-panel { display: none; min-width: 0; }
+#player.is-expanded .player-cover-flow-panel:not([hidden]) { display: block; grid-area: covers; }
+.player-cover-flow-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.player-cover-flow-heading h3 { font-size: 12px; font-weight: 600; color: var(--dim); }
+.player-cover-flow-heading span { font-size: 10px; color: var(--dim); }
+.player-cover-flow {
+  display: flex; gap: 14px; overflow-x: auto; overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory; list-style: none; scrollbar-width: thin;
+  padding: 14px max(0px, calc(50% - 70px)) 10px;
+}
+.player-cover-flow li { flex: 0 0 140px; min-width: 0; scroll-snap-align: center; }
+.player-cover-item { display: block; width: 100%; padding: 0; border: 0; background: transparent; color: var(--dim); cursor: pointer; transition: transform .25s ease, opacity .25s ease; opacity: .7; }
+.player-cover-item.is-before { transform: perspective(650px) rotateY(22deg) scale(.88); transform-origin: right center; }
+.player-cover-item.is-after { transform: perspective(650px) rotateY(-22deg) scale(.88); transform-origin: left center; }
+.player-cover-item.is-current { opacity: 1; color: var(--text); }
+.player-cover-item .listen-album-art { width: 140px; height: 140px; border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,.25); }
+.player-cover-item strong, .player-cover-item > span:last-child { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-cover-item strong { margin-top: 9px; font-size: 11px; font-weight: 600; }
+.player-cover-item > span:last-child { margin-top: 3px; font-size: 10px; }
+.player-cover-item:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 8px; }
 .listen-search { display: flex; align-items: end; gap: 12px; margin-bottom: 20px; }
 .listen-search label { flex: 1; min-width: 0; font-weight: 650; }
 .listen-search input { display: block; width: 100%; min-width: 0; margin-top: 6px; }
@@ -456,7 +482,7 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .player-expand { flex: 0 0 auto; }
 #player.is-expanded:not(.is-floating) {
   display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr);
-  grid-template-areas: "main side";
+  grid-template-areas: "main side"; grid-template-rows: minmax(0, 1fr);
   align-items: stretch; gap: 0;
   width: min(1200px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
   padding: 0; background: var(--panel); border: 0; border-radius: 16px; overflow: hidden;
@@ -464,12 +490,12 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 }
 #player.is-expanded .player-main-panel {
   display: grid; grid-area: main; grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "heading" "actions" "transport" "seek" "toolbar" "sound" "effects" "options" "status";
-  align-content: start; align-items: start; gap: 12px; min-width: 0; padding: 24px; overflow-y: auto;
+  grid-template-areas: "heading" "covers" "actions" "transport" "seek" "toolbar" "sound" "effects" "options" "status";
+  align-content: start; align-items: start; gap: 12px; min-width: 0; min-height: 0; padding: 24px; overflow-y: auto;
 }
 #player.is-expanded .player-side-panel {
   display: flex; grid-area: side; flex-direction: column; gap: 16px; min-width: 0;
-  padding: 24px; border-left: 1px solid var(--border); background: var(--panel); overflow-y: auto;
+  min-height: 0; padding: 24px; border-left: 1px solid var(--border); background: var(--panel); overflow-y: auto;
 }
 #player.is-expanded .player-heading { display: grid; grid-template-columns: minmax(100px, 160px) minmax(0, 1fr); align-items: center; gap: 18px; min-width: 0; }
 #player.is-expanded .player-art { width: 100%; height: auto; aspect-ratio: 1; border-radius: 10px; grid-column: 1; grid-row: 1 / span 2; }
@@ -526,9 +552,9 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
     grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto;
     grid-template-areas: "main" "side"; overflow-y: auto;
   }
-  #player.is-expanded .player-main-panel { overflow: visible; }
+  #player.is-expanded .player-main-panel { min-height: auto; overflow: visible; }
   #player.is-expanded .player-side-panel {
-    overflow: visible; padding: 20px 0 0; border-top: 1px solid var(--border); border-left: 0;
+    min-height: auto; overflow: visible; padding: 20px 0 0; border-top: 1px solid var(--border); border-left: 0;
   }
 }
 #player.is-expanded .action.ghost { border-color: transparent; background: transparent; }
@@ -544,6 +570,7 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .player-band { display: grid; justify-items: center; min-width: 0; gap: 6px; color: var(--dim); font-size: 9px; }
 .player-band input[type=range] { writing-mode: vertical-lr; direction: rtl; width: 24px; height: 100px; flex: none; accent-color: var(--accent); }
 .player-spectrum { display: block; width: 100%; height: 60px; margin-top: 20px; }
+.player-spectrum[hidden] { display: none; }
 .player-eq-note { color: var(--dim); font-size: 11px; margin-top: 8px; }
 .player-effects { padding-top: 16px; border-top: 1px solid var(--border); }
 .player-effects .player-eq-tools { margin-top: 0; }
@@ -923,6 +950,11 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
       <p class="hint">Compatibility playback is lossy MP3. Prefer Original for quality comparisons; browser and device audio settings still affect playback.</p>
     </details>
     <p id="player-status" class="hint" role="status" aria-live="polite"></p>
+    <section id="player-cover-flow-panel" class="player-cover-flow-panel" aria-labelledby="player-cover-flow-heading" hidden>
+      <div class="player-cover-flow-heading"><h3 id="player-cover-flow-heading">Queue artwork</h3>
+        <span>Swipe or scroll · arrows to browse</span></div>
+      <ol id="player-cover-flow" class="player-cover-flow" aria-label="Browse queue artwork"></ol>
+    </section>
     <div class="player-eq-slot" id="player-eq-main-slot"></div>
     <div id="player-effects-main-slot"></div>
   </div>
@@ -953,11 +985,16 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
       <button class="action ghost" id="player-eq-toggle" type="button" aria-pressed="false">Enable EQ</button>
       <label class="hint">Preset <select id="player-eq-preset" aria-label="Equalizer preset">
         <option value="flat">Flat</option><option value="warm">Warm &amp; balanced</option>
-        <option value="vocal">Vocal clarity</option><option value="custom" disabled>Custom</option>
+        <option value="vocal">Vocal clarity</option><option value="bass">Bass boost</option>
+        <option value="rock">Rock</option><option value="electronic">Electronic</option>
+        <option value="acoustic">Acoustic</option><option value="jazz">Jazz</option>
+        <option value="classical">Classical</option><option value="custom" disabled>Custom</option>
       </select></label>
       <button class="action ghost" id="player-eq-reset" type="button">Reset</button>
     </div>
-    <canvas id="player-spectrum" class="player-spectrum" width="600" height="60" aria-label="Live audio spectrum"></canvas>
+    <button class="action ghost" id="player-visualizer-toggle" type="button" aria-pressed="false">Enable visualizer</button>
+    <canvas id="player-spectrum" class="player-spectrum" width="600" height="60" aria-label="Live 15-band audio spectrum" hidden></canvas>
+    <p id="player-visualizer-status" class="player-eq-note" role="status">Live visuals follow playback. Enable EQ, effects, or the visualizer to activate.</p>
     <p id="player-eq-status" class="player-eq-note" role="status">EQ off. Enable to shape sound and show the live spectrum.</p>
   </div>
   <section id="player-effects" class="player-sound player-effects" aria-labelledby="player-effects-heading">
@@ -1324,11 +1361,18 @@ const EQ_PRESETS = {
   flat: Array(15).fill(0),
   warm: [3, 4, 3, 2, 1, 0, -1, -2, -1, 0, 1, 2, 2, 1, 0],
   vocal: [-2, -2, -1, -1, 0, 1, 2, 3, 3, 2, 1, 0, -1, -1, -2],
+  bass: [4, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  rock: [3, 3, 2, 1, 0, -1, -2, -2, -1, 0, 1, 2, 3, 3, 2],
+  electronic: [3, 4, 3, 1, 0, -1, -2, -1, 0, 1, 2, 3, 3, 2, 1],
+  acoustic: [-1, 0, 0, 1, 1, 2, 2, 1, 0, 1, 2, 2, 1, 0, 0],
+  jazz: [2, 2, 1, 0, -1, -1, 0, 1, 1, 0, 1, 2, 2, 1, 0],
+  classical: [0, 0, 0, -1, -1, 0, 0, 0, 0, 1, 1, 2, 2, 1, 0],
 };
 const equalizer = {
   context: null, source: null, filters: [], preamp: null, analyser: null,
   gains: EQ_PRESETS.flat.slice(), enabled: false, frame: null, lastFrame: 0,
 };
+const visualizer = {enabled: true, standalone: false};
 const EFFECT_PRESETS = {
   clean: {reverb: 0, compression: false},
   room: {reverb: 15, compression: false},
@@ -1381,7 +1425,8 @@ function routeEqualizer() {
     effects.nodes.compressor.disconnect();
   }
   const output = effects.enabled ? effects.nodes.input :
-    equalizer.enabled ? equalizer.analyser : equalizer.context.destination;
+    equalizer.enabled || (visualizer.enabled && visualizer.standalone) ?
+      equalizer.analyser : equalizer.context.destination;
   if (equalizer.enabled) {
     equalizer.source.connect(equalizer.preamp);
     lastFilter.connect(output);
@@ -1405,7 +1450,7 @@ async function ensureEqualizer() {
     equalizer.context = context;
     equalizer.preamp = context.createGain();
     equalizer.analyser = context.createAnalyser();
-    equalizer.analyser.fftSize = 256;
+    equalizer.analyser.fftSize = 2048;
     equalizer.analyser.smoothingTimeConstant = 0.8;
     equalizer.filters = EQ_FREQUENCIES.map(frequency => {
       const filter = context.createBiquadFilter();
@@ -1440,8 +1485,12 @@ function stopSpectrum() {
   canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
 }
 function startSpectrum() {
+  const active = visualizer.enabled && (visualizer.standalone || equalizer.enabled || effects.enabled);
+  $("#player-visualizer-toggle").setAttribute("aria-pressed", String(active));
+  $("#player-visualizer-toggle").textContent = active ? "Hide visualizer" : "Enable visualizer";
+  $("#player-spectrum").hidden = !active;
   stopSpectrum();
-  if (!(equalizer.enabled || effects.enabled) || $("#player-audio").paused || $("#player").hidden ||
+  if (!active || $("#player-audio").paused || $("#player-audio").ended || playback.buffering || $("#player").hidden ||
       !$("#player").classList.contains("is-expanded") || document.hidden ||
       window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const canvas = $("#player-spectrum"), drawing = canvas.getContext("2d");
@@ -1453,12 +1502,14 @@ function startSpectrum() {
       equalizer.analyser.getByteFrequencyData(data);
       drawing.clearRect(0, 0, canvas.width, canvas.height);
       drawing.fillStyle = getComputedStyle($("#player")).getPropertyValue("--accent").trim();
-      drawing.globalAlpha = 0.55;
-      const count = 48, width = canvas.width / count;
-      for (let index = 0; index < count; index++) {
-        const height = data[Math.floor(index * data.length / count)] / 255 * canvas.height;
-        drawing.fillRect(index * width, (canvas.height - height) / 2, width - 3, height);
-      }
+      const width = canvas.width / EQ_FREQUENCIES.length;
+      EQ_FREQUENCIES.forEach((frequency, index) => {
+        const bin = Math.min(data.length - 1, Math.round(frequency * equalizer.analyser.fftSize / equalizer.context.sampleRate));
+        const level = data[bin] / 255;
+        drawing.globalAlpha = 0.45 + level * 0.55;
+        const height = level * canvas.height;
+        drawing.fillRect(index * width + 2, canvas.height - height, width - 4, height);
+      });
     }
     equalizer.frame = requestAnimationFrame(draw);
   };
@@ -1512,6 +1563,34 @@ $("#player-eq-bands").oninput = event => {
   $(`#eq-gain-${input.dataset.eqBand}`).textContent = `${gain > 0 ? "+" : ""}${gain} dB`;
   $("#player-eq-preset").value = "custom";
   applyEqualizerGains();
+};
+$("#player-visualizer-toggle").onclick = async () => {
+  const button = $("#player-visualizer-toggle");
+  const active = visualizer.enabled && (visualizer.standalone || equalizer.enabled || effects.enabled);
+  button.disabled = true;
+  try {
+    if (active) {
+      visualizer.enabled = false;
+      visualizer.standalone = false;
+    } else {
+      await ensureEqualizer();
+      visualizer.enabled = true;
+      visualizer.standalone = true;
+    }
+    routeEqualizer();
+    startSpectrum();
+    $("#player-visualizer-status").textContent = visualizer.enabled ?
+      "Live audio, not simulated motion. Pauses with playback, collapse, or reduced motion. Browser resampling may apply." :
+      "Visualizer hidden. EQ and effect settings are unchanged.";
+  } catch (error) {
+    visualizer.enabled = false;
+    visualizer.standalone = false;
+    routeEqualizer();
+    startSpectrum();
+    await releaseUninitializedEqualizer();
+    console.warn("Musiclib visualizer could not start.", error);
+    $("#player-visualizer-status").textContent = `Visualizer unavailable: ${error.message}`;
+  } finally { button.disabled = false; }
 };
 async function ensureEffects() {
   await ensureEqualizer();
@@ -1718,7 +1797,59 @@ function renderPlaybackQueue() {
   $("#player-queue-count").textContent = `${playback.queue.length} tracks`;
   $("#player-save-queue").disabled = !playback.queue.length;
   $("#player-clear-upcoming").disabled = playback.queueIndex >= playback.queue.length - 1;
+  renderPlaybackCovers();
 }
+function renderPlaybackCovers() {
+  $("#player-cover-flow-panel").hidden = !playback.queue.length;
+  const flow = $("#player-cover-flow");
+  flow.innerHTML = playback.queue.map((track, index) => {
+    const current = index === playback.queueIndex;
+    const cover = track.cover_url || (track.has_embedded_art ? `/api/tracks/${track.id}/cover` : null);
+    return `<li><button type="button" class="player-cover-item ${current ? "is-current" : index < playback.queueIndex ? "is-before" : "is-after"}"
+      data-player-cover-index="${index}" aria-label="Play ${esc([track.artist, track.title || `Track ${track.id}`].filter(Boolean).join(" - "))}"
+      ${current ? 'aria-current="true"' : ""}>${listenCoverMarkup(cover)}
+      <strong>${esc(track.title || `Track ${track.id}`)}</strong><span>${esc(track.album || track.artist || "Queued track")}</span></button></li>`;
+  }).join("");
+  flow.querySelectorAll("[data-player-cover-index]").forEach(button => {
+    button.onclick = () => playQueueIndex(Number(button.dataset.playerCoverIndex), true);
+  });
+  bindListenCovers(flow);
+  centerPlaybackCover();
+}
+function centerPlaybackCover(behavior = "smooth") {
+  const flow = $("#player-cover-flow"), current = $("#player-cover-flow .is-current");
+  if ($("#player").hidden || !$("#player").classList.contains("is-expanded") || !flow.clientWidth || !current) return;
+  flow.scrollTo({
+    left: current.offsetLeft + current.offsetWidth / 2 - flow.offsetLeft - flow.clientWidth / 2,
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : behavior,
+  });
+}
+$("#player-cover-flow").onkeydown = event => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const buttons = $("#player-cover-flow").querySelectorAll("[data-player-cover-index]");
+  if (!buttons.length) return;
+  const selected = event.target.closest("[data-player-cover-index]");
+  const index = selected ? Number(selected.dataset.playerCoverIndex) : Math.max(0, playback.queueIndex);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 :
+    Math.max(0, Math.min(buttons.length - 1, index + (event.key === "ArrowRight" ? 1 : -1)));
+  event.preventDefault();
+  buttons[next].focus({preventScroll: true});
+  const flow = $("#player-cover-flow");
+  flow.scrollTo({left: buttons[next].offsetLeft + buttons[next].offsetWidth / 2 - flow.offsetLeft - flow.clientWidth / 2,
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth"});
+};
+let coverWheelTimeout = null;
+$("#player-cover-flow").onwheel = event => {
+  const flow = $("#player-cover-flow");
+  if (event.ctrlKey || Math.abs(event.deltaX) >= Math.abs(event.deltaY) || flow.scrollWidth <= flow.clientWidth) return;
+  const next = Math.max(0, Math.min(flow.scrollWidth - flow.clientWidth, flow.scrollLeft + event.deltaY));
+  if (next === flow.scrollLeft) return;
+  event.preventDefault();
+  flow.style.scrollSnapType = "none";
+  flow.scrollLeft = next;
+  clearTimeout(coverWheelTimeout);
+  coverWheelTimeout = setTimeout(() => { flow.style.scrollSnapType = ""; }, 150);
+};
 function renderPlaybackDetails(track) {
   const entries = track ? [
     ["Album", track.album],
@@ -2128,6 +2259,7 @@ function setPlayerExpanded(expanded) {
   $("#player-expand").setAttribute("aria-expanded", String(expanded));
   $("#player-expand").textContent = expanded ? "Collapse" : "Now playing";
   setPlaybackQueueOpen(expanded);
+  if (expanded) centerPlaybackCover("instant");
   startSpectrum();
 }
 $("#player-expand").onclick = () => {

@@ -116,7 +116,7 @@ function installEffectsAudio(context, failEffects = false) {
   context.window.AudioContext = class {
     constructor() { this.sampleRate = 48000; this.currentTime = 0; this.destination = node(); }
     createGain() { return node(); }
-    createAnalyser() { return node(); }
+    createAnalyser() { return {...node(), frequencyBinCount: 1024, getByteFrequencyData(data) { data.fill(0); }}; }
     createBiquadFilter() { return node(); }
     createMediaElementSource() { sources++; return node(); }
     createConvolver() {
@@ -390,16 +390,101 @@ test("unsupported effects explicitly report failure without initializing audio",
   assert.equal(warnings.length, 1);
 });
 
+test("additional EQ presets update all bands and retain boost headroom", async () => {
+  const {context, document, run} = dashboard();
+  installEffectsAudio(context);
+  document.querySelector("#player-audio").paused = true;
+  await document.querySelector("#player-eq-toggle").onclick();
+  for (const preset of ["bass", "rock", "electronic", "acoustic", "jazz", "classical"]) {
+    context.setEqualizerPreset(preset);
+    const gains = Array.from(run("equalizer.gains"));
+    assert.equal(gains.length, 15);
+    assert.ok(gains.every(gain => gain >= -6 && gain <= 6));
+    assert.deepEqual(Array.from(run("equalizer.filters.map(filter => filter.gain.value)")), gains);
+    assert.equal(document.querySelector("#player-eq-preset").value, preset);
+    assert.ok(run("equalizer.preamp.gain.value") < 1);
+  }
+  context.setEqualizerPreset("flat");
+  assert.equal(run("equalizer.preamp.gain.value"), 1);
+});
+
+test("standalone visualization draws 15 audio-reactive bands without enabling EQ or effects", async () => {
+  const {context, document, run} = dashboard();
+  const sourceCount = installEffectsAudio(context);
+  const frames = [], bars = [];
+  context.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+  context.getComputedStyle = () => ({getPropertyValue: () => "#9dcbd7"});
+  const canvas = document.querySelector("#player-spectrum");
+  canvas.width = 600; canvas.height = 60;
+  canvas.getContext = () => ({clearRect() {}, fillRect: (...args) => bars.push(args)});
+  document.querySelector("#player").hidden = false;
+  document.querySelector("#player-audio").paused = false;
+  context.setPlayerExpanded(true);
+  assert.equal(run("equalizer.context"), null);
+  assert.equal(frames.length, 0);
+  await document.querySelector("#player-visualizer-toggle").onclick();
+  assert.equal(run("equalizer.enabled"), false);
+  assert.equal(run("effects.enabled"), false);
+  assert.equal(run("equalizer.source.connections[0] === equalizer.analyser"), true);
+  assert.equal(run("equalizer.analyser.fftSize"), 2048);
+  run("equalizer.analyser.frequencyBinCount = 1024; equalizer.analyser.getByteFrequencyData = data => {data.fill(0); data[1] = 255;}");
+  frames[0](40);
+  assert.equal(bars.length, 15);
+  assert.equal(bars[0][3], 60);
+  assert.equal(bars[1][3], 0);
+  assert.ok(Array.from(run("equalizer.gains")).every(gain => gain === 0));
+  document.querySelector("#player-audio").onwaiting();
+  assert.equal(run("equalizer.frame"), null);
+  document.querySelector("#player-audio").onplaying();
+  assert.notEqual(run("equalizer.frame"), null);
+  document.querySelector("#player-audio").paused = true;
+  document.querySelector("#player-audio").onpause();
+  assert.equal(run("equalizer.frame"), null);
+  document.querySelector("#player-audio").paused = false;
+  document.querySelector("#player-audio").ended = true;
+  context.startSpectrum();
+  assert.equal(run("equalizer.frame"), null);
+  document.querySelector("#player-audio").ended = false;
+  document.hidden = true;
+  context.startSpectrum();
+  assert.equal(run("equalizer.frame"), null);
+  document.hidden = false;
+  context.startSpectrum();
+  assert.notEqual(run("equalizer.frame"), null);
+  await document.querySelector("#player-visualizer-toggle").onclick();
+  assert.equal(run("equalizer.source.connections[0] === equalizer.context.destination"), true);
+  assert.equal(canvas.hidden, true);
+  assert.equal(sourceCount(), 1);
+});
+
+test("visualizer failures are explicit and hiding it leaves EQ settings unchanged", async () => {
+  const unsupported = dashboard();
+  await unsupported.document.querySelector("#player-visualizer-toggle").onclick();
+  assert.match(unsupported.document.querySelector("#player-visualizer-status").textContent, /does not support/);
+  assert.equal(unsupported.run("equalizer.context"), null);
+  const {context, document, run} = dashboard();
+  installEffectsAudio(context);
+  document.querySelector("#player-audio").paused = true;
+  await document.querySelector("#player-eq-toggle").onclick();
+  context.setEqualizerPreset("rock");
+  await document.querySelector("#player-visualizer-toggle").onclick();
+  assert.equal(run("equalizer.enabled"), true);
+  assert.equal(document.querySelector("#player-eq-preset").value, "rock");
+  assert.equal(run("equalizer.source.connections[0] === equalizer.preamp"), true);
+  assert.equal(document.querySelector("#player-spectrum").hidden, true);
+});
+
 test("spectrum stops on collapse and respects reduced motion", () => {
   for (const [processing, reducedMotion] of [
     ["equalizer", false], ["equalizer", true], ["effects", false], ["effects", true],
+    ["visualizer", false], ["visualizer", true],
   ]) {
     const {context, document, run} = dashboard({reducedMotion});
     const canvas = document.querySelector("#player-spectrum");
     let clears = 0, frames = 0;
     canvas.getContext = () => ({clearRect() { clears++; }});
     context.requestAnimationFrame = () => { frames++; return frames; };
-    run(`${processing}.enabled = true; equalizer.analyser = {frequencyBinCount: 128};`);
+    run(`${processing}.enabled = true; ${processing === "visualizer" ? "visualizer.standalone = true;" : ""} equalizer.analyser = {frequencyBinCount: 128};`);
     const player = document.querySelector("#player");
     player.hidden = false;
     document.querySelector("#player-audio").paused = false;
@@ -546,6 +631,67 @@ test("direct queue selection expands Now Playing but an empty queue does not", a
   assert.equal(player.classList.contains("is-expanded"), true);
   await pending;
   assert.equal(document.querySelector("#player-title").textContent, "Song");
+});
+
+test("Cover Flow follows queue playback and centers only when expanded", async () => {
+  const {context, document, run} = playbackDashboard();
+  context.api = async path => ({id: Number(path.split("/")[3]), title: "<Song>"});
+  const flow = document.querySelector("#player-cover-flow"), scrolls = [];
+  flow.clientWidth = 300; flow.offsetLeft = 20;
+  flow.scrollTo = options => scrolls.push(options);
+  const current = document.querySelector("#player-cover-flow .is-current");
+  current.offsetLeft = 200; current.offsetWidth = 140;
+  await run('playQueue([{id: 7, title: "<Song>", has_embedded_art: true}, {id: 8, title: "Second"}])');
+  assert.match(flow.innerHTML, /&lt;Song&gt;/);
+  assert.match(flow.innerHTML, /src="\/api\/tracks\/7\/cover"/);
+  assert.match(flow.innerHTML, /data-player-cover-index="0"[\s\S]*?aria-current="true"/);
+  assert.deepEqual(scrolls.map(item => item.left), [100, 100]);
+  assert.equal(scrolls[0].behavior, "instant");
+  document.querySelector("#player-expand").click();
+  scrolls.length = 0;
+  await context.advancePlayback(1, true);
+  assert.equal(scrolls.length, 0);
+  assert.equal(document.querySelector("#player").classList.contains("is-expanded"), false);
+  assert.match(flow.innerHTML, /data-player-cover-index="1"[\s\S]*?aria-current="true"/);
+  const cover = new Element({playerCoverIndex: "0"});
+  flow.querySelectorAll = selector => selector === "[data-player-cover-index]" ? [cover] : [];
+  context.renderPlaybackCovers();
+  await cover.onclick();
+  assert.equal(run("playback.queueIndex"), 0);
+  assert.equal(document.querySelector("#player").classList.contains("is-expanded"), true);
+});
+
+test("Cover Flow keyboard and wheel browsing do not change playback", () => {
+  const {context, document, run} = dashboard({reducedMotion: true});
+  const flow = document.querySelector("#player-cover-flow");
+  const buttons = [0, 1, 2].map(index => {
+    const button = new Element({playerCoverIndex: String(index)});
+    button.offsetLeft = index * 154 + 100; button.offsetWidth = 140;
+    return button;
+  });
+  const focused = [], scrolls = [];
+  buttons.forEach((button, index) => { button.focus = () => focused.push(index); });
+  flow.querySelectorAll = () => buttons;
+  flow.scrollTo = options => scrolls.push(options);
+  flow.offsetLeft = 20; flow.clientWidth = 300; flow.scrollWidth = 900; flow.scrollLeft = 0;
+  let prevented = 0;
+  for (const key of ["ArrowRight", "End", "Home", "ArrowLeft"]) {
+    flow.onkeydown({key, target: {closest: () => buttons[0]}, preventDefault() { prevented++; }});
+  }
+  assert.deepEqual(focused, [1, 2, 0, 0]);
+  assert.ok(scrolls.every(options => options.behavior === "instant"));
+  assert.equal(run("playback.queueIndex"), -1);
+  let resetSnap;
+  context.setTimeout = callback => { resetSnap = callback; return 1; };
+  flow.onwheel({deltaX: 0, deltaY: 20, preventDefault() { prevented++; }});
+  assert.equal(flow.scrollLeft, 20);
+  assert.equal(flow.style.scrollSnapType, "none");
+  resetSnap();
+  assert.equal(flow.style.scrollSnapType, "");
+  flow.scrollLeft = 600;
+  flow.onwheel({deltaX: 0, deltaY: 20, preventDefault() { prevented++; }});
+  flow.onwheel({ctrlKey: true, deltaX: 0, deltaY: -20, preventDefault() { prevented++; }});
+  assert.equal(prevented, 5);
 });
 
 test("listening songs expose favorites and favorite changes update the control", async () => {
