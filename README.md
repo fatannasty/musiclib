@@ -144,6 +144,13 @@ short typing pause, and **Search** or Enter runs it immediately. Switch between
 catalog tracks are excluded from listening results.
 Artists search matches artist names; choose an artist to browse their albums.
 
+The listening workspace uses a desktop sidebar, a cover-focused album grid, and
+a compact full-width bottom player. On smaller screens the sidebar becomes
+horizontal navigation, albums form a responsive grid, and play/pause stays
+visible beside the current song. Choose **Now playing** for the full controls,
+queue, favorites, playlist actions, and equalizer. Administration retains its
+separate management layout.
+
 Open an album to play it in disc/track order, **Shuffle album**, or add it to the
 queue. **Back to music** restores the result page and focus without stopping
 audio. Songs results offer **Play**, **Play next**, **Favorite**, and **Add to playlist**.
@@ -153,6 +160,9 @@ Playing from a song continues through that result page; **Play this page** and
 **Shuffle this page** use only the displayed songs, not the whole library.
 The current track is highlighted. Search and paging choices remain while
 switching listening tabs in the same page session; playback is not restored on reload.
+The current song and player distinguish **Playing**, **Paused**, **Buffering**,
+**Finished**, and playback errors using the audio element's state; selecting a
+song alone does not mark it as actively playing.
 
 Accounts created by the administrator are **listeners**. They can browse/search,
 listen, manage their own playlists, and change their password. They cannot use

@@ -94,6 +94,67 @@ test("tab visibility rules do not hide album and artwork result sections", () =>
   assert.doesNotMatch(styles, /(?:^|})\s*section\s*\{\s*display:\s*none\s*;/m);
 });
 
+test("listening navigation has labeled icons, one current page, and excludes administration", () => {
+  const {context, run} = dashboard();
+  run('authState.user.role = "listener"; state.adminMode = false');
+  const markup = context.navigationMarkup(run("visibleTabs()"), "playlists");
+  assert.match(markup, /aria-current="page" data-tab="playlists"/);
+  assert.equal((markup.match(/aria-current=/g) || []).length, 1);
+  assert.match(markup, /class="nav-icon" aria-hidden="true"/);
+  assert.match(markup, /<span>Listen<\/span>/);
+  assert.match(markup, /<span>Account<\/span>/);
+  assert.doesNotMatch(markup, /data-tab="settings"|data-tab="library"/);
+  assert.match(context.navigationMarkup([["custom", "<Label>"]], "custom"), /&lt;Label&gt;/);
+});
+
+test("playback feedback follows audio events rather than merely the selected song", () => {
+  const {context, document, run} = dashboard();
+  const audio = document.querySelector("#player-audio");
+  const row = new Element({listeningTrackId: "7"}), indicator = new Element();
+  row.querySelector = () => indicator;
+  document.querySelectorAll = selector => selector === "[data-listening-track-id]" ? [row] : [];
+  run("playback.track = {id: 7}");
+  audio.paused = false;
+  audio.onplay();
+  assert.equal(indicator.textContent, "Buffering");
+  assert.equal(row.classList.contains("is-playing"), false);
+  audio.onplaying();
+  context.syncPlayButton();
+  assert.equal(indicator.textContent, "Playing");
+  assert.equal(row.classList.contains("is-playing"), true);
+  assert.equal(document.querySelector("#player-playback-state").textContent, "Playing");
+  audio.onwaiting();
+  assert.equal(indicator.textContent, "Buffering");
+  assert.equal(row.classList.contains("is-playing"), false);
+  audio.onplaying();
+  assert.equal(indicator.textContent, "Playing");
+  audio.paused = true;
+  audio.onpause();
+  assert.equal(indicator.textContent, "Paused");
+  assert.equal(row.classList.contains("is-current"), true);
+  assert.equal(row.classList.contains("is-playing"), false);
+  audio.ended = true;
+  context.syncPlayButton();
+  assert.equal(indicator.textContent, "Finished");
+  audio.error = {code: 3};
+  context.syncPlayButton();
+  assert.equal(indicator.textContent, "Playback error");
+  run("playback.track = null");
+  context.syncPlayButton();
+  assert.equal(indicator.textContent, "");
+  assert.equal(document.querySelector("#player-playback-state").textContent, "Ready");
+});
+
+test("signing out removes the sidebar layout and leaves a usable login screen", () => {
+  const {context, document} = dashboard();
+  document.body.classList.add("listening-mode");
+  document.querySelector("#player").hidden = true;
+  context.showLogin();
+  assert.equal(document.body.classList.contains("listening-mode"), false);
+  assert.equal(document.querySelector("#nav").hidden, true);
+  assert.match(document.querySelector("#main").innerHTML, /id="login-form"/);
+});
+
 test("equalizer preserves native audio until enabled and reuses a single media source", async () => {
   const {context, document, run} = dashboard();
   const parameter = () => ({value: 0, setTargetAtTime(value) { this.value = value; }});
@@ -339,7 +400,7 @@ test("shuffle starts with the entire album and can restore the original order", 
 });
 
 test("queue navigation wraps only when repeat-all is enabled", async () => {
-  const {run} = dashboard();
+  const {document, run} = dashboard();
   run('loadPlaybackTrack = id => id');
   await run('playQueue([{id: 11, title: "First"}, {id: 12, title: "Second"}])');
   assert.equal(run("playback.queueIndex"), 0);
@@ -349,9 +410,20 @@ test("queue navigation wraps only when repeat-all is enabled", async () => {
   assert.equal(run("playback.queueIndex"), 0);
   await run("advancePlayback(1)");
   assert.equal(run("advancePlayback(1)"), undefined);
-  run('playback.repeat = "all"');
+  const repeat = document.querySelector("#player-repeat");
+  repeat.click();
+  assert.equal(repeat.dataset.repeat, "all");
+  assert.equal(repeat.title, "Repeat all");
+  assert.equal(repeat.textContent, "Repeat all");
+  assert.equal(repeat.getAttribute("aria-pressed"), "true");
   assert.equal(await run("advancePlayback(1)"), 11);
   assert.equal(run("playback.queueIndex"), 0);
+  repeat.click();
+  assert.equal(repeat.dataset.repeat, "one");
+  assert.equal(repeat.title, "Repeat one");
+  repeat.click();
+  assert.equal(repeat.dataset.repeat, "off");
+  assert.equal(repeat.getAttribute("aria-pressed"), "false");
 });
 
 test("shuffle changes upcoming order but keeps previous-track navigation", async () => {
