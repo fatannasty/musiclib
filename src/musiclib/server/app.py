@@ -463,12 +463,24 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
         playlist = db.playlist(playlist_id, playlist_owner(request))
         if playlist is None:
             raise HTTPException(404, "Playlist not found.")
+        add_playback_covers(playlist["tracks"])
         if current_user(request)["role"] != "admin":
             playlist["tracks"] = [
                 {key: value for key, value in track.items() if key not in ("path", "status")}
                 for track in playlist["tracks"]
             ]
         return playlist
+
+    def add_playback_covers(items: List[Dict[str, Any]]) -> None:
+        covers = {}
+        for item in items:
+            key = (
+                item.get("album_artist") or item.get("artist"), item["album"],
+            ) if item.get("album") else item["id"]
+            if key not in covers:
+                track = db.get_track(item["id"])
+                covers[key] = playback.cover_url(track) if track else None
+            item["cover_url"] = covers[key]
 
     @app.post("/api/auth/logout")
     def auth_logout(request: Request) -> Response:
@@ -1302,10 +1314,12 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
         sort: Literal["artist", "title", "recent"] = "artist",
     ) -> Dict[str, Any]:
         user_id = current_user(request)["id"]
-        return db.listening_tracks_page(
+        page = db.listening_tracks_page(
             query.strip(), offset, limit, sort,
             favorite_user_id=int(user_id) if user_id is not None else None,
         )
+        add_playback_covers(page["items"])
+        return page
 
     @app.get("/api/listen/favorites")
     def listen_favorites(
@@ -1315,11 +1329,13 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
         sort: Literal["artist", "title", "recent"] = "artist",
     ) -> Dict[str, Any]:
         user_id = current_user(request)["id"]
-        return db.listening_tracks_page(
+        page = db.listening_tracks_page(
             query.strip(), offset, limit, sort,
             favorite_user_id=int(user_id) if user_id is not None else None,
             favorites_only=True,
         )
+        add_playback_covers(page["items"])
+        return page
 
     @app.get("/api/favorites/{track_id}")
     def favorite_status(track_id: int, request: Request) -> Dict[str, bool]:
@@ -1384,13 +1400,13 @@ def create_app(config: Config, *, require_auth: Optional[bool] = None) -> FastAP
             raise HTTPException(404, "Album is no longer available. Return to your music and search again.")
         public_fields = {
             "id", "artist", "album_artist", "album", "title", "duration",
-            "genre", "format", "year", "track_no", "disc_no", "is_favorite",
+            "genre", "format", "year", "track_no", "disc_no", "is_favorite", "cover_url",
         }
-        cover = next((track for track in tracks if track["has_embedded_art"]), None)
+        add_playback_covers(tracks)
         return {
             "album_artist": album_artist, "album": album,
             "year": next((track["year"] for track in tracks if track["year"]), None),
-            "cover_url": f"/api/tracks/{cover['id']}/cover" if cover else None,
+            "cover_url": tracks[0]["cover_url"],
             "tracks": [{
                 key: bool(track[key]) if key == "is_favorite" else track[key]
                 for key in public_fields

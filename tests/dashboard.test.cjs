@@ -422,7 +422,8 @@ test("standalone visualization draws 15 audio-reactive bands without enabling EQ
   context.setPlayerExpanded(true);
   assert.equal(run("equalizer.context"), null);
   assert.equal(frames.length, 0);
-  await document.querySelector("#player-visualizer-toggle").onclick();
+  run('playback.track = {id: 7};');
+  await document.querySelector("#player-audio").onplaying();
   assert.equal(run("equalizer.enabled"), false);
   assert.equal(run("effects.enabled"), false);
   assert.equal(run("equalizer.source.connections[0] === equalizer.analyser"), true);
@@ -459,6 +460,7 @@ test("standalone visualization draws 15 audio-reactive bands without enabling EQ
 
 test("visualizer failures are explicit and hiding it leaves EQ settings unchanged", async () => {
   const unsupported = dashboard();
+  unsupported.run("visualizer.enabled = false");
   await unsupported.document.querySelector("#player-visualizer-toggle").onclick();
   assert.match(unsupported.document.querySelector("#player-visualizer-status").textContent, /does not support/);
   assert.equal(unsupported.run("equalizer.context"), null);
@@ -472,6 +474,224 @@ test("visualizer failures are explicit and hiding it leaves EQ settings unchange
   assert.equal(document.querySelector("#player-eq-preset").value, "rock");
   assert.equal(run("equalizer.source.connections[0] === equalizer.preamp"), true);
   assert.equal(document.querySelector("#player-spectrum").hidden, true);
+});
+
+test("automatic visualization respects hiding and keeps native playback on resume failure", async () => {
+  const {context, document, run} = dashboard();
+  const sources = installEffectsAudio(context);
+  run("playback.track = {id: 7};");
+  document.querySelector("#player-audio").paused = false;
+  await document.querySelector("#player-visualizer-toggle").onclick();
+  await document.querySelector("#player-audio").onplaying();
+  assert.equal(sources(), 0);
+  await document.querySelector("#player-visualizer-toggle").onclick();
+  await document.querySelector("#player-audio").onplaying();
+  assert.equal(sources(), 1);
+  assert.equal(run("equalizer.enabled || effects.enabled"), false);
+
+  const failed = dashboard();
+  const failedSources = installEffectsAudio(failed.context);
+  failed.context.window.AudioContext.prototype.resume = async () => { throw new Error("Audio permission denied"); };
+  failed.context.window.AudioContext.prototype.close = async () => {};
+  failed.run("playback.track = {id: 8};");
+  failed.document.querySelector("#player-audio").paused = false;
+  await failed.document.querySelector("#player-audio").onplaying();
+  assert.equal(failedSources(), 0);
+  assert.equal(failed.run("equalizer.context"), null);
+  assert.match(failed.document.querySelector("#player-visualizer-status").textContent, /Audio permission denied/);
+
+  const reduced = dashboard({reducedMotion: true});
+  const reducedSources = installEffectsAudio(reduced.context);
+  reduced.run("playback.track = {id: 9};");
+  reduced.document.querySelector("#player-audio").paused = false;
+  await reduced.document.querySelector("#player-audio").onplaying();
+  assert.equal(reducedSources(), 0);
+  assert.match(reduced.document.querySelector("#player-visualizer-status").textContent, /reduced motion/);
+});
+
+test("automatic playlists capture playing events, not selection, buffering, or repeat", async () => {
+  const {context, document, run} = dashboard();
+  const calls = [];
+  context.post = async (path, body) => { calls.push([path, JSON.parse(JSON.stringify(body))]); return {id: 42}; };
+  run("visualizer.enabled = false; playback.track = {id: 7};");
+  const audio = document.querySelector("#player-audio"), toggle = document.querySelector("#player-auto-playlist");
+  audio.paused = true;
+  await toggle.onclick();
+  assert.equal(calls.length, 0);
+  audio.paused = false;
+  audio.onplay();
+  assert.equal(calls.length, 0);
+  await audio.onplaying();
+  await new Promise(setImmediate);
+  assert.equal(calls[0][0], "/api/playlists");
+  assert.match(calls[0][1].name, /^Listening session /);
+  assert.deepEqual(calls[1], ["/api/playlists/42/tracks", {track_ids: [7]}]);
+  audio.paused = true; audio.onpause();
+  audio.paused = false; await audio.onplaying();
+  await context.recordAutoPlaylistTrack();
+  assert.equal(calls.length, 2);
+  run("playback.track = {id: 8};");
+  audio.onwaiting();
+  await context.recordAutoPlaylistTrack();
+  assert.equal(calls.length, 2);
+  await audio.onplaying();
+  await new Promise(setImmediate);
+  assert.deepEqual(calls[2], ["/api/playlists/42/tracks", {track_ids: [8]}]);
+  toggle.onclick();
+  run("playback.track = {id: 9};");
+  await audio.onplaying();
+  assert.equal(calls.length, 3);
+  assert.match(document.querySelector("#player-auto-playlist-status").textContent, /stopped.*2 song/);
+});
+
+test("automatic playlist saves serialize songs arriving during creation", async () => {
+  const {context, document, run} = dashboard();
+  let created;
+  const calls = [];
+  context.post = async (path, body) => {
+    calls.push([path, Array.from(body.track_ids || [])]);
+    return path === "/api/playlists" ? new Promise(resolve => { created = resolve; }) : {};
+  };
+  run("playback.track = {id: 7};");
+  document.querySelector("#player-audio").paused = false;
+  const first = document.querySelector("#player-auto-playlist").onclick();
+  run("playback.track = {id: 8};");
+  await context.recordAutoPlaylistTrack();
+  await context.recordAutoPlaylistTrack();
+  assert.equal(calls.length, 1);
+  created({id: 42});
+  await first;
+  assert.deepEqual(calls, [["/api/playlists", []], ["/api/playlists/42/tracks", [7, 8]]]);
+  assert.equal(run("autoPlaylist.session.saved.size"), 2);
+});
+
+test("automatic playlist retries reconcile a committed save without adding duplicates", async () => {
+  const {context, document, run} = dashboard();
+  const calls = [], reads = [];
+  context.post = async (path, body) => {
+    calls.push([path, Array.from(body.track_ids || [])]);
+    if (path.endsWith("/tracks")) throw new Error("Connection lost after saving");
+    return {id: 42};
+  };
+  context.api = async path => { reads.push(path); return {tracks: [{id: 7}]}; };
+  run("playback.track = {id: 7};");
+  document.querySelector("#player-audio").paused = false;
+  await document.querySelector("#player-auto-playlist").onclick();
+  assert.equal(document.querySelector("#player-auto-playlist-retry").hidden, false);
+  assert.match(document.querySelector("#player-auto-playlist-status").textContent, /Connection lost.*1 song/);
+  await context.recordAutoPlaylistTrack();
+  assert.equal(calls.length, 2);
+  await document.querySelector("#player-auto-playlist-retry").onclick();
+  assert.deepEqual(reads, ["/api/playlists/42"]);
+  assert.equal(calls.length, 2);
+  assert.equal(run("autoPlaylist.session.saved.has(7)"), true);
+  assert.equal(document.querySelector("#player-auto-playlist-retry").hidden, true);
+});
+
+test("automatic playlist creation failures retain songs until explicit retry", async () => {
+  const {context, document, run} = dashboard();
+  const calls = [];
+  context.post = async (path, body) => {
+    calls.push([path, Array.from(body.track_ids || [])]);
+    if (calls.length === 1) throw new Error("Playlist server unavailable");
+    return {id: 42};
+  };
+  run("playback.track = {id: 7};");
+  document.querySelector("#player-audio").paused = false;
+  await document.querySelector("#player-auto-playlist").onclick();
+  run("playback.track = {id: 8};");
+  await context.recordAutoPlaylistTrack();
+  assert.equal(calls.length, 1);
+  await document.querySelector("#player-auto-playlist-retry").onclick();
+  assert.deepEqual(calls[2], ["/api/playlists/42/tracks", [7, 8]]);
+});
+
+test("failed automatic appends keep newly played songs queued for one retry", async () => {
+  const {context, document, run} = dashboard();
+  const calls = [];
+  context.post = async (path, body) => {
+    calls.push([path, Array.from(body.track_ids || [])]);
+    if (calls.length === 2) throw new Error("Save unavailable");
+    return {id: 42};
+  };
+  context.api = async () => ({tracks: []});
+  run("playback.track = {id: 7};");
+  document.querySelector("#player-audio").paused = false;
+  await document.querySelector("#player-auto-playlist").onclick();
+  run("playback.track = {id: 8};");
+  await context.recordAutoPlaylistTrack();
+  assert.match(document.querySelector("#player-auto-playlist-status").textContent, /2 song/);
+  await document.querySelector("#player-auto-playlist-retry").onclick();
+  assert.deepEqual(calls[2], ["/api/playlists/42/tracks", [7, 8]]);
+  assert.equal(run("autoPlaylist.session.pending.size"), 0);
+});
+
+test("signing out discards auto-save state and blocks pending playlist appends", async () => {
+  const {context, document, run} = playbackDashboard();
+  let finish;
+  const calls = [];
+  context.post = async path => {
+    calls.push(path);
+    return new Promise(resolve => { finish = resolve; });
+  };
+  run("playback.track = {id: 7};");
+  document.querySelector("#player-audio").paused = false;
+  const saving = document.querySelector("#player-auto-playlist").onclick();
+  context.showLogin();
+  finish({id: 42});
+  await saving;
+  assert.deepEqual(calls, ["/api/playlists"]);
+  assert.equal(run("autoPlaylist.session"), null);
+  assert.equal(document.querySelector("#player-auto-playlist-status").hidden, true);
+});
+
+test("a stopped automatic playlist cannot append or overwrite a newer session", async () => {
+  const {context, document, run} = playbackDashboard();
+  const calls = [];
+  let finishOld;
+  context.post = async (path, body) => {
+    calls.push([path, Array.from(body.track_ids || [])]);
+    if (calls.length === 1) return new Promise(resolve => { finishOld = resolve; });
+    return {id: 43};
+  };
+  run("playback.track = {id: 7};");
+  document.querySelector("#player-audio").paused = false;
+  const toggle = document.querySelector("#player-auto-playlist"), old = toggle.onclick();
+  toggle.onclick();
+  run("playback.track = {id: 8};");
+  await toggle.onclick();
+  finishOld({id: 42});
+  await old;
+  assert.deepEqual(calls.map(call => call[0]), ["/api/playlists", "/api/playlists", "/api/playlists/43/tracks"]);
+  assert.equal(run("autoPlaylist.session.playlistId"), 43);
+  assert.equal(run("autoPlaylist.session.saved.has(8)"), true);
+  document.querySelector("#player-close").onclick();
+  assert.equal(run("autoPlaylist.session.enabled"), false);
+});
+
+test("main artwork flips to album information without changing the audio source", async () => {
+  const {context, document, run} = playbackDashboard();
+  context.api = async path => ({
+    id: Number(path.split("/")[3]), title: "Song", album: "Record", artist: "Guest",
+    album_artist: "Band", year: 2001, cover_url: "/api/tracks/7/cover",
+  });
+  await context.playTrack(7);
+  const card = document.querySelector("#player-art-card"), audio = document.querySelector("#player-audio");
+  audio.src = "original-audio"; audio.currentTime = 31;
+  context.setPlayerExpanded(false);
+  document.querySelector("#player").classList.add("is-floating");
+  card.onclick();
+  assert.equal(document.querySelector("#player").classList.contains("is-floating"), false);
+  assert.equal(document.querySelector("#player").classList.contains("is-expanded"), true);
+  assert.equal(card.getAttribute("aria-pressed"), "true");
+  assert.match(card.getAttribute("aria-label"), /Record.*Band/);
+  assert.equal(document.querySelector("#player-art-artist").textContent, "Band");
+  assert.equal(audio.src, "original-audio");
+  assert.equal(audio.currentTime, 31);
+  await context.playTrack(8);
+  assert.equal(card.getAttribute("aria-pressed"), "false");
+  assert.equal(card.classList.contains("is-flipped"), false);
+  assert.equal(run("playback.track.id"), 8);
 });
 
 test("spectrum stops on collapse and respects reduced motion", () => {
@@ -653,10 +873,15 @@ test("Cover Flow follows queue playback and centers only when expanded", async (
   assert.equal(scrolls.length, 0);
   assert.equal(document.querySelector("#player").classList.contains("is-expanded"), false);
   assert.match(flow.innerHTML, /data-player-cover-index="1"[\s\S]*?aria-current="true"/);
-  const cover = new Element({playerCoverIndex: "0"});
-  flow.querySelectorAll = selector => selector === "[data-player-cover-index]" ? [cover] : [];
+  const cover = new Element({playerCoverIndex: "0"}), play = new Element({playerCoverPlay: "0"});
+  flow.querySelectorAll = selector => selector === "[data-player-cover-index]" ? [cover] :
+    selector === "[data-player-cover-play]" ? [play] : [];
   context.renderPlaybackCovers();
   await cover.onclick();
+  assert.equal(cover.getAttribute("aria-pressed"), "true");
+  assert.equal(run("playback.queueIndex"), 1);
+  assert.equal(document.querySelector("#player").classList.contains("is-expanded"), false);
+  await play.onclick();
   assert.equal(run("playback.queueIndex"), 0);
   assert.equal(document.querySelector("#player").classList.contains("is-expanded"), true);
 });

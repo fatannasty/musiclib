@@ -386,8 +386,26 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .player-art { width: 54px; height: 54px; border-radius: 9px; object-fit: cover; background: var(--cover-bg); flex: 0 0 auto; }
 .player-art-placeholder { display: grid; place-items: center; color: var(--accent); }
 .player-art-placeholder svg { width: 28px; height: 28px; }
+.player-art-card { position: relative; width: 54px; height: 54px; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--text); cursor: pointer; perspective: 800px; flex: 0 0 auto; }
+.player-art-inner { position: relative; display: block; width: 100%; height: 100%; transform-style: preserve-3d; transition: transform .5s ease; }
+.is-flipped > .player-art-inner { transform: rotateY(180deg); }
+.player-art-front, .player-art-back { position: absolute; inset: 0; display: block; backface-visibility: hidden; border-radius: 8px; overflow: hidden; }
+.player-art-back { display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 10px; transform: rotateY(180deg); background: var(--panel2); font-size: 11px; overflow-wrap: anywhere; }
+.player-art-back strong { font-size: 13px; }
+.player-art-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+#player.is-expanded .player-art-card { width: 100%; height: auto; aspect-ratio: 1; grid-column: 1; grid-row: 1 / span 2; }
+#player:not(.is-floating):not(.is-expanded) .player-art-card { width: 46px; height: 46px; }
+#player.is-floating .player-art-card { width: 44px; height: 44px; }
+.player-cover-item .player-art-inner { height: 140px; }
+.player-cover-play { width: 100%; margin-top: 4px; font-size: 11px; }
+#player[data-playback-state=playing] .player-cover-item.is-current:not(.is-flipped) .player-art-front,
+.listen-track.is-playing .listen-track-art .listen-album-art { animation: cover-breathe 2.8s ease-in-out infinite; }
+.listen-track.is-playing .listen-track-state { animation: playing-status 1.8s ease-in-out infinite; }
+@keyframes cover-breathe { 50% { transform: scale(.97); } }
+@keyframes playing-status { 50% { opacity: .45; } }
 .player .now-playing strong { display: block; font-size: 15px; line-height: 1.3; }
 .player-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+#player-auto-playlist-status { flex-basis: 100%; margin: 0; text-align: right; }
 .player .action { padding: 7px 10px; }
 .player-transport { justify-content: center; margin: 12px 0 8px; }
 .player-transport .player-play { min-width: 76px; min-height: 42px; border-radius: 24px; }
@@ -569,7 +587,7 @@ button.match-card { width: 100%; color: inherit; font: inherit; text-align: left
 .player-eq { display: grid; grid-template-columns: repeat(15, minmax(0,1fr)); gap: 4px; }
 .player-band { display: grid; justify-items: center; min-width: 0; gap: 6px; color: var(--dim); font-size: 9px; }
 .player-band input[type=range] { writing-mode: vertical-lr; direction: rtl; width: 24px; height: 100px; flex: none; accent-color: var(--accent); }
-.player-spectrum { display: block; width: 100%; height: 60px; margin-top: 20px; }
+.player-spectrum { display: block; width: 100%; height: 80px; margin-top: 12px; border-radius: 6px; background: var(--panel2); }
 .player-spectrum[hidden] { display: none; }
 .player-eq-note { color: var(--dim); font-size: 11px; margin-top: 8px; }
 .player-effects { padding-top: 16px; border-top: 1px solid var(--border); }
@@ -901,10 +919,15 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
   <button type="button" class="player-drag" id="player-drag" aria-label="Move mini-player. Drag or use arrow keys.">Move mini-player · drag here or use arrow keys</button>
   <div class="player-main-panel">
     <div class="player-heading">
-      <img id="player-art" class="player-art" alt="" hidden>
-      <div id="player-art-placeholder" class="player-art player-art-placeholder" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13M9 9l12-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="16" rx="3" ry="3"/></svg>
-      </div>
+      <button type="button" id="player-art-card" class="player-art-card" aria-label="Show album and artist information" aria-pressed="false" disabled>
+        <span class="player-art-inner"><span class="player-art-front">
+          <img id="player-art" class="player-art" alt="" hidden>
+          <span id="player-art-placeholder" class="player-art player-art-placeholder" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13M9 9l12-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="16" rx="3" ry="3"/></svg>
+          </span></span><span class="player-art-back">
+          <strong id="player-art-album">Album information</strong><span id="player-art-artist"></span><span id="player-art-year"></span>
+        </span></span>
+      </button>
       <div class="now-playing"><strong id="player-title">Music player</strong><div id="player-album" class="hint"></div>
         <span id="player-playback-state" class="player-playback-state" data-state="idle" role="status">Ready</span>
         <div id="player-quality" class="hint"></div></div>
@@ -913,8 +936,11 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
     <div class="player-actions">
       <button class="action ghost" id="player-favorite" aria-pressed="false" disabled>♡ Favorite</button>
       <button class="action ghost" id="player-add-playlist" disabled>Add to playlist</button>
+      <button class="action ghost" id="player-auto-playlist" aria-pressed="false">Auto-save played songs</button>
       <button class="action ghost" id="player-float" aria-pressed="false">Mini-player</button>
       <button class="action ghost" id="player-close">Stop and close</button>
+      <p id="player-auto-playlist-status" class="hint" role="status" hidden></p>
+      <button id="player-auto-playlist-retry" type="button" class="action ghost" hidden>Retry playlist save</button>
     </div>
     <audio id="player-audio" preload="none" aria-label="Audio playback"></audio>
     <div class="row player-transport" role="group" aria-label="Playback queue controls">
@@ -992,10 +1018,10 @@ body.player-expanded #toast { bottom: 20px; z-index: 110; }
       </select></label>
       <button class="action ghost" id="player-eq-reset" type="button">Reset</button>
     </div>
-    <button class="action ghost" id="player-visualizer-toggle" type="button" aria-pressed="false">Enable visualizer</button>
-    <canvas id="player-spectrum" class="player-spectrum" width="600" height="60" aria-label="Live 15-band audio spectrum" hidden></canvas>
-    <p id="player-visualizer-status" class="player-eq-note" role="status">Live visuals follow playback. Enable EQ, effects, or the visualizer to activate.</p>
-    <p id="player-eq-status" class="player-eq-note" role="status">EQ off. Enable to shape sound and show the live spectrum.</p>
+    <button class="action ghost" id="player-visualizer-toggle" type="button" aria-pressed="true">Hide visualizer</button>
+    <canvas id="player-spectrum" class="player-spectrum" width="600" height="80" aria-label="Live 15-band audio spectrum"></canvas>
+    <p id="player-visualizer-status" class="player-eq-note" role="status">Live EQ visualization starts when music plays. Browser resampling may apply.</p>
+    <p id="player-eq-status" class="player-eq-note" role="status">EQ off. Enable to shape sound; visualization works independently.</p>
   </div>
   <section id="player-effects" class="player-sound player-effects" aria-labelledby="player-effects-heading">
     <div class="player-sound-heading">
@@ -1356,6 +1382,84 @@ const playback = {
   controller: null, queue: [], originalQueue: [], queueIndex: -1, shuffle: false, repeat: "off",
   buffering: false,
 };
+const autoPlaylist = {session: null};
+function currentAutoPlaylist(session) {
+  return autoPlaylist.session === session && session.enabled && authState.user?.id === session.owner;
+}
+function renderAutoPlaylistStatus() {
+  const session = autoPlaylist.session;
+  const active = !!session?.enabled;
+  $("#player-auto-playlist-status").hidden = !session;
+  $("#player-auto-playlist").setAttribute("aria-pressed", String(active));
+  $("#player-auto-playlist").textContent = active ? "Stop auto-save" : "Auto-save played songs";
+  $("#player-auto-playlist-retry").hidden = !active || !session.error;
+  $("#player-auto-playlist-retry").disabled = !!session?.busy;
+  $("#player-auto-playlist-status").textContent = !session ? "" :
+    session.error && active ? `Auto-save paused: ${session.error}. ${session.pending.size} song(s) waiting. Use Retry playlist save.` :
+    !active ? `Auto-save stopped. ${session.saved.size} song(s) saved.` :
+    session.busy ? `Saving played songs… ${session.saved.size} saved.` :
+    session.playlistId ? `${session.saved.size} song(s) saved to ${session.name}.` :
+    "A private playlist will be created when a song starts playing.";
+}
+async function flushAutoPlaylist(session) {
+  if (!currentAutoPlaylist(session) || session.busy || session.error || !session.pending.size) return;
+  session.busy = true;
+  renderAutoPlaylistStatus();
+  try {
+    if (!session.playlistId) {
+      const playlist = await post("/api/playlists", {name: session.name});
+      session.playlistId = playlist.id;
+    }
+    if (!currentAutoPlaylist(session)) return;
+    if (session.reconcile) {
+      const playlist = await api(`/api/playlists/${session.playlistId}`);
+      if (!currentAutoPlaylist(session)) return;
+      playlist.tracks.forEach(track => {
+        if (session.pending.delete(track.id)) session.saved.add(track.id);
+      });
+      session.reconcile = false;
+    }
+    while (currentAutoPlaylist(session) && session.pending.size) {
+      const ids = Array.from(session.pending).slice(0, 200);
+      await post(`/api/playlists/${session.playlistId}/tracks`, {track_ids: ids});
+      ids.forEach(id => { session.pending.delete(id); session.saved.add(id); });
+    }
+  } catch (error) {
+    console.warn("Musiclib could not save the automatic playlist.", error);
+    session.error = error.message;
+  } finally {
+    session.busy = false;
+    if (autoPlaylist.session === session && authState.user?.id === session.owner) renderAutoPlaylistStatus();
+  }
+}
+function recordAutoPlaylistTrack() {
+  const session = autoPlaylist.session;
+  if (!session || !currentAutoPlaylist(session) || playbackState() !== "playing" ||
+      !playback.track || session.saved.has(playback.track.id)) return;
+  session.pending.add(playback.track.id);
+  renderAutoPlaylistStatus();
+  return flushAutoPlaylist(session);
+}
+function stopAutoPlaylist() {
+  if (autoPlaylist.session) autoPlaylist.session.enabled = false;
+  renderAutoPlaylistStatus();
+}
+$("#player-auto-playlist").onclick = () => {
+  if (autoPlaylist.session?.enabled) return stopAutoPlaylist();
+  autoPlaylist.session = {
+    enabled: true, owner: authState.user?.id, playlistId: null, busy: false, error: "", reconcile: false,
+    name: `Listening session ${new Date().toLocaleString()}`, pending: new Set(), saved: new Set(),
+  };
+  renderAutoPlaylistStatus();
+  return recordAutoPlaylistTrack();
+};
+$("#player-auto-playlist-retry").onclick = () => {
+  const session = autoPlaylist.session;
+  if (!session || !currentAutoPlaylist(session) || session.busy) return;
+  session.error = "";
+  session.reconcile = !!session.playlistId;
+  return flushAutoPlaylist(session);
+};
 const EQ_FREQUENCIES = [25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000];
 const EQ_PRESETS = {
   flat: Array(15).fill(0),
@@ -1372,7 +1476,7 @@ const equalizer = {
   context: null, source: null, filters: [], preamp: null, analyser: null,
   gains: EQ_PRESETS.flat.slice(), enabled: false, frame: null, lastFrame: 0,
 };
-const visualizer = {enabled: true, standalone: false};
+const visualizer = {enabled: true, standalone: false, starting: false};
 const EFFECT_PRESETS = {
   clean: {reverb: 0, compression: false},
   room: {reverb: 15, compression: false},
@@ -1463,19 +1567,22 @@ async function ensureEqualizer() {
     equalizer.filters.forEach(filter => { node.connect(filter); node = filter; });
     node.connect(equalizer.analyser);
     equalizer.analyser.connect(context.destination);
-    equalizer.source = context.createMediaElementSource($("#player-audio"));
-    equalizer.source.connect(context.destination);
-    applyEqualizerGains();
   }
   await equalizer.context.resume();
+  if (!equalizer.source) {
+    equalizer.source = equalizer.context.createMediaElementSource($("#player-audio"));
+    equalizer.source.connect(equalizer.context.destination);
+    applyEqualizerGains();
+  }
 }
 async function releaseUninitializedEqualizer() {
   if (equalizer.context && !equalizer.source) {
-    await equalizer.context.close();
+    const context = equalizer.context;
     equalizer.context = null;
     equalizer.filters = [];
     equalizer.preamp = null;
     equalizer.analyser = null;
+    await context.close();
   }
 }
 function stopSpectrum() {
@@ -1486,13 +1593,18 @@ function stopSpectrum() {
 }
 function startSpectrum() {
   const active = visualizer.enabled && (visualizer.standalone || equalizer.enabled || effects.enabled);
-  $("#player-visualizer-toggle").setAttribute("aria-pressed", String(active));
-  $("#player-visualizer-toggle").textContent = active ? "Hide visualizer" : "Enable visualizer";
-  $("#player-spectrum").hidden = !active;
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (visualizer.enabled) $("#player-visualizer-status").textContent = reduced ?
+    "Visualization paused for reduced motion." :
+    active ? "Live spectrum follows playback. Browser resampling may apply." :
+    "Live EQ visualization starts when music plays. Browser resampling may apply.";
+  $("#player-visualizer-toggle").setAttribute("aria-pressed", String(visualizer.enabled));
+  $("#player-visualizer-toggle").textContent = visualizer.enabled ? "Hide visualizer" : "Enable visualizer";
+  $("#player-spectrum").hidden = !visualizer.enabled;
   stopSpectrum();
   if (!active || $("#player-audio").paused || $("#player-audio").ended || playback.buffering || $("#player").hidden ||
       !$("#player").classList.contains("is-expanded") || document.hidden ||
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      reduced) return;
   const canvas = $("#player-spectrum"), drawing = canvas.getContext("2d");
   if (!drawing) return;
   const data = new Uint8Array(equalizer.analyser.frequencyBinCount);
@@ -1566,7 +1678,7 @@ $("#player-eq-bands").oninput = event => {
 };
 $("#player-visualizer-toggle").onclick = async () => {
   const button = $("#player-visualizer-toggle");
-  const active = visualizer.enabled && (visualizer.standalone || equalizer.enabled || effects.enabled);
+  const active = visualizer.enabled;
   button.disabled = true;
   try {
     if (active) {
@@ -1592,6 +1704,26 @@ $("#player-visualizer-toggle").onclick = async () => {
     $("#player-visualizer-status").textContent = `Visualizer unavailable: ${error.message}`;
   } finally { button.disabled = false; }
 };
+async function activatePlaybackVisuals() {
+  if (!visualizer.enabled || visualizer.starting || playbackState() !== "playing" ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  visualizer.starting = true;
+  try {
+    await ensureEqualizer();
+    if (!visualizer.enabled || playbackState() !== "playing") return;
+    visualizer.standalone = true;
+    routeEqualizer();
+    startSpectrum();
+  } catch (error) {
+    visualizer.enabled = false;
+    visualizer.standalone = false;
+    routeEqualizer();
+    startSpectrum();
+    await releaseUninitializedEqualizer();
+    console.warn("Musiclib visualizer could not start.", error);
+    $("#player-visualizer-status").textContent = `Visualizer unavailable: ${error.message}`;
+  } finally { visualizer.starting = false; }
+}
 async function ensureEffects() {
   await ensureEqualizer();
   if (effects.nodes) return;
@@ -1806,12 +1938,25 @@ function renderPlaybackCovers() {
     const current = index === playback.queueIndex;
     const cover = track.cover_url || (track.has_embedded_art ? `/api/tracks/${track.id}/cover` : null);
     return `<li><button type="button" class="player-cover-item ${current ? "is-current" : index < playback.queueIndex ? "is-before" : "is-after"}"
-      data-player-cover-index="${index}" aria-label="Play ${esc([track.artist, track.title || `Track ${track.id}`].filter(Boolean).join(" - "))}"
-      ${current ? 'aria-current="true"' : ""}>${listenCoverMarkup(cover)}
-      <strong>${esc(track.title || `Track ${track.id}`)}</strong><span>${esc(track.album || track.artist || "Queued track")}</span></button></li>`;
+      data-player-cover-index="${index}" aria-label="Show album and artist information for ${esc(track.title || `Track ${track.id}`)}" aria-pressed="false"
+      ${current ? 'aria-current="true"' : ""}><span class="player-art-inner"><span class="player-art-front">${listenCoverMarkup(cover)}</span>
+        <span class="player-art-back"><strong>${esc(track.album || "Unknown album")}</strong>
+          <span>${esc(track.album_artist || track.artist || "Unknown artist")}</span>${track.year ? `<span>${esc(track.year)}</span>` : ""}</span></span>
+      <strong>${esc(track.title || `Track ${track.id}`)}</strong><span>${esc(track.album || track.artist || "Queued track")}</span></button>
+      <button type="button" class="action ghost player-cover-play" data-player-cover-play="${index}" aria-label="Play ${esc(track.title || `Track ${track.id}`)}">Play</button></li>`;
   }).join("");
   flow.querySelectorAll("[data-player-cover-index]").forEach(button => {
-    button.onclick = () => playQueueIndex(Number(button.dataset.playerCoverIndex), true);
+    button.onclick = () => {
+      const flipped = button.classList.toggle("is-flipped");
+      button.setAttribute("aria-pressed", String(flipped));
+      const track = playback.queue[Number(button.dataset.playerCoverIndex)];
+      button.setAttribute("aria-label", flipped ?
+        `Show artwork. Album: ${track.album || "Unknown album"}. Artist: ${track.album_artist || track.artist || "Unknown artist"}.` :
+        `Show album and artist information for ${track.title || `Track ${track.id}`}`);
+    };
+  });
+  flow.querySelectorAll("[data-player-cover-play]").forEach(button => {
+    button.onclick = () => playQueueIndex(Number(button.dataset.playerCoverPlay), true);
   });
   bindListenCovers(flow);
   centerPlaybackCover();
@@ -1828,8 +1973,8 @@ $("#player-cover-flow").onkeydown = event => {
   if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
   const buttons = $("#player-cover-flow").querySelectorAll("[data-player-cover-index]");
   if (!buttons.length) return;
-  const selected = event.target.closest("[data-player-cover-index]");
-  const index = selected ? Number(selected.dataset.playerCoverIndex) : Math.max(0, playback.queueIndex);
+  const selected = event.target.closest("[data-player-cover-index], [data-player-cover-play]");
+  const index = selected ? Number(selected.dataset.playerCoverIndex || selected.dataset.playerCoverPlay) : Math.max(0, playback.queueIndex);
   const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 :
     Math.max(0, Math.min(buttons.length - 1, index + (event.key === "ArrowRight" ? 1 : -1)));
   event.preventDefault();
@@ -1907,10 +2052,18 @@ async function loadPlaybackTrack(id, expand = false) {
   $("#player-album").textContent = "";
   $("#player-art").hidden = true;
   $("#player-art-placeholder").hidden = false;
+  $("#player-art-card").disabled = true;
+  $("#player-art-card").classList.remove("is-flipped");
+  $("#player-art-card").setAttribute("aria-pressed", "false");
+  $("#player-art-card").setAttribute("aria-label", "Show album and artist information");
   try {
     const track = await api(`/api/tracks/${id}/playback`, {signal: playback.controller.signal});
     if (request !== playback.request) return;
     playback.track = track;
+    $("#player-art-card").disabled = false;
+    $("#player-art-album").textContent = track.album || "Unknown album";
+    $("#player-art-artist").textContent = track.album_artist || track.artist || "Unknown artist";
+    $("#player-art-year").textContent = track.year || "";
     renderPlaybackDetails(track);
     highlightListeningTrack();
     if (playback.queue[playback.queueIndex]?.id === track.id) {
@@ -2106,6 +2259,7 @@ function syncPlayButton() {
   $("#player-play").setAttribute("aria-label", paused ? "Play" : "Pause");
   $("#player-play").title = paused ? "Play" : "Pause";
   const phase = playbackState();
+  $("#player").dataset.playbackState = phase;
   $("#player-playback-state").dataset.state = phase;
   $("#player-playback-state").textContent = PLAYBACK_LABELS[phase];
   highlightListeningTrack();
@@ -2118,7 +2272,22 @@ $("#player-play").onclick = toggleAudioPlayback;
 $("#player-audio").onplay = () => { playback.buffering = true; syncPlayButton(); };
 $("#player-audio").onpause = syncPlayButton;
 $("#player-audio").onwaiting = () => { playback.buffering = true; syncPlayButton(); };
-$("#player-audio").onplaying = () => { playback.buffering = false; syncPlayButton(); };
+$("#player-audio").onplaying = () => {
+  playback.buffering = false;
+  syncPlayButton();
+  recordAutoPlaylistTrack();
+  return activatePlaybackVisuals();
+};
+$("#player-art-card").onclick = () => {
+  if ($("#player").classList.contains("is-floating")) setMiniPlayer(false);
+  if (!$("#player").classList.contains("is-expanded")) setPlayerExpanded(true);
+  const card = $("#player-art-card");
+  const flipped = card.classList.toggle("is-flipped");
+  card.setAttribute("aria-pressed", String(flipped));
+  card.setAttribute("aria-label", flipped ?
+    `Show album artwork. Album: ${$("#player-art-album").textContent}. Artist: ${$("#player-art-artist").textContent}.` :
+    "Show album and artist information");
+};
 $("#player-audio").onvolumechange = () => {
   const audio = $("#player-audio");
   $("#player-volume").value = audio.volume;
@@ -2315,6 +2484,7 @@ $("#player-queue-toggle").onclick = () => {
   setPlaybackQueueOpen($("#player-queue").hidden);
 };
 $("#player-close").onclick = () => {
+  stopAutoPlaylist();
   playback.request++;
   playback.source++;
   playback.controller?.abort();
@@ -2903,7 +3073,7 @@ function listeningTracksMarkup(tracks, offset = 0, cards = false) {
     const duration = `<span class="listen-duration">${track.duration ? playbackTime(track.duration) : "—"}</span>`;
     return cards ? `<li class="listen-track" data-listening-track-id="${track.id}">
       <button type="button" class="listen-track-art" data-listen-play="${index}" aria-label="Play ${esc(track.title || "track")}">
-        ${listenCoverMarkup(track.has_embedded_art ? `/api/tracks/${track.id}/cover` : null)}
+        ${listenCoverMarkup(track.cover_url || (track.has_embedded_art ? `/api/tracks/${track.id}/cover` : null))}
         <span class="listen-card-play" aria-hidden="true">Play</span></button>
       ${info}<div class="listen-card-footer">${duration}
         <details class="listen-track-menu"><summary>More actions<span class="sr-only"> for ${esc(track.title || "track")}</span></summary>
@@ -5939,6 +6109,9 @@ async function watchActivity() {
 }
 let dashboardEventsBound = false;
 function showLogin() {
+  stopAutoPlaylist();
+  autoPlaylist.session = null;
+  renderAutoPlaylistStatus();
   if (!$("#player").hidden) $("#player-close").click();
   authState.user = null;
   authState.csrfToken = "";

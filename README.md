@@ -166,6 +166,8 @@ switching listening tabs in the same page session; playback is not restored on r
 The current song and player distinguish **Playing**, **Paused**, **Buffering**,
 **Finished**, and playback errors using the audio element's state; selecting a
 song alone does not mark it as actively playing.
+Playing artwork and the song's **Playing** label have subtle activity animation;
+pause, buffering, and reduced-motion preferences stop it.
 
 Accounts created by the administrator are **listeners**. They can browse/search,
 listen, manage their own playlists, and change their password. They cannot use
@@ -194,6 +196,13 @@ saves up to 200 distinct tracks; repeated queue entries are saved once. You can
 move or remove queue items, clear upcoming tracks, append an album, or choose
 **Play next** for an individual song without interrupting the current track.
 Starting a track from an album queues the album in disc/track order.
+**Auto-save played songs** creates a private listening-session playlist when
+the first song actually starts playing and adds each played song once. Enable
+it during playback to include the current song; pause, seek, and repeat do not
+add duplicates. **Stop auto-save**, closing the player, or signing out ends
+capture without deleting the playlist. Failed saves stay queued with an explicit
+**Retry playlist save** control. This option is off by default and is not
+restored on reload.
 
 On phones, the compact player keeps play/pause visible while browsing. Choose
 **Now playing** to expand the artwork, queue, and playback controls; **Collapse**
@@ -203,9 +212,13 @@ item to play opens it again. This works on desktop too.
 
 The player uses a charcoal palette independently of the dashboard theme.
 Expanded Now Playing includes a **Cover Flow–style queue**: swipe or scroll
-through artwork, use Left/Right/Home/End to browse, and select a cover to play
-that song. Automatic advancement centers the current item while expanded;
-it does not reopen a collapsed player. Missing artwork uses a placeholder.
+through artwork and use Left/Right/Home/End to browse. Click a cover to rotate
+it and show album/artist information, or its separate **Play** button to play
+that song. The main artwork also flips to information without interrupting
+audio. Automatic advancement centers the current item while expanded;
+it does not reopen a collapsed player. Artwork uses existing embedded, folder,
+or album covers, with the existing Cover Art Archive fallback when a release
+identifier is available. Missing artwork uses a placeholder.
 
 The expanded listening room shows the album artwork and transport alongside a
 side panel with album metadata, the upcoming queue, and the **15-band equalizer**.
@@ -214,14 +227,15 @@ controls instead, or back to the side panel. The layout stacks on phones. EQ pro
 ±6 dB adjustment, with Flat, Warm & balanced, Vocal clarity, Bass boost, Rock,
 Electronic, Acoustic, Jazz, and Classical presets, plus Reset and Enable/Bypass
 controls below the 15 bands.
-EQ starts off. Enabling EQ, effects, or standalone visuals initializes the shared
-Web Audio source.
+EQ and effects start off. The live 15-band visualization below the EQ controls
+starts automatically during playback, initializing the shared Web Audio source
+without enabling EQ or effects; browser resampling may apply. **Hide visualizer**
+disables it, and automatic track advances do not turn it back on.
 Enabled EQ reserves headroom for boosts, so it may sound quieter. The spectrum
 reflects processed audio and stops while paused, collapsed, in a background tab,
 or when reduced motion is requested. Unsupported browsers display an error and
 retain native playback. Equalizer settings last only for the current page.
-**Enable visualizer** also shows a live 15-band spectrum with EQ and effects
-bypassed. This explicitly initializes Web Audio; browser resampling may apply.
+**Enable visualizer** restores the spectrum after hiding it.
 The bars react to actual audio, not simulated animation, and stop while paused,
 buffering, ended, collapsed, or hidden. **Hide visualizer** stops the animation
 without changing EQ or effect settings. Reduced-motion preferences are respected.
